@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YemenDrive | لوحة التحكم</title>
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+  <div class="admin-login" id="admin-login">
+    <form class="admin-login-card" id="admin-login-form">
+      <div class="login-brand"><div class="brand-mark">YD</div><div><strong>YemenDrive</strong><span>لوحة الإدارة</span></div></div>
+      <h1>تسجيل دخول الإدارة</h1>
+      <p>استخدم حساب المدير للدخول إلى لوحة التحكم.</p>
+      <p class="login-hint">الحساب التجريبي: 700000001<br>كلمة المرور: Admin1234!</p>
+      <label>رقم الهاتف<input id="admin-phone" type="tel" autocomplete="username" required></label>
+      <label>كلمة المرور<input id="admin-password" type="password" autocomplete="current-password" required></label>
+      <div class="inline-result hidden" id="admin-login-result"></div>
+      <button class="button primary admin-login-submit" type="submit">تسجيل الدخول</button>
+    </form>
+  </div>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">YD</div>
+        <div><strong>YemenDrive</strong><span>لوحة الإدارة</span></div>
+      </div>
+
+      <nav class="main-nav" aria-label="التنقل الرئيسي">
+        <button class="nav-item active" data-view="overview"><span class="nav-icon">⌂</span><span>نظرة عامة</span></button>
+        <button class="nav-item" data-view="users"><span class="nav-icon">◎</span><span>المستخدمون</span></button>
+        <button class="nav-item" data-view="drivers"><span class="nav-icon">◇</span><span>السائقون</span></button>
+        <button class="nav-item" data-view="rides"><span class="nav-icon">↗</span><span>الرحلات</span></button>
+        <button class="nav-item" data-view="catalog"><span class="nav-icon">▦</span><span>الخدمات</span></button>
+        <button class="nav-item" data-view="pricing"><span class="nav-icon">¤</span><span>التسعير</span></button>
+        <button class="nav-item" data-view="wallet"><span class="nav-icon">□</span><span>المحفظة</span></button>
+        <button class="nav-item" data-view="places"><span class="nav-icon">☆</span><span>المفضلة</span></button>
+        <button class="nav-item" data-view="history"><span class="nav-icon">◷</span><span>سجل الرحلات</span></button>
+        <button class="nav-item" data-view="console"><span class="nav-icon">›_</span><span>محطة API</span></button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button class="database-button" id="database-button">
+          <span class="status-dot" id="database-dot"></span>
+          <span><strong>قاعدة البيانات</strong><small id="database-label">جارٍ التحقق...</small></span>
+        </button>
+      </div>
+    </aside>
+
+    <button class="sidebar-backdrop" id="sidebar-backdrop" aria-label="إغلاق القائمة"></button>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="topbar-title">
+          <button class="icon-button mobile-only" id="menu-button" title="فتح القائمة" aria-label="فتح القائمة">☰</button>
+          <div><h1 id="page-title">نظرة عامة</h1><p id="page-subtitle">متابعة حالة النظام والعمليات الأخيرة</p></div>
+        </div>
+        <div class="topbar-actions">
+          <span class="connection-pill" id="connection-pill"><span></span><b>جارٍ التحقق</b></span>
+          <button class="icon-button" id="refresh-button" title="تحديث البيانات" aria-label="تحديث البيانات">↻</button>
+          <button class="icon-button" id="admin-logout-button" title="تسجيل الخروج" aria-label="تسجيل الخروج">⇥</button>
+        </div>
+      </header>
+
+      <div class="content-area">
+        <section class="view active" id="view-overview">
+          <div class="stats-grid">
+            <article class="stat"><span>المستخدمون</span><strong id="stat-users">—</strong><small>إجمالي الحسابات</small></article>
+            <article class="stat"><span>السائقون</span><strong id="stat-drivers">—</strong><small>ملفات السائقين</small></article>
+            <article class="stat"><span>الرحلات النشطة</span><strong id="stat-active-rides">—</strong><small>قيد التنفيذ والمتابعة</small></article>
+            <article class="stat"><span>الرصيد الكلي</span><strong id="stat-wallet">—</strong><small>ريال يمني</small></article>
+          </div>
+
+          <div class="section-toolbar quick-toolbar">
+            <div><h2>إجراءات سريعة</h2><p>أكثر العمليات استخداماً</p></div>
+            <div class="command-row">
+              <button class="button primary" data-form="user">إضافة مستخدم</button>
+              <button class="button" data-form="ride">إنشاء رحلة</button>
+              <button class="button" data-form="serviceCatalog">إضافة خدمة</button>
+            </div>
+          </div>
+
+          <section class="data-section">
+            <div class="section-header"><div><h2>أحدث الرحلات</h2><p>آخر ست رحلات مسجلة في النظام</p></div><button class="text-button" data-go="rides">عرض الكل</button></div>
+            <div class="table-wrap"><table><thead><tr><th>الرحلة</th><th>المسار</th><th>الخدمة</th><th>الحالة</th><th>السعر</th><th>التاريخ</th></tr></thead><tbody id="recent-rides-body"></tbody></table></div>
+            <div class="empty-state hidden" id="overview-empty">لا توجد رحلات مسجلة حتى الآن.</div>
+          </section>
+        </section>
+
+        <section class="view" id="view-users">
+          <div class="section-toolbar"><div><h2>المستخدمون</h2><p>العملاء والسائقون ومديرو النظام</p></div><div class="command-row"><input class="search-input" id="user-search" placeholder="بحث بالاسم أو الهاتف"><button class="button primary" data-form="user">إضافة مستخدم</button></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الاسم</th><th>الهاتف</th><th>البريد</th><th>الدور</th><th>المدينة</th><th>الحالة</th><th>تاريخ الإضافة</th></tr></thead><tbody id="users-body"></tbody></table></div><div class="empty-state hidden" id="users-empty">لا يوجد مستخدمون مطابقون.</div></section>
+        </section>
+
+        <section class="view" id="view-drivers">
+          <div class="section-toolbar"><div><h2>السائقون</h2><p>المركبات والخدمات وحالة التوفر</p></div><div class="command-row"><button class="button" data-form="driverLocation">تحديث موقع</button><button class="button primary" data-form="driver">إضافة ملف سائق</button></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>السائق</th><th>الهاتف</th><th>المركبة</th><th>الخدمة</th><th>اللوحة</th><th>التقييم</th><th>التوفر</th></tr></thead><tbody id="drivers-body"></tbody></table></div><div class="empty-state hidden" id="drivers-empty">لا توجد ملفات سائقين.</div></section>
+        </section>
+
+        <section class="view" id="view-rides">
+          <div class="section-toolbar"><div><h2>الرحلات</h2><p>متابعة الطلبات وحالات التنفيذ</p></div><div class="command-row"><select class="filter-select" id="ride-filter"><option value="">كل الحالات</option><option value="1">جاري البحث</option><option value="3">تم تعيين سائق</option><option value="4">السائق في الطريق</option><option value="5">قيد التنفيذ</option><option value="6">مكتملة</option><option value="7">ملغاة</option></select><button class="button primary" data-form="ride">إنشاء رحلة</button></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>العميل</th><th>السائق</th><th>المسار</th><th>المركبة</th><th>الحالة</th><th>السعر</th><th>التاريخ</th></tr></thead><tbody id="rides-body"></tbody></table></div><div class="empty-state hidden" id="rides-empty">لا توجد رحلات في هذه الحالة.</div></section>
+        </section>
+
+        <section class="view" id="view-catalog">
+          <div class="section-toolbar"><div><h2>الخدمات</h2><p>أنواع الخدمة والعناصر المتاحة للعملاء</p></div><div class="command-row"><button class="button" data-form="serviceKind">إضافة نوع</button><button class="button primary" data-form="serviceCatalog">إضافة خدمة</button></div></div>
+          <div class="split-sections">
+            <section class="data-section"><div class="section-header"><div><h2>كتالوج الخدمات</h2><p>الخدمات والمركبات والأسعار الأساسية</p></div></div><div class="table-wrap"><table><thead><tr><th>الأيقونة</th><th>الرمز</th><th>الاسم</th><th>النوع</th><th>المركبة</th><th>السعر</th><th>الوصول</th><th>الحالة</th></tr></thead><tbody id="catalog-body"></tbody></table></div><div class="empty-state hidden" id="catalog-empty">لم تتم إضافة خدمات.</div></section>
+            <section class="data-section"><div class="section-header"><div><h2>أنواع الخدمات</h2><p>التصنيفات الرئيسية</p></div></div><div class="table-wrap"><table><thead><tr><th>الأيقونة</th><th>الرمز</th><th>الاسم</th><th>نوع الرحلة</th><th>الترتيب</th><th>الحالة</th></tr></thead><tbody id="kinds-body"></tbody></table></div><div class="empty-state hidden" id="kinds-empty">لم تتم إضافة أنواع خدمات.</div></section>
+          </div>
+        </section>
+
+        <section class="view" id="view-pricing">
+          <div class="section-toolbar"><div><h2>قواعد التسعير</h2><p>حساب تكلفة الرحلات ونسب السائق</p></div><div class="command-row"><button class="button" data-form="quote">تجربة تسعير</button><button class="button primary" data-form="pricingRule">إضافة قاعدة</button></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الخدمة</th><th>الرمز</th><th>المركبة</th><th>الأساسي</th><th>لكل كم</th><th>لكل دقيقة</th><th>نسبة السائق</th><th>الحالة</th></tr></thead><tbody id="pricing-body"></tbody></table></div><div class="empty-state hidden" id="pricing-empty">لا توجد قواعد تسعير.</div></section>
+        </section>
+
+        <section class="view" id="view-wallet">
+          <div class="section-toolbar"><div><h2>المحفظة</h2><p>عرض الرصيد وإضافة الحركات المالية</p></div><button class="button primary" data-form="wallet">إضافة حركة</button></div>
+          <section class="wallet-query"><label for="wallet-user-id">معرف المستخدم</label><div><input id="wallet-user-id" placeholder="00000000-0000-0000-0000-000000000000"><button class="button" id="wallet-load">عرض المحفظة</button></div></section>
+          <div class="wallet-summary hidden" id="wallet-summary"><div><span>الرصيد الحالي</span><strong id="wallet-balance">0</strong><small id="wallet-currency">YER</small></div><div><span>عدد الحركات</span><strong id="wallet-transactions-count">0</strong><small>حركة مالية</small></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>النوع</th><th>المبلغ</th><th>الرصيد بعد الحركة</th><th>الوصف</th><th>المرجع</th><th>التاريخ</th></tr></thead><tbody id="wallet-body"></tbody></table></div><div class="empty-state" id="wallet-empty">أدخل معرف المستخدم لعرض محفظته.</div></section>
+        </section>
+
+        <section class="view" id="view-places">
+          <div class="section-toolbar"><div><h2>الأماكن المفضلة</h2><p>الأماكن المحفوظة للمستخدمين</p></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>المستخدم</th><th>الاسم</th><th>النوع</th><th>العنوان</th><th>الإحداثيات</th><th>التاريخ</th></tr></thead><tbody id="places-body"></tbody></table></div><div class="empty-state hidden" id="places-empty">لا توجد أماكن محفوظة.</div></section>
+        </section>
+
+        <section class="view" id="view-history">
+          <div class="section-toolbar"><div><h2>سجل الرحلات</h2><p>الرحلات السابقة والقادمة للمستخدمين</p></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>العميل</th><th>المسار</th><th>الحالة</th><th>السعر</th><th>التاريخ</th></tr></thead><tbody id="history-body"></tbody></table></div><div class="empty-state hidden" id="history-empty">لا توجد رحلات في السجل.</div></section>
+        </section>
+
+        <section class="view" id="view-console">
+          <div class="section-toolbar"><div><h2>محطة API</h2><p>تنفيذ أي مودل وعملية عبر المسار الموحد</p></div></div>
+          <div class="console-layout">
+            <form class="console-form" id="console-form">
+              <div class="form-grid"><label>اسم المودل<input id="console-model" value="UserModel" required></label><label>العملية<input id="console-operation" value="list" required></label><label class="full">البيانات JSON<textarea id="console-data" rows="14">{}</textarea></label></div>
+              <div class="form-actions"><button class="button primary" type="submit">إرسال الطلب</button></div>
+            </form>
+            <section class="response-panel"><div class="response-header"><h3>الاستجابة</h3><button class="icon-button" id="copy-response" title="نسخ الاستجابة" aria-label="نسخ الاستجابة">▣</button></div><pre id="console-response">لم يتم إرسال طلب بعد.</pre></section>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <dialog class="modal" id="form-modal"><form class="modal-shell" id="entity-form"><header><div><h2 id="modal-title">إضافة</h2><p id="modal-subtitle"></p></div><button class="icon-button" type="button" data-close="form-modal" title="إغلاق" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="form-grid" id="modal-fields"></div><div class="inline-result hidden" id="modal-result"></div></div><footer><button class="button" type="button" data-close="form-modal">إلغاء</button><button class="button primary" id="modal-submit" type="submit">حفظ</button></footer></form></dialog>
+
+  <dialog class="modal" id="database-modal"><form class="modal-shell" id="database-form"><header><div><h2>اتصال قاعدة البيانات</h2><p>اختبار الاتصال وإنشاء الجداول المطلوبة</p></div><button class="icon-button" type="button" data-close="database-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="form-grid"><label class="full">نوع النظام<select id="db-provider"></select></label><label>اسم الخادم<input id="db-server" placeholder=".\SQLEXPRESS" required></label><label>اسم القاعدة<input id="db-name" required></label><label>اسم المستخدم<input id="db-username"></label><label>كلمة المرور<input id="db-password" type="password"></label><label class="check-field full"><input id="db-integrated" type="checkbox"> استخدام مصادقة Windows</label><label class="check-field"><input id="db-trust" type="checkbox" checked> الوثوق بالشهادة</label><label class="check-field"><input id="db-encrypt" type="checkbox"> تشفير الاتصال</label></div><div class="inline-result hidden" id="database-result"></div></div><footer><button class="button" id="db-test" type="button">اختبار الاتصال</button><button class="button primary" type="submit">حفظ وتجهيز القاعدة</button></footer></form></dialog>
+
+  <div class="toast-region" id="toast-region" aria-live="polite"></div>
+  <script src="/admin.js" defer></script>
+</body>
+</html>

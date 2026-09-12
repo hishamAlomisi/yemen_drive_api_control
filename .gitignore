@@ -1,0 +1,4 @@
+**/bin/
+**/obj/
+*.user
+src/YemenDrive.Api/data/database.settings.json

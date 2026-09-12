@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\YemenDrive.Shared\YemenDrive.Shared.csproj" />
+    <ProjectReference Include="..\YemenDrive.Services\YemenDrive.Services.csproj" />
+    <ProjectReference Include="..\YemenDrive.Database\YemenDrive.Database.csproj" />
+    <ProjectReference Include="..\YemenDrive.Application\YemenDrive.Application.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <DefaultItemExcludes>$(DefaultItemExcludes);buildcheck*/**;**/buildcheck*/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+</Project>

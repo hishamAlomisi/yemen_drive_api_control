@@ -1,0 +1,1126 @@
+{
+  "info": {
+    "name": "YemenDrive API",
+    "description": "اختبار قاعدة YemenDrive والأنواع والخدمات الديناميكية والمصادقة وعمليات العميل والإدارة. نفذ الطلبات بالترتيب.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{authToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5080"
+    },
+    {
+      "key": "dbServer",
+      "value": ".\\\\sql2008r2"
+    },
+    {
+      "key": "dbName",
+      "value": "YemenDrive_Test"
+    },
+    {
+      "key": "dbUsername",
+      "value": "sa"
+    },
+    {
+      "key": "dbPassword",
+      "value": ""
+    },
+    {
+      "key": "authToken",
+      "value": ""
+    },
+    {
+      "key": "adminToken",
+      "value": ""
+    },
+    {
+      "key": "driverUserId",
+      "value": ""
+    },
+    {
+      "key": "driverProfileId",
+      "value": ""
+    },
+    {
+      "key": "serviceKindId",
+      "value": ""
+    },
+    {
+      "key": "serviceCatalogId",
+      "value": ""
+    },
+    {
+      "key": "pricingRuleId",
+      "value": ""
+    },
+    {
+      "key": "rideId",
+      "value": ""
+    },
+    {
+      "key": "rideIdempotencyKey",
+      "value": "ride-test-001"
+    },
+    {
+      "key": "paymentIdempotencyKey",
+      "value": "cash-payment-test-001"
+    },
+    {
+      "key": "rideOfferId",
+      "value": ""
+    },
+    {
+      "key": "savedPlaceId",
+      "value": ""
+    },
+    {
+      "key": "otpCode",
+      "value": ""
+    },
+    {
+      "key": "verificationToken",
+      "value": ""
+    },
+    {
+      "key": "signupChallengeId",
+      "value": ""
+    },
+    {
+      "key": "driverAuthToken",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "01 - Database",
+      "item": [
+        {
+          "name": "Current Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/setup/database"
+          }
+        },
+        {
+          "name": "Create Database And 22 Tables",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"SqlServer\",\n  \"server\": \"{{dbServer}}\",\n  \"database\": \"{{dbName}}\",\n  \"username\": \"{{dbUsername}}\",\n  \"password\": \"{{dbPassword}}\",\n  \"integratedSecurity\": false,\n  \"trustServerCertificate\": true,\n  \"encrypt\": false,\n  \"recreateSchema\": true\n}"
+            },
+            "url": "{{baseUrl}}/api/setup/database/create"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Database and tables created', () => pm.expect(body.success).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01.5 - Authentication",
+      "item": [
+        {
+          "name": "Request Signup OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"777000010\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/register/request-otp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Signup OTP requested', () => pm.expect(body.success).to.eql(true));",
+                  "if (body.success && body.data?.challengeId) pm.collectionVariables.set('signupChallengeId', body.data.challengeId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify Signup OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"destination\": \"777000010\",\n  \"code\": {{otpCode}},\n  \"purpose\": \"signUp\",\n  \"challengeId\": {{signupChallengeId}}\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/verify-otp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Signup OTP verified', () => pm.expect(body.success).to.eql(true));",
+                  "if (body.success && body.data?.verificationToken) pm.collectionVariables.set('verificationToken', body.data.verificationToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Complete Customer Registration",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"777000010\",\n  \"displayName\": \"Flutter Test Customer\",\n  \"password\": \"Test1234\",\n  \"gender\": \"\",\n  \"street\": \"Hadda\",\n  \"city\": \"Sanaa\",\n  \"district\": \"وسط المدينة\",\n  \"verificationToken\": {{verificationToken}}\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/register"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Registration completed', () => pm.expect(body.success).to.eql(true));",
+                  "if (body.success && body.data?.accessToken) pm.collectionVariables.set('authToken', body.data.accessToken);",
+                  "pm.test('Authenticated user id returned', () => pm.expect(body.data?.user?.id).to.exist);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login Customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"777000010\",\n  \"password\": \"Test1234\",\n  \"deviceId\": \"postman-device\",\n  \"isTrustedDevice\": true\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Login response received', () => pm.expect(body.success).to.eql(true));",
+                  "if (body.success && body.data?.accessToken) pm.collectionVariables.set('authToken', body.data.accessToken);",
+                  "pm.test('Authenticated user id returned', () => pm.expect(body.data?.user?.id).to.exist);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Users",
+      "item": [
+        {
+          "name": "Get Registered Customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"UserModel\",\n  \"operation\": \"get\",\n  \"data\": {}\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Add Driver User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"UserModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"displayName\": \"Test Driver\",\n    \"phoneNumber\": \"777000002\",\n    \"password\": \"Test1234\",\n    \"role\": 1\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Driver user created', () => pm.expect(body.success).to.eql(true));",
+                  "if (body.success) pm.collectionVariables.set('driverUserId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"UserModel\",\n  \"operation\": \"get\",\n  \"data\": {}\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 - Driver",
+      "item": [
+        {
+          "name": "Add Driver Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"DriverModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"userId\": {{driverUserId}},\n    \n    \"serviceKindId\": {{serviceKindId}},\n    \"serviceCatalogItemId\": {{serviceCatalogId}},\n    \"vehicleModel\": \"Toyota Yaris\",\n    \"plateNumber\": \"TEST-001\",\n    \"commissionRate\": 0.20,\n    \"isAvailable\": true,\n    \"rating\": 5\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Driver profile created', () => pm.expect(body.success).to.eql(true));",
+                  "if (body.success) pm.collectionVariables.set('driverProfileId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Driver Location",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"DriverLocationModel\",\n  \"operation\": \"update\",\n  \"data\": {\n    \"driverId\": {{driverUserId}},\n    \"latitude\": 15.3694,\n    \"longitude\": 44.1910,\n    \"bearing\": 90,\n    \"speed\": 20,\n    \"isOnline\": true\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 - Catalog And Pricing",
+      "item": [
+        {
+          "name": "Add Service Kind",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"ServiceKindModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"code\": \"TRANSPORT\",\n    \"nameAr\": \"النقل\",\n    \"imageUrl\": \"\",\n    \"isActive\": true,\n    \"sortOrder\": 1\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success) pm.collectionVariables.set('serviceKindId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add Service Catalog Item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"ServiceCatalogModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"code\": \"CITY\",\n    \"nameAr\": \"خدمة نقل داخل المدينة\",\n    \"serviceKindId\": {{serviceKindId}},\n    \"arrivalMinutes\": 5,\n    \"basePrice\": 500,\n    \"rating\": 5,\n    \"seats\": 4,\n    \"descriptionAr\": \"خدمة نقل داخل المدينة\",\n    \"imageUrl\": \"\",\n    \"isRecommended\": true,\n    \"isActive\": true,\n    \"sortOrder\": 1\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success) pm.collectionVariables.set('serviceCatalogId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add Pricing Rule",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"PricingRuleModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"serviceKindId\": {{serviceKindId}},\n    \"serviceCatalogItemId\": {{serviceCatalogId}},\n    \n    \"baseFare\": 500,\n    \"perKilometer\": 100,\n    \"perMinute\": 20,\n    \"driverShareRate\": 0.80,\n    \"isActive\": true\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success) pm.collectionVariables.set('pricingRuleId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Price Quote",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"PricingModel\",\n  \"operation\": \"report\",\n  \"data\": {\n    \"serviceKindId\": {{serviceKindId}},\n    \"serviceCatalogItemId\": {{serviceCatalogId}},\n    \n    \"distanceKm\": 8.5,\n    \"durationMinutes\": 20\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 - Ride",
+      "item": [
+        {
+          "name": "Add Ride",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"serviceKindId\": {{serviceKindId}},\n    \"serviceCatalogItemId\": {{serviceCatalogId}},\n    \n    \"pickupLabel\": \"Home\",\n    \"pickupAddress\": \"Sanaa - Hadda\",\n    \"pickupLatitude\": 15.3694,\n    \"pickupLongitude\": 44.1910,\n    \"destinationLabel\": \"Office\",\n    \"destinationAddress\": \"Sanaa - Tahrir\",\n    \"destinationLatitude\": 15.3547,\n    \"destinationLongitude\": 44.2067,\n    \"customerPrice\": 1750,\n    \"idempotencyKey\": \"{{rideIdempotencyKey}}\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Ride created', () => pm.expect(body.success).to.eql(true));",
+                  "if (body.success) pm.collectionVariables.set('rideId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Retry Same Ride Request (idempotency)",
+          "description": "شغّل هذا الطلب بعد Add Ride من دون تغيير rideIdempotencyKey. يجب أن يعيد API الرحلة نفسها ولا ينشئ رحلة ثانية.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{driverAuthToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"serviceKindId\": {{serviceKindId}},\n    \"serviceCatalogItemId\": {{serviceCatalogId}},\n    \"pickupLabel\": \"Home\",\n    \"pickupAddress\": \"Sanaa - Hadda\",\n    \"pickupLatitude\": 15.3694,\n    \"pickupLongitude\": 44.1910,\n    \"destinationLabel\": \"Office\",\n    \"destinationAddress\": \"Sanaa - Tahrir\",\n    \"destinationLatitude\": 15.3547,\n    \"destinationLongitude\": 44.2067,\n    \"customerPrice\": 1750,\n    \"idempotencyKey\": \"{{rideIdempotencyKey}}\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Start Safety Recording (explicit consent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"SafetyRecordingModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"consent\": true\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success) pm.collectionVariables.set('safetyRecordingId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Complete Safety Recording",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"durationMilliseconds\": 3000\n}"
+            },
+            "url": "{{baseUrl}}/api/safety/recordings/{{safetyRecordingId}}/complete"
+          }
+        },
+        {
+          "name": "Add Driver Offer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{driverAuthToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideOfferModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"driverId\": {{driverUserId}},\n    \"amount\": 1650,\n    \"validForSeconds\": 60,\n    \"note\": \"عرض تجريبي\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.success) pm.collectionVariables.set('rideOfferId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Accept Driver Offer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideOfferActionModel\",\n  \"operation\": \"accept\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"offerId\": {{rideOfferId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Customer Cannot Set Driver Status",
+          "description": "يستخدم رمز العميل الافتراضي. يجب أن يفشل الطلب لأن الحالة التشغيلية متاحة للسائق المسند فقط.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"update\",\n  \"data\": {\n    \"id\": {{rideId}},\n    \"status\": 4\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Driver En Route",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{driverAuthToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"update\",\n  \"data\": {\n    \"id\": {{rideId}},\n    \"status\": 4\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Start Ride",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{driverAuthToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"update\",\n  \"data\": {\n    \"id\": {{rideId}},\n    \"status\": 5\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Publish Customer Ride Location",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideLocationModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"latitude\": 15.3694,\n    \"longitude\": 44.1910,\n    \"bearing\": 90,\n    \"speed\": 4\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Complete Ride (before payment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{driverAuthToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"update\",\n  \"data\": {\n    \"id\": {{rideId}},\n    \"status\": 6\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Get Ride With Offers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"get\",\n  \"data\": { \"id\": {{rideId}} }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Get Customer Ride History",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideHistoryModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "01.6 - Administration",
+      "item": [
+        {
+          "name": "Admin Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"700000001\",\n  \"password\": \"Admin1234!\"\n}"
+            },
+            "url": "{{baseUrl}}/api/admin/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Admin login succeeds', () => pm.expect(body.success).to.eql(true));",
+                  "if (body.success && body.data?.accessToken) pm.collectionVariables.set('adminToken', body.data.accessToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin Execute Example",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"UserModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}"
+            },
+            "url": "{{baseUrl}}/api/admin/execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "05.5 - Saved Places",
+      "item": [
+        {
+          "name": "Add Saved Place",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"SavedPlaceModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"label\": \"المنزل\",\n    \"kind\": \"home\",\n    \"address\": \"صنعاء - حدة\",\n    \"latitude\": 15.3694,\n    \"longitude\": 44.1910\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Saved place created', () => pm.expect(body.success).to.eql(true));",
+                  "if (body.success && body.data?.id) pm.collectionVariables.set('savedPlaceId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Customer Saved Places",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"SavedPlaceModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Update Saved Place",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"SavedPlaceModel\",\n  \"operation\": \"update\",\n  \"data\": {\n    \"id\": {{savedPlaceId}},\n    \"label\": \"المنزل الجديد\",\n    \"kind\": \"home\",\n    \"address\": \"صنعاء - شارع حدة\",\n    \"latitude\": 15.3700,\n    \"longitude\": 44.1920\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Delete Saved Place",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"SavedPlaceModel\",\n  \"operation\": \"delete\",\n  \"data\": {\n    \"id\": {{savedPlaceId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 - Wallet",
+      "item": [
+        {
+          "name": "Credit Customer Wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"WalletModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"amount\": 5000,\n    \"type\": 0,\n    \"description\": \"رصيد تجريبي\",\n    \"externalReference\": \"POSTMAN-001\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Get Customer Wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"WalletModel\",\n  \"operation\": \"get\",\n  \"data\": {}\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 - Account Services",
+      "item": [
+        {
+          "name": "List Promotions",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"PromotionModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Submit Support Ticket",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"SupportTicketModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"category\": \"السائق\",\n    \"message\": \"بلاغ تجريبي من Postman\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "List Support Tickets",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"SupportTicketModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Submit Referral Code",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"ReferralModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"code\": \"DEMO2026\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "List Notifications",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"NotificationModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Change Current Password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"OldDemo123!\",\n  \"newPassword\": \"NewDemo123!\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/password/change"
+          }
+        },
+        {
+          "name": "Accept Offer (Flutter Contract)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideOfferActionModel\",\n  \"operation\": \"accept\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"offerId\": {{rideOfferId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Reject Offer (Flutter Contract)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideOfferActionModel\",\n  \"operation\": \"reject\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"offerId\": {{rideOfferId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 - Driver Realtime And Settlement",
+      "item": [
+        {
+          "name": "DriverModel / list",
+          "request": {
+            "method": "POST", "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"DriverModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}" }, "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "RideModel / list (driver)",
+          "request": {
+            "method": "POST", "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}" }, "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "RideModel / list assigned and available",
+          "request": {
+            "method": "POST", "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}" }, "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "RideModel / get",
+          "request": {
+            "method": "POST", "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"get\",\n  \"data\": { \"id\": \"{{rideId}}\" }\n}" }, "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "RideMessageModel / list",
+          "request": {
+            "method": "POST", "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"RideMessageModel\",\n  \"operation\": \"list\",\n  \"data\": { \"rideId\": \"{{rideId}}\" }\n}" }, "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "RideMessageModel / add",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"RideMessageModel\",\n  \"operation\": \"add\",\n  \"data\": { \"rideId\": \"{{rideId}}\", \"content\": \"رسالة تجريبية من السائق\", \"messageType\": \"Text\" }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "DriverCashPaymentModel / add",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"DriverCashPaymentModel\",\n  \"operation\": \"add\",\n  \"data\": { \"rideId\": \"{{rideId}}\", \"cashReceived\": 1000, \"currency\": \"YER\", \"idempotencyKey\": \"{{paymentIdempotencyKey}}\" }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "DriverCashPaymentModel / retry with same key",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"DriverCashPaymentModel\",\n  \"operation\": \"add\",\n  \"data\": { \"rideId\": \"{{rideId}}\", \"cashReceived\": 1000, \"currency\": \"YER\", \"idempotencyKey\": \"{{paymentIdempotencyKey}}\" }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "شغّل هذا الطلب بعد طلب التحصيل مباشرة من دون تغيير paymentIdempotencyKey. يجب أن يعيد API العملية المسجلة بدلاً من إنشاء عملية دفع ثانية."
+        }
+      ]
+    }
+  ]
+}
+
+
