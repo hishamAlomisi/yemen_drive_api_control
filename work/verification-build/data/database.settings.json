@@ -1,0 +1,10 @@
+{
+  "provider": "SqlServer",
+  "server": ".\\sql2008r2",
+  "database": "2027",
+  "username": "sa",
+  "password": "123",
+  "integratedSecurity": false,
+  "trustServerCertificate": true,
+  "encrypt": false
+}

@@ -1,0 +1,11 @@
+{
+  "provider": "SqlServer",
+  "server": ".\\sql2019",
+  "database": "YemenDrive_Test",
+  "username": "sa",
+  "password": "123",
+  "integratedSecurity": false,
+  "trustServerCertificate": true,
+  "encrypt": false,
+  "recreateSchema": true
+}

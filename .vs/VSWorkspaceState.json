@@ -1,0 +1,15 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\src",
+    "\\src\\YemenDrive.Api",
+    "\\src\\YemenDrive.Api\\artifacts",
+    "\\src\\YemenDrive.Api\\data",
+    "\\src\\YemenDrive.Api\\Properties",
+    "\\src\\YemenDrive.Api\\wwwroot",
+    "\\src\\YemenDrive.Services",
+    "\\src\\YemenDrive.Services\\Core",
+    "\\src\\YemenDrive.Services\\Reports"
+  ],
+  "PreviewInSolutionExplorer": false
+}

@@ -93,6 +93,8 @@ public sealed class Ride : Entity
     public double DestinationLongitude { get; set; }
     public decimal? ServerPrice { get; set; }
     public decimal? CustomerPrice { get; set; }
+    public decimal ServiceFee { get; set; }
+    public decimal? TotalAmount { get; set; }
     public decimal? DriverShare { get; set; }
     public decimal? PlatformShare { get; set; }
     public string? RoutePolyline { get; set; }
@@ -291,6 +293,7 @@ public sealed class PricingRule : Entity
     public decimal BaseFare { get; set; }
     public decimal PerKilometer { get; set; }
     public decimal PerMinute { get; set; }
+    public decimal ServiceFee { get; set; }
     public decimal DriverShareRate { get; set; }
     public bool IsActive { get; set; } = true;
 }
@@ -318,5 +321,6 @@ public sealed class ServiceKind : Entity
     public string NameAr { get; set; } = string.Empty;
     public string? ImageUrl { get; set; }
     public bool IsActive { get; set; } = true;
+    public bool IsDefault { get; set; }
     public int SortOrder { get; set; }
 }

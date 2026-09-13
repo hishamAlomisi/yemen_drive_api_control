@@ -91,6 +91,8 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<ServiceKind>().ToTable("ServiceKinds");
         modelBuilder.Entity<ServiceKind>().HasIndex(x => x.Code).IsUnique();
         modelBuilder.Entity<ServiceKind>().HasIndex(x => new { x.IsActive, x.SortOrder });
+        modelBuilder.Entity<ServiceKind>().HasIndex(x => x.IsDefault).IsUnique()
+            .HasFilter("[IsDefault] = 1 AND [IsActive] = 1");
         modelBuilder.Entity<ServiceKind>().Property(x => x.Code).HasMaxLength(80).IsRequired();
         modelBuilder.Entity<ServiceKind>().Property(x => x.NameAr).HasMaxLength(200).IsRequired();
         modelBuilder.Entity<ServiceKind>().Property(x => x.ImageUrl).HasMaxLength(500);
@@ -105,6 +107,9 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
                 "[ServerPrice] IS NULL OR [ServerPrice] >= 0");
             table.HasCheckConstraint("CK_Rides_CustomerPrice_NonNegative",
                 "[CustomerPrice] IS NULL OR [CustomerPrice] >= 0");
+            table.HasCheckConstraint("CK_Rides_ServiceFee_NonNegative", "[ServiceFee] >= 0");
+            table.HasCheckConstraint("CK_Rides_TotalAmount_NonNegative",
+                "[TotalAmount] IS NULL OR [TotalAmount] >= 0");
         });
         modelBuilder.Entity<Ride>().HasIndex(x => new { x.Status, x.ServiceKindId, x.ServiceCatalogItemId, x.CreatedAtUtc });
         modelBuilder.Entity<RideOffer>().HasIndex(x => new { x.RideId, x.DriverId, x.Status })

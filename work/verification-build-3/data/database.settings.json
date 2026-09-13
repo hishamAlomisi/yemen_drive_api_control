@@ -1,0 +1,10 @@
+{
+  "provider": "SqlServer",
+  "server": ".\\sql2008r2",
+  "database": "YemenDrive_Test",
+  "username": "sa",
+  "password": "123",
+  "integratedSecurity": false,
+  "trustServerCertificate": true,
+  "encrypt": false
+}

@@ -805,6 +805,20 @@
           ]
         },
         {
+          "name": "Seed Development Data (development only)",
+          "description": "يتطلب بيئة التطوير ورمز الإدارة. يضيف بيانات مترابطة دون حذف أو تعديل البيانات القائمة، ويمكن تشغيله أكثر من مرة بأمان.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/admin/development/seed"
+          }
+        },
+        {
           "name": "Admin Execute Example",
           "request": {
             "method": "POST",

@@ -183,6 +183,7 @@ public sealed class Ride(
                 x.Amount,
                 x.Status,
                 x.ExpiresAtUtc,
+                x.CreatedAtUtc,
                 x.Note
             }),
             payments

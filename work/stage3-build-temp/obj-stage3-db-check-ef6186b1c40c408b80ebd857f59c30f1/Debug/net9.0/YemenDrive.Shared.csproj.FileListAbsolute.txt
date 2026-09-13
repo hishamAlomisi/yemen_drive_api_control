@@ -1,0 +1,4 @@
+C:\Users\ThinkPad\Documents\Codex\2026-09-01\api-c-asp-x20-yemendrive-database\src\YemenDrive.Shared\obj\stage3-db-check\Debug\net9.0\YemenDrive.Shared.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\ThinkPad\Documents\Codex\2026-09-01\api-c-asp-x20-yemendrive-database\src\YemenDrive.Shared\obj\stage3-db-check\Debug\net9.0\YemenDrive.Shared.AssemblyInfoInputs.cache
+C:\Users\ThinkPad\Documents\Codex\2026-09-01\api-c-asp-x20-yemendrive-database\src\YemenDrive.Shared\obj\stage3-db-check\Debug\net9.0\YemenDrive.Shared.AssemblyInfo.cs
+C:\Users\ThinkPad\Documents\Codex\2026-09-01\api-c-asp-x20-yemendrive-database\src\YemenDrive.Shared\obj\stage3-db-check\Debug\net9.0\YemenDrive.Shared.csproj.CoreCompileInputs.cache

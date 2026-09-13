@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YemenDrive | إعداد قاعدة البيانات</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #62707e;
+      --surface: #fff;
+      --page: #f3f5f7;
+      --line: #d7dde3;
+      --primary: #096b5f;
+      --primary-hover: #07574e;
+      --accent: #d89216;
+      --danger: #a52a2a;
+      --success: #176b3a;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--ink);
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      font-size: 15px;
+    }
+
+    header {
+      background: #143238;
+      color: #fff;
+      border-bottom: 3px solid var(--accent);
+    }
+
+    .header-inner,
+    main {
+      width: min(920px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .header-inner {
+      min-height: 78px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand { font-size: 23px; font-weight: 700; }
+    .context { color: #c8d5d7; }
+    main { padding: 38px 0 56px; }
+    h1 { margin: 0 0 8px; font-size: 27px; letter-spacing: 0; }
+    .lead { margin: 0 0 30px; color: var(--muted); }
+
+    form {
+      overflow: hidden;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    fieldset {
+      margin: 0;
+      padding: 24px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    legend {
+      width: 100%;
+      padding: 0 0 18px;
+      font-size: 17px;
+      font-weight: 650;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .field { min-width: 0; }
+    .field.full { grid-column: 1 / -1; }
+
+    label {
+      display: block;
+      margin-bottom: 7px;
+      color: #34414d;
+      font-weight: 600;
+    }
+
+    input,
+    select {
+      width: 100%;
+      height: 43px;
+      padding: 0 12px;
+      border: 1px solid #aeb8c2;
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+    }
+
+    input:focus,
+    select:focus {
+      border-color: var(--primary);
+      outline: 3px solid rgba(9, 107, 95, .14);
+    }
+
+    input:disabled { background: #edf0f2; color: #8a949d; }
+
+    .check-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 22px;
+      align-items: center;
+    }
+
+    .check-row label {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0;
+      font-weight: 500;
+    }
+
+    .check-row input { width: 18px; height: 18px; accent-color: var(--primary); }
+
+    .actions {
+      min-height: 76px;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: #f9fafb;
+    }
+
+    .buttons { display: flex; gap: 10px; }
+
+    button {
+      min-height: 42px;
+      padding: 0 18px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    button:disabled { cursor: wait; opacity: .65; }
+    .secondary { border-color: #8d99a4; background: #fff; color: #26343f; }
+    .primary { background: var(--primary); color: #fff; }
+    .primary:hover { background: var(--primary-hover); }
+    #status { margin: 0; color: var(--muted); }
+    #status.success { color: var(--success); }
+    #status.error { color: var(--danger); }
+
+    @media (max-width: 650px) {
+      .header-inner { min-height: 70px; }
+      .context { display: none; }
+      main { padding-top: 28px; }
+      .grid { grid-template-columns: 1fr; }
+      .field.full { grid-column: auto; }
+      fieldset { padding: 20px 18px; }
+      .actions { align-items: stretch; flex-direction: column; padding: 16px 18px; }
+      .buttons { display: grid; grid-template-columns: 1fr 1fr; }
+      button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="brand">YemenDrive</div>
+      <div class="context">إعداد النظام</div>
+    </div>
+  </header>
+
+  <main>
+    <h1>اتصال قاعدة البيانات</h1>
+    <p class="lead">إعداد بيئة التشغيل الحالية</p>
+
+    <form id="database-form">
+      <fieldset>
+        <legend>قاعدة البيانات</legend>
+        <div class="grid">
+          <div class="field full">
+            <label for="provider">النظام</label>
+            <select id="provider"></select>
+          </div>
+          <div class="field">
+            <label for="server">اسم الخادم</label>
+            <input id="server" autocomplete="off" placeholder="localhost أو .\SQLEXPRESS" required>
+          </div>
+          <div class="field">
+            <label for="database">اسم القاعدة</label>
+            <input id="database" autocomplete="off" placeholder="YemenDrive" required>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>المصادقة</legend>
+        <div class="grid">
+          <div class="field">
+            <label for="username">اسم المستخدم</label>
+            <input id="username" autocomplete="username">
+          </div>
+          <div class="field">
+            <label for="password">كلمة المرور</label>
+            <input id="password" type="password" autocomplete="current-password">
+          </div>
+          <div class="field full check-row">
+            <label><input id="integratedSecurity" type="checkbox"> مصادقة Windows</label>
+            <label><input id="trustServerCertificate" type="checkbox" checked> الوثوق بشهادة الخادم</label>
+            <label><input id="encrypt" type="checkbox"> تشفير الاتصال</label>
+            <label><input id="recreateSchema" type="checkbox"> إعادة إنشاء المخطط التجريبي وحذف الجداول القديمة</label>
+          </div>
+        </div>
+      </fieldset>
+
+      <div class="actions">
+        <p id="status" role="status">لم يتم إعداد الاتصال بعد.</p>
+        <div class="buttons">
+          <button class="secondary" id="test-button" type="button">اختبار الاتصال</button>
+          <button class="primary" id="save-button" type="submit">حفظ وتجهيز القاعدة</button>
+        </div>
+      </div>
+    </form>
+  </main>
+
+  <script>
+    const form = document.querySelector('#database-form');
+    const statusElement = document.querySelector('#status');
+    const integratedSecurity = document.querySelector('#integratedSecurity');
+    const username = document.querySelector('#username');
+    const password = document.querySelector('#password');
+    const buttons = [...document.querySelectorAll('button')];
+
+    function syncAuthenticationFields() {
+      username.disabled = integratedSecurity.checked;
+      password.disabled = integratedSecurity.checked;
+    }
+
+    function readSettings() {
+      return {
+        provider: document.querySelector('#provider').value,
+        server: document.querySelector('#server').value.trim(),
+        database: document.querySelector('#database').value.trim(),
+        username: username.value.trim(),
+        password: password.value,
+        integratedSecurity: integratedSecurity.checked,
+        trustServerCertificate: document.querySelector('#trustServerCertificate').checked,
+        encrypt: document.querySelector('#encrypt').checked,
+        recreateSchema: document.querySelector('#recreateSchema').checked
+      };
+    }
+
+    async function send(endpoint, pendingMessage) {
+      statusElement.className = '';
+      statusElement.textContent = pendingMessage;
+      buttons.forEach(button => button.disabled = true);
+
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(readSettings())
+        });
+        const result = await response.json();
+        statusElement.className = result.success ? 'success' : 'error';
+        statusElement.textContent = result.message;
+      } catch {
+        statusElement.className = 'error';
+        statusElement.textContent = 'تعذر الوصول إلى خدمة الإعداد.';
+      } finally {
+        buttons.forEach(button => button.disabled = false);
+      }
+    }
+
+    async function loadSettings() {
+      try {
+        const response = await fetch('/api/setup/database');
+        const settings = await response.json();
+        const providerSelect = document.querySelector('#provider');
+        providerSelect.replaceChildren(...settings.providers.map(provider => {
+          const option = document.createElement('option');
+          option.value = provider.value;
+          option.textContent = provider.label;
+          return option;
+        }));
+        providerSelect.value = settings.provider;
+        document.querySelector('#server').value = settings.server;
+        document.querySelector('#database').value = settings.database;
+        username.value = settings.username;
+        integratedSecurity.checked = settings.integratedSecurity;
+        document.querySelector('#trustServerCertificate').checked = settings.trustServerCertificate;
+        document.querySelector('#encrypt').checked = settings.encrypt;
+        document.querySelector('#recreateSchema').checked = false;
+        statusElement.textContent = settings.configured ? 'يوجد اتصال محفوظ.' : 'لم يتم إعداد الاتصال بعد.';
+        syncAuthenticationFields();
+      } catch {
+        statusElement.className = 'error';
+        statusElement.textContent = 'تعذر قراءة الإعداد الحالي.';
+      }
+    }
+
+    integratedSecurity.addEventListener('change', syncAuthenticationFields);
+    document.querySelector('#test-button').addEventListener('click', () =>
+      send('/api/setup/database/test', 'جارٍ اختبار الاتصال...'));
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      send('/api/setup/database/save', 'جارٍ حفظ الاتصال وتجهيز القاعدة...');
+    });
+
+    loadSettings();
+  </script>
+</body>
+</html>

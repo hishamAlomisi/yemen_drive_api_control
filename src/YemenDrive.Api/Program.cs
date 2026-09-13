@@ -24,6 +24,7 @@ builder.Services.AddSingleton<DatabaseConfigurator>();
 builder.Services.AddSingleton<OtpChallengeStore>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
+builder.Services.AddScoped<DevelopmentDataSeeder>();
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.NumberHandling = JsonNumberHandling.AllowReadingFromString);
@@ -223,6 +224,20 @@ app.MapPost("/api/setup/database/create", async (
     DatabaseConfigurator configurator,
     CancellationToken cancellationToken) =>
     Results.Ok(await configurator.SaveAsync(settings, cancellationToken)));
+
+app.MapPost("/api/admin/development/seed", async (
+    IWebHostEnvironment environment,
+    DevelopmentDataSeeder seeder,
+    ICurrentUserContext currentUser,
+    YemenDriveDbContext db,
+    CancellationToken cancellationToken) =>
+{
+    if (!environment.IsDevelopment())
+        return Results.NotFound();
+    if (!await IsAdminAsync(currentUser.UserId, db, cancellationToken))
+        return Results.Ok(ApiResult.Fail("admin_authentication_required", "يلزم تسجيل الدخول بحساب الإدارة."));
+    return Results.Ok(ApiResult.Ok(await seeder.SeedAsync(cancellationToken), "تمت إضافة بيانات التطوير التجريبية."));
+});
 
 app.MapPost("/api/execute", async (
     ApiRequest request,
