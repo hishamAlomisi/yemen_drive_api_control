@@ -120,6 +120,28 @@ async function execute(model, operation, data = {}) {
   return result;
 }
 
+async function seedDevelopmentData() {
+  if (!window.confirm('سيتم إضافة بيانات تجريبية فقط دون حذف البيانات الحالية. هل تريد المتابعة؟')) return;
+  const button = $('#development-seed-button');
+  button.disabled = true;
+  const token = localStorage.getItem(ADMIN_TOKEN_KEY);
+  try {
+    const response = await fetch('/api/admin/development/seed', {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+    if (response.status === 404) throw new Error('هذه العملية متاحة في بيئة التطوير فقط.');
+    const result = await response.json().catch(() => ({ success: false, message: 'استجابة غير صالحة من الخادم.' }));
+    if (!result.success) throw new Error(result.message || 'تعذر تعبئة بيانات التطوير.');
+    toast(result.message || 'تمت إضافة بيانات التطوير التجريبية.');
+    await loadView('overview', true);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function showAdminLogin(message = '') {
   localStorage.removeItem(ADMIN_TOKEN_KEY);
   $('.admin-login').classList.remove('hidden');
@@ -221,8 +243,19 @@ async function loadCatalog() {
   const [catalog, kinds] = await Promise.all([execute('ServiceCatalogModel','list',{}), execute('ServiceKindModel','list',{})]);
   state.catalog = catalog.data; state.kinds = kinds.data;
   toggleEmpty('#catalog-body','#catalog-empty',catalog.data.map(item => `<tr><td>${item.imageUrl ? `<img class="table-icon" src="${escapeHtml(item.imageUrl)}" alt="">` : '—'}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.nameAr)}</td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${number(item.basePrice)}</td><td>${number(item.arrivalMinutes)} د</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td></tr>`));
-  toggleEmpty('#kinds-body','#kinds-empty',kinds.data.map(item => `<tr><td>${item.imageUrl ? `<img class="table-icon" src="${escapeHtml(item.imageUrl)}" alt="">` : '—'}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.nameAr)}</td><td>${number(item.sortOrder)}</td><td>${badge(item.isActive ? 'نشط' : 'متوقف', item.isActive ? 'success' : 'danger')}</td></tr>`));
+  toggleEmpty('#kinds-body','#kinds-empty',kinds.data.map(item => `<tr><td>${item.imageUrl ? `<img class="table-icon" src="${escapeHtml(item.imageUrl)}" alt="">` : '—'}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.nameAr)}</td><td>${number(item.sortOrder)}</td><td>${item.isDefault ? badge('افتراضي','success') : (item.isActive ? `<button class="button small" onclick="setDefaultServiceKind(${Number(item.id)})">تعيين افتراضي</button>` : badge('متوقف','danger'))}</td></tr>`));
 }
+
+window.setDefaultServiceKind = async id => {
+  const item = state.kinds.find(kind => Number(kind.id) === Number(id));
+  if (!item || !item.isActive) return toast('لا يمكن تعيين نوع خدمة متوقف كافتراضي.', true);
+  await execute('ServiceKindModel', 'update', {
+    id: item.id, code: item.code, nameAr: item.nameAr, imageUrl: item.imageUrl,
+    isActive: true, isDefault: true, sortOrder: item.sortOrder || 0
+  });
+  toast('تم تعيين النوع الافتراضي للعميل.');
+  await loadCatalog();
+};
 
 async function loadPricing() {
   const result = await execute('PricingRuleModel','list',{}); state.pricing = result.data;
@@ -424,6 +457,7 @@ function bindEvents() {
   $('#db-integrated').addEventListener('change', syncDatabaseAuth);
   $('#db-test').addEventListener('click', () => sendDatabase('/api/setup/database/test'));
   $('#database-form').addEventListener('submit', event => { event.preventDefault(); sendDatabase('/api/setup/database/save'); });
+  $('#development-seed-button').addEventListener('click', seedDevelopmentData);
   $('#admin-login-form').addEventListener('submit', async event => {
     event.preventDefault();
     const submit = event.currentTarget.querySelector('button[type="submit"]');

@@ -57,12 +57,19 @@ public sealed class RideReport(
                 serviceCode = x.ServiceCatalogItem.Code, serviceNameAr = x.ServiceCatalogItem.NameAr,
                 x.PickupAddress, x.DestinationAddress, x.CustomerPrice, x.CreatedAtUtc,
                 driverOfferAmount = !isAdmin && driverOfferUserId.HasValue
-                    ? x.Offers.Where(offer => offer.DriverId == driverOfferUserId.Value && offer.Status == OfferStatus.Pending)
+                    ? x.Offers.Where(offer => offer.DriverId == driverOfferUserId.Value)
+                        .OrderByDescending(offer => offer.CreatedAtUtc)
                         .Select(offer => (decimal?)offer.Amount).FirstOrDefault()
                     : null,
                 driverOfferExpiresAtUtc = !isAdmin && driverOfferUserId.HasValue
-                    ? x.Offers.Where(offer => offer.DriverId == driverOfferUserId.Value && offer.Status == OfferStatus.Pending)
+                    ? x.Offers.Where(offer => offer.DriverId == driverOfferUserId.Value)
+                        .OrderByDescending(offer => offer.CreatedAtUtc)
                         .Select(offer => (DateTime?)offer.ExpiresAtUtc).FirstOrDefault()
+                    : null,
+                driverOfferStatus = !isAdmin && driverOfferUserId.HasValue
+                    ? x.Offers.Where(offer => offer.DriverId == driverOfferUserId.Value)
+                        .OrderByDescending(offer => offer.CreatedAtUtc)
+                        .Select(offer => (OfferStatus?)offer.Status).FirstOrDefault()
                     : null
             })
             .ToListAsync(cancellationToken);

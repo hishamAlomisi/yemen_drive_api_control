@@ -613,6 +613,10 @@ namespace YemenDrive.Database.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<decimal>("ServiceFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<int>("ServiceCatalogItemId")
                         .HasColumnType("int");
 
@@ -743,6 +747,10 @@ namespace YemenDrive.Database.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<decimal>("ServiceFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<string>("DestinationAddress")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -814,6 +822,10 @@ namespace YemenDrive.Database.Migrations
                     b.Property<DateTime?>("UpdatedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<decimal?>("TotalAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("DriverId");
@@ -833,6 +845,10 @@ namespace YemenDrive.Database.Migrations
                             t.HasCheckConstraint("CK_Rides_CustomerPrice_NonNegative", "[CustomerPrice] IS NULL OR [CustomerPrice] >= 0");
 
                             t.HasCheckConstraint("CK_Rides_ServerPrice_NonNegative", "[ServerPrice] IS NULL OR [ServerPrice] >= 0");
+
+                            t.HasCheckConstraint("CK_Rides_ServiceFee_NonNegative", "[ServiceFee] >= 0");
+
+                            t.HasCheckConstraint("CK_Rides_TotalAmount_NonNegative", "[TotalAmount] IS NULL OR [TotalAmount] >= 0");
                         });
                 });
 
@@ -1016,6 +1032,9 @@ namespace YemenDrive.Database.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
 
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("bit");
+
                     b.Property<string>("NameAr")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -1033,6 +1052,10 @@ namespace YemenDrive.Database.Migrations
                         .IsUnique();
 
                     b.HasIndex("IsActive", "SortOrder");
+
+                    b.HasIndex("IsDefault")
+                        .IsUnique()
+                        .HasFilter("[IsDefault] = 1 AND [IsActive] = 1");
 
                     b.ToTable("ServiceKinds", (string)null);
                 });

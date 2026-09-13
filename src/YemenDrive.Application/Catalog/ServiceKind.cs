@@ -28,10 +28,12 @@ public sealed class ServiceKind(
     {
         var entity = await FindAsync(model.Id, cancellationToken);
         ValidateRequired(model);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         if (model.IsDefault && model.IsActive) await ClearDefaultAsync(entity.Id, cancellationToken);
         Apply(entity, model);
         entity.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return ToResult(entity);
     }
 
@@ -79,9 +81,10 @@ public sealed class ServiceKind(
 
     private async Task ClearDefaultAsync(int? exceptId, CancellationToken cancellationToken)
     {
-        var defaults = await dbContext.ServiceKinds
+        await dbContext.ServiceKinds
             .Where(x => x.IsDefault && x.IsActive && x.Id != exceptId)
-            .ToListAsync(cancellationToken);
-        foreach (var item in defaults) item.IsDefault = false;
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(x => x.IsDefault, false),
+                cancellationToken);
     }
 }
