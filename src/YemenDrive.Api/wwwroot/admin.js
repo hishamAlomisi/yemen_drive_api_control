@@ -71,7 +71,7 @@ const formConfigs = {
   },
   serviceKind: {
     title: 'إضافة نوع خدمة', subtitle: 'تصنيف رئيسي للخدمات', model: 'ServiceKindModel', operation: 'add', refresh: 'catalog',
-    fields: [['code','الرمز','text',true],['nameAr','الاسم العربي','text',true],['imageFile','اختيار صورة أو أيقونة','file'],['imageUrl','رابط الصورة (اختياري)','url'],['sortOrder','الترتيب','number',false,'0'],['isActive','نشط','checkbox',false,true]]
+    fields: [['code','الرمز','text',true],['nameAr','الاسم العربي','text',true],['imageFile','اختيار صورة أو أيقونة','file'],['imageUrl','رابط الصورة (اختياري)','url'],['sortOrder','الترتيب','number',false,'0'],['isDefault','النوع الافتراضي للعميل','checkbox'],['isActive','نشط','checkbox',false,true]]
   },
   serviceCatalog: {
     title: 'إضافة خدمة', subtitle: 'خدمة تظهر للعملاء عند طلب الرحلة', model: 'ServiceCatalogModel', operation: 'add', refresh: 'catalog',
@@ -83,7 +83,7 @@ const formConfigs = {
   },
   pricingRule: {
     title: 'إضافة قاعدة تسعير', subtitle: 'تحديد معادلة السعر ونسبة السائق', model: 'PricingRuleModel', operation: 'add', refresh: 'pricing',
-    fields: [['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],['baseFare','السعر الأساسي','number',true,'500','0.01'],['perKilometer','لكل كيلومتر','number',true,'100','0.01'],['perMinute','لكل دقيقة','number',true,'20','0.01'],['driverShareRate','نسبة السائق','number',true,'0.80','0.01'],['isActive','نشطة','checkbox',false,true]]
+    fields: [['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],['baseFare','السعر الأساسي','number',true,'500','0.01'],['perKilometer','لكل كيلومتر','number',true,'100','0.01'],['perMinute','لكل دقيقة','number',true,'20','0.01'],['serviceFee','رسوم الخدمة الثابتة','number',true,'0','0.01'],['driverShareRate','نسبة السائق','number',true,'0.80','0.01'],['isActive','نشطة','checkbox',false,true]]
   },
   quote: {
     title: 'تجربة التسعير', subtitle: 'احتساب سعر رحلة دون حفظها', model: 'PricingModel', operation: 'report',
@@ -226,7 +226,7 @@ async function loadCatalog() {
 
 async function loadPricing() {
   const result = await execute('PricingRuleModel','list',{}); state.pricing = result.data;
-  toggleEmpty('#pricing-body','#pricing-empty',result.data.map(item => `<tr><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${number(item.baseFare)}</td><td>${number(item.perKilometer)}</td><td>${number(item.perMinute)}</td><td>${number(item.driverShareRate * 100)}%</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td></tr>`));
+  toggleEmpty('#pricing-body','#pricing-empty',result.data.map(item => `<tr><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${number(item.baseFare)}</td><td>${number(item.perKilometer)}</td><td>${number(item.perMinute)}</td><td>${number(item.serviceFee)}</td><td>${number(item.driverShareRate * 100)}%</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td></tr>`));
 }
 
 async function loadWallet() {

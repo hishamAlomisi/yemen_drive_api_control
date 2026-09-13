@@ -6,4 +6,5 @@ public sealed record ServiceKindModel(
     string? NameAr = null,
     string? ImageUrl = null,
     bool IsActive = true,
+    bool IsDefault = false,
     int SortOrder = 0);

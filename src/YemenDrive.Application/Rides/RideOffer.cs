@@ -152,6 +152,12 @@ public sealed class RideOffer(
         ride.DriverId = entity.DriverId;
         ride.ServerPrice = entity.Amount;
         ride.CustomerPrice = entity.Amount;
+        var pricingRule = await dbContext.PricingRules.AsNoTracking().SingleOrDefaultAsync(
+            x => x.IsActive && x.ServiceKindId == ride.ServiceKindId &&
+                 x.ServiceCatalogItemId == ride.ServiceCatalogItemId,
+            cancellationToken);
+        ride.ServiceFee = pricingRule?.ServiceFee ?? 0m;
+        ride.TotalAmount = ride.CustomerPrice + ride.ServiceFee;
         ride.Status = RideStatus.DriverAssigned;
         ride.UpdatedAtUtc = DateTime.UtcNow;
         entity.UpdatedAtUtc = DateTime.UtcNow;
@@ -176,7 +182,7 @@ public sealed class RideOffer(
             offer = ToResult(entity),
             rideId = ride.Id,
             driverId = ride.DriverId,
-            agreedPrice = ride.CustomerPrice,
+            agreedPrice = ride.CustomerPrice, serviceFee = ride.ServiceFee, totalAmount = ride.TotalAmount,
             rideStatus = ride.Status
         };
     }

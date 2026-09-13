@@ -27,6 +27,8 @@ public sealed class Pricing(
         return new
         {
             amount = decimal.Round(amount, 2),
+            serviceFee = decimal.Round(rule.ServiceFee, 2),
+            total = decimal.Round(amount + rule.ServiceFee, 2),
             driverShare,
             platformShare = decimal.Round(amount - driverShare, 2),
             currency = "YER"

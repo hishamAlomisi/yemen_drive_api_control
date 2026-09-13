@@ -12,6 +12,6 @@ public sealed class ServiceKindReport(
     protected override async Task<object?> ListAsync(ServiceKindModel model, CancellationToken cancellationToken) =>
         await dbContext.ServiceKinds.AsNoTracking()
             .OrderBy(x => x.SortOrder).ThenBy(x => x.NameAr)
-            .Select(x => new { x.Id, x.Code, x.NameAr, x.ImageUrl, x.IsActive, x.SortOrder })
+            .Select(x => new { x.Id, x.Code, x.NameAr, x.ImageUrl, x.IsActive, x.IsDefault, x.SortOrder })
             .ToListAsync(cancellationToken);
 }

@@ -17,6 +17,7 @@ public sealed class ServiceKind(
         if (await dbContext.ServiceKinds.AnyAsync(x => x.Code == model.Code, cancellationToken))
             throw new ServiceException("kind_exists", "رمز نوع الخدمة موجود مسبقاً.");
         var entity = new ServiceKindEntity();
+        if (model.IsDefault && model.IsActive) await ClearDefaultAsync(null, cancellationToken);
         Apply(entity, model);
         dbContext.ServiceKinds.Add(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -27,6 +28,7 @@ public sealed class ServiceKind(
     {
         var entity = await FindAsync(model.Id, cancellationToken);
         ValidateRequired(model);
+        if (model.IsDefault && model.IsActive) await ClearDefaultAsync(entity.Id, cancellationToken);
         Apply(entity, model);
         entity.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -65,12 +67,21 @@ public sealed class ServiceKind(
         x.NameAr = model.NameAr!.Trim();
         x.ImageUrl = model.ImageUrl;
         x.IsActive = model.IsActive;
+        x.IsDefault = model.IsDefault && model.IsActive;
         x.SortOrder = model.SortOrder;
     }
 
     private static object ToResult(ServiceKindEntity x) => new
     {
-        x.Id, x.Code, x.NameAr, x.ImageUrl, x.IsActive,
+        x.Id, x.Code, x.NameAr, x.ImageUrl, x.IsActive, x.IsDefault,
         x.SortOrder, x.CreatedAtUtc, x.UpdatedAtUtc
     };
+
+    private async Task ClearDefaultAsync(int? exceptId, CancellationToken cancellationToken)
+    {
+        var defaults = await dbContext.ServiceKinds
+            .Where(x => x.IsDefault && x.IsActive && x.Id != exceptId)
+            .ToListAsync(cancellationToken);
+        foreach (var item in defaults) item.IsDefault = false;
+    }
 }

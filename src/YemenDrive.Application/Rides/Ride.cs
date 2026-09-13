@@ -186,6 +186,8 @@ public sealed class Ride(
                 x.CreatedAtUtc,
                 x.Note
             }),
+            entity.ServiceFee,
+            entity.TotalAmount,
             payments
         };
     }
