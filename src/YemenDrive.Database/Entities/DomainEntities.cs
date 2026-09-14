@@ -6,6 +6,19 @@ public enum OfferStatus { Pending, Accepted, Rejected, Expired }
 public enum WalletTransactionType { Credit, Debit, Hold, Release, Refund, Commission }
 public enum NotificationType { RideOffer, RideStatus, Payment, Safety, System }
 public enum LedgerAccountType { Asset, Liability, Equity, Revenue, Expense }
+public enum FinancialPartyType { System, User, Wallet, ExternalProvider, CashBox, Bank, Other }
+public enum LedgerAccountPurpose
+{
+    General, CustomerWallet, DriverCurrentAccount, ServiceFee,
+    ServiceCollection, DriverCommission, ExternalWallet, CashCollection
+}
+public enum JournalEntryType
+{
+    OpeningBalance, RideCashCollection, RideWalletPayment, WalletTopUp,
+    RideCancellation, DriverSettlementCollection, ManualAdjustment, Reversal
+}
+public enum JournalEntryStatus { Draft, Posted }
+public enum CashCollectionApprovalStatus { Pending, Approved, Rejected, InsufficientBalance }
 public enum PaymentStatus { Pending, Authorized, Paid, Failed, Refunded, Cancelled }
 
 public abstract class Entity
@@ -94,7 +107,9 @@ public sealed class Ride : Entity
     public decimal? ServerPrice { get; set; }
     public decimal? CustomerPrice { get; set; }
     public decimal ServiceFee { get; set; }
+    public decimal CancellationFee { get; set; }
     public decimal? TotalAmount { get; set; }
+    public decimal DriverCommissionAmount { get; set; }
     public decimal? DriverShare { get; set; }
     public decimal? PlatformShare { get; set; }
     public string? RoutePolyline { get; set; }
@@ -172,6 +187,21 @@ public sealed class PaymentTransaction : Entity
     public string? IdempotencyKey { get; set; }
 }
 
+/// <summary>Non-financial approval gate for a cash shortfall funded from the customer's wallet.</summary>
+public sealed class CashCollectionApproval : Entity
+{
+    public int RideId { get; set; }
+    public int DriverId { get; set; }
+    public int CustomerId { get; set; }
+    public decimal CashReceived { get; set; }
+    public decimal WalletDebitAmount { get; set; }
+    public string Currency { get; set; } = "YER";
+    public CashCollectionApprovalStatus Status { get; set; } = CashCollectionApprovalStatus.Pending;
+    public string? IdempotencyKey { get; set; }
+    public DateTime? DecidedAtUtc { get; set; }
+    public string? DecisionNote { get; set; }
+}
+
 public sealed class PaymentCardToken : Entity
 {
     public int UserId { get; set; }
@@ -222,16 +252,54 @@ public sealed class LedgerAccount : Entity
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public LedgerAccountType Type { get; set; }
+    public LedgerAccountPurpose Purpose { get; set; } = LedgerAccountPurpose.General;
     public string Currency { get; set; } = "YER";
     public bool IsActive { get; set; } = true;
+    public bool IsSystem { get; set; }
+    public bool IsPosting { get; set; } = true;
+    public int? ParentLedgerAccountId { get; set; }
+    public LedgerAccount? ParentLedgerAccount { get; set; }
+    public ICollection<LedgerAccount> ChildLedgerAccounts { get; set; } = new List<LedgerAccount>();
+    public int? FinancialPartyId { get; set; }
+    public FinancialParty? FinancialParty { get; set; }
+}
+
+/// <summary>
+/// A neutral financial owner. EntityId is deliberately generic so an account
+/// may belong to a user, wallet, bank, cash box, provider, or future entity
+/// without duplicating account tables for each owner type.
+/// </summary>
+public sealed class FinancialParty : Entity
+{
+    public string Code { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public FinancialPartyType Type { get; set; }
+    public int? EntityId { get; set; }
+    public bool IsActive { get; set; } = true;
+    public ICollection<LedgerAccount> LedgerAccounts { get; set; } = new List<LedgerAccount>();
 }
 
 public sealed class JournalEntry : Entity
 {
+    public string EntryNumber { get; set; } = string.Empty;
     public string Reference { get; set; } = string.Empty;
+    public JournalEntryType Type { get; set; }
+    public JournalEntryStatus Status { get; set; } = JournalEntryStatus.Draft;
     public string Description { get; set; } = string.Empty;
+    public string Currency { get; set; } = "YER";
+    public DateTime OccurredAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime PostedAtUtc { get; set; } = DateTime.UtcNow;
     public bool IsPosted { get; set; }
+    public decimal TotalDebit { get; set; }
+    public decimal TotalCredit { get; set; }
+    public string? SourceType { get; set; }
+    public string? SourceId { get; set; }
+    public string? IdempotencyKey { get; set; }
+    public int? ReversesJournalEntryId { get; set; }
+    public JournalEntry? ReversesJournalEntry { get; set; }
+    public ICollection<JournalEntry> ReversalEntries { get; set; } = new List<JournalEntry>();
+    public int? CreatedByUserId { get; set; }
+    public int? PostedByUserId { get; set; }
     public ICollection<JournalLine> Lines { get; set; } = new List<JournalLine>();
 }
 
@@ -243,6 +311,11 @@ public sealed class JournalLine : Entity
     public LedgerAccount LedgerAccount { get; set; } = null!;
     public decimal Debit { get; set; }
     public decimal Credit { get; set; }
+    public string Currency { get; set; } = "YER";
+    public string Description { get; set; } = string.Empty;
+    public int LineNumber { get; set; }
+    public int? FinancialPartyId { get; set; }
+    public FinancialParty? FinancialParty { get; set; }
     public int? UserId { get; set; }
     public int? RideId { get; set; }
 }
@@ -258,6 +331,23 @@ public sealed class DriverSettlement : Entity
     public decimal NetPayable { get; set; }
     public PaymentStatus Status { get; set; } = PaymentStatus.Pending;
     public string? PaymentReference { get; set; }
+}
+
+/// <summary>
+/// An immutable confirmation that the platform has collected all or part of a
+/// cash-debt settlement from a driver. The originating ride settlement is
+/// intentionally never edited or deleted.
+/// </summary>
+public sealed class DriverSettlementPayment : Entity
+{
+    public int DriverSettlementId { get; set; }
+    public int DriverId { get; set; }
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = "YER";
+    public string Method { get; set; } = "CashToPlatform";
+    public string Reference { get; set; } = string.Empty;
+    public string? Note { get; set; }
+    public int SettledByUserId { get; set; }
 }
 
 public sealed class CommunicationMessage : Entity
@@ -294,6 +384,9 @@ public sealed class PricingRule : Entity
     public decimal PerKilometer { get; set; }
     public decimal PerMinute { get; set; }
     public decimal ServiceFee { get; set; }
+    public decimal DriverCommissionRate { get; set; }
+    public decimal DriverCommissionFixed { get; set; }
+    public decimal CancellationFee { get; set; }
     public decimal DriverShareRate { get; set; }
     public bool IsActive { get; set; } = true;
 }

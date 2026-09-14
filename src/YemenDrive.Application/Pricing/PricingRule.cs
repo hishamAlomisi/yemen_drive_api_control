@@ -61,6 +61,10 @@ public sealed class PricingRule(
             throw new ServiceException("invalid_share_rate", "نسبة السائق يجب أن تكون بين 0 و1.");
         if (model.ServiceFee < 0)
             throw new ServiceException("invalid_service_fee", "رسوم الخدمة لا يمكن أن تكون سالبة.");
+        if (model.DriverCommissionRate is < 0 or > 1)
+            throw new ServiceException("invalid_driver_commission_rate", "نسبة عمولة السائق يجب أن تكون بين 0 و1.");
+        if (model.DriverCommissionFixed < 0 || model.CancellationFee < 0)
+            throw new ServiceException("invalid_financial_fee", "الرسوم الثابتة لا يمكن أن تكون سالبة.");
     }
 
     private static void Apply(PricingRuleEntity x, PricingRuleModel model)
@@ -71,6 +75,9 @@ public sealed class PricingRule(
         x.PerKilometer = model.PerKilometer;
         x.PerMinute = model.PerMinute;
         x.ServiceFee = model.ServiceFee;
+        x.DriverCommissionRate = model.DriverCommissionRate;
+        x.DriverCommissionFixed = model.DriverCommissionFixed;
+        x.CancellationFee = model.CancellationFee;
         x.DriverShareRate = model.DriverShareRate;
         x.IsActive = model.IsActive;
     }
@@ -78,7 +85,8 @@ public sealed class PricingRule(
     private static object ToResult(PricingRuleEntity x) => new
     {
         x.Id, x.ServiceKindId, x.ServiceCatalogItemId, x.BaseFare,
-        x.PerKilometer, x.PerMinute, x.ServiceFee, x.DriverShareRate, x.IsActive,
+        x.PerKilometer, x.PerMinute, x.ServiceFee, x.DriverCommissionRate,
+        x.DriverCommissionFixed, x.CancellationFee, x.DriverShareRate, x.IsActive,
         x.CreatedAtUtc, x.UpdatedAtUtc
     };
 

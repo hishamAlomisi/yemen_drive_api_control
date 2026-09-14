@@ -455,7 +455,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"PricingRuleModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"serviceKindId\": {{serviceKindId}},\n    \"serviceCatalogItemId\": {{serviceCatalogId}},\n    \n    \"baseFare\": 500,\n    \"perKilometer\": 100,\n    \"perMinute\": 20,\n    \"driverShareRate\": 0.80,\n    \"isActive\": true\n  }\n}"
+              "raw": "{\n  \"model\": \"PricingRuleModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"serviceKindId\": {{serviceKindId}},\n    \"serviceCatalogItemId\": {{serviceCatalogId}},\n    \"baseFare\": 500,\n    \"perKilometer\": 100,\n    \"perMinute\": 20,\n    \"serviceFee\": 50,\n    \"driverCommissionRate\": 0.10,\n    \"driverCommissionFixed\": 0,\n    \"cancellationFee\": 25,\n    \"isActive\": true\n  }\n}"
             },
             "url": "{{baseUrl}}/api/execute"
           },
@@ -1130,7 +1130,137 @@
             "body": { "mode": "raw", "raw": "{\n  \"model\": \"DriverCashPaymentModel\",\n  \"operation\": \"add\",\n  \"data\": { \"rideId\": \"{{rideId}}\", \"cashReceived\": 1000, \"currency\": \"YER\", \"idempotencyKey\": \"{{paymentIdempotencyKey}}\" }\n}" },
             "url": "{{baseUrl}}/api/execute"
           },
-          "description": "شغّل هذا الطلب بعد طلب التحصيل مباشرة من دون تغيير paymentIdempotencyKey. يجب أن يعيد API العملية المسجلة بدلاً من إنشاء عملية دفع ثانية."
+          "description": "شغّل هذا الطلب بعد طلب التحصيل مباشرة من دون تغيير paymentIdempotencyKey. يجب أن يعيد API العملية المسجلة بدلاً من إنشاء عملية دفع ثانية. إذا كان المبلغ النقدي أقل من الإجمالي مع رصيد محفظة كافٍ، يعيد الطلب الأول requiresCustomerApproval ومعرّف approvalId بدلاً من خصم المحفظة؛ انتقل لقسم الموافقة ثم أعد التحصيل بالمبلغ نفسه بعد القبول."
+        }
+      ]
+    },
+    {
+      "name": "09 - Financial Payment And Refund",
+      "item": [
+        {
+          "name": "PaymentModel / pay from YemenDrive wallet",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"PaymentModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"rideId\": \"{{rideId}}\",\n    \"amount\": 1000,\n    \"currency\": \"YER\",\n    \"provider\": \"YemenDriveWallet\",\n    \"status\": 2,\n    \"idempotencyKey\": \"{{paymentIdempotencyKey}}\"\n  }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "استبدل amount بإجمالي الرحلة المثبت الظاهر من RideModel / get. يشترط أن تكون الرحلة مكتملة، وأن يكون رصيد العميل كافياً."
+        },
+        {
+          "name": "PaymentModel / retry same wallet payment",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"PaymentModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"rideId\": \"{{rideId}}\",\n    \"amount\": 1000,\n    \"currency\": \"YER\",\n    \"provider\": \"YemenDriveWallet\",\n    \"status\": 2,\n    \"idempotencyKey\": \"{{paymentIdempotencyKey}}\"\n  }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "أعد الإرسال بالقيم نفسها. يجب أن يعيد الخادم العملية السابقة مع alreadyProcessed دون خصم ثانٍ."
+        },
+        {
+          "name": "RideModel / cancel paid wallet ride and refund",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"cancel\",\n  \"data\": { \"id\": \"{{rideId}}\" }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "لرحلة مكتملة ومدفوعة من محفظة يمن درايف فقط: يعيد المتبقي للعميل بعد رسم الإلغاء، ويسجل قيوداً عكسية دون تعديل الدفعة الأصلية."
+        }
+      ]
+    },
+    {
+      "name": "10 - Driver Debt Collection",
+      "item": [
+        {
+          "name": "DriverSettlementPaymentModel / list outstanding debts",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"DriverSettlementPaymentModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "يتطلب رمز مدير. يعرض مديونيات عمولات الرحلات النقدية مع مبلغ التحصيل والمتبقي، ولا يغير أي سجل مالي. انسخ id لسجل المديونية المطلوب تحصيله إلى الطلب التالي."
+        },
+        {
+          "name": "DriverSettlementPaymentModel / collect debt",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"DriverSettlementPaymentModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"driverSettlementId\": 1,\n    \"amount\": 100,\n    \"currency\": \"YER\",\n    \"method\": \"CashToPlatform\",\n    \"reference\": \"replace-with-unique-collection-reference\",\n    \"note\": \"تحصيل تجريبي\"\n  }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "استبدل المعرف والمبلغ والمرجع بقيم فعلية. ينشئ قيد تحصيل مستقل داخل معاملة، ويرفض المرجع المكرر أو المبلغ الأكبر من المتبقي. لا يعدل الدفعة أو مديونية الرحلة الأصلية."
+        }
+      ]
+    },
+    {
+      "name": "11 - Cash Shortfall Approval",
+      "item": [
+        {
+          "name": "CashCollectionApprovalModel / get",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"CashCollectionApprovalModel\",\n  \"operation\": \"get\",\n  \"data\": { \"id\": \"{{cashApprovalId}}\" }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "استخدم رمز العميل أو السائق لقراءة قرار تغطية العجز النقدي. لا ينفذ هذا الطلب أي خصم أو تحصيل."
+        },
+        {
+          "name": "CashCollectionApprovalModel / accept",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"CashCollectionApprovalModel\",\n  \"operation\": \"accept\",\n  \"data\": { \"id\": \"{{cashApprovalId}}\" }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "يتطلب رمز العميل صاحب الرحلة. يوافق على خصم فرق العجز من المحفظة بعد التحقق من الرصيد. لا يخصم وحده؛ يعيد السائق إرسال التحصيل بالمبلغ نفسه لإتمام العملية في نقطة مالية واحدة."
+        },
+        {
+          "name": "CashCollectionApprovalModel / reject",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"CashCollectionApprovalModel\",\n  \"operation\": \"reject\",\n  \"data\": { \"id\": \"{{cashApprovalId}}\", \"note\": \"رفض تجريبي\" }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "يتطلب رمز العميل صاحب الرحلة. يرفض الطلب بلا خصم وبلا إنشاء دفعة، ويصل تنبيه بالنتيجة إلى السائق."
+        }
+      ]
+    },
+    {
+      "name": "12 - General Ledger",
+      "item": [
+        {
+          "name": "AccountingSetupModel / initialize standard accounts",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"AccountingSetupModel\",\n  \"operation\": \"add\",\n  \"data\": {}\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "يتطلب مديراً. ينشئ الحسابات النظامية المفقودة فقط، مثل رسوم الخدمة وتحصيل الخدمة وعمولات السائقين؛ لا يغير حساباً موجوداً ولا ينشئ قيداً مالياً."
+        },
+        {
+          "name": "LedgerAccountModel / list chart of accounts",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"LedgerAccountModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "يعرض دليل الحسابات المتاح لكشف الحساب، بما فيه نوع الحساب والغرض والعملة وحالة قبول القيود."
+        },
+        {
+          "name": "AccountStatementModel / all accounts for a month",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"AccountStatementModel\",\n  \"operation\": \"report\",\n  \"data\": {\n    \"year\": 2026,\n    \"month\": 9\n  }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "كشف قراءة فقط للقيود المنشورة. احذف year وmonth لعرض كل الفترات، أو أرسل ledgerAccountId وentryType أو dateFromUtc/dateToUtc للتصفية."
         }
       ]
     }

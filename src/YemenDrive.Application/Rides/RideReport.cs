@@ -32,12 +32,19 @@ public sealed class RideReport(
             {
                 // A driver can see rides matching their assigned service while
                 // they are still open for offers, in addition to their rides.
+                // An assigned/en-route/in-progress ride makes the driver busy;
+                // it must not be possible to accept a second customer at once.
                 query = query.Where(x =>
                     x.DriverId == userId ||
                     (x.DriverId == null &&
                      (x.Status == RideStatus.Searching || x.Status == RideStatus.Negotiating) &&
                      x.ServiceKindId == driverProfile.ServiceKindId &&
-                     x.ServiceCatalogItemId == driverProfile.ServiceCatalogItemId));
+                     x.ServiceCatalogItemId == driverProfile.ServiceCatalogItemId &&
+                     !dbContext.Rides.Any(activeRide =>
+                         activeRide.DriverId == userId &&
+                         (activeRide.Status == RideStatus.DriverAssigned ||
+                          activeRide.Status == RideStatus.DriverEnRoute ||
+                          activeRide.Status == RideStatus.InProgress))));
             }
         }
         if (!isAdmin && currentUserId is null && model.CustomerId is not null)
@@ -55,7 +62,8 @@ public sealed class RideReport(
                 x.Status, x.ServiceKindId, x.ServiceCatalogItemId,
                 serviceKindCode = x.ServiceKind.Code, serviceKindNameAr = x.ServiceKind.NameAr,
                 serviceCode = x.ServiceCatalogItem.Code, serviceNameAr = x.ServiceCatalogItem.NameAr,
-                x.PickupAddress, x.DestinationAddress, x.CustomerPrice, x.CreatedAtUtc,
+                x.PickupAddress, x.DestinationAddress, x.CustomerPrice, x.ServiceFee,
+                x.TotalAmount, x.DriverCommissionAmount, x.DriverShare, x.PlatformShare, x.CreatedAtUtc,
                 driverOfferAmount = !isAdmin && driverOfferUserId.HasValue
                     ? x.Offers.Where(offer => offer.DriverId == driverOfferUserId.Value)
                         .OrderByDescending(offer => offer.CreatedAtUtc)

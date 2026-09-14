@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using YemenDrive.Database;
 
@@ -11,9 +12,11 @@ using YemenDrive.Database;
 namespace YemenDrive.Database.Migrations
 {
     [DbContext(typeof(YemenDriveDbContext))]
-    partial class YemenDriveDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260914141451_DriverSettlementPaymentCollection")]
+    partial class DriverSettlementPaymentCollection
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -21,72 +24,6 @@ namespace YemenDrive.Database.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
-
-            modelBuilder.Entity("YemenDrive.Database.Entities.CashCollectionApproval", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<decimal>("CashReceived")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Currency")
-                        .IsRequired()
-                        .HasMaxLength(12)
-                        .HasColumnType("nvarchar(12)");
-
-                    b.Property<int>("CustomerId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("DecisionNote")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<int>("DriverId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("IdempotencyKey")
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<int>("RideId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<decimal>("WalletDebitAmount")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("decimal(18,2)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DriverId", "IdempotencyKey")
-                        .IsUnique()
-                        .HasFilter("[IdempotencyKey] IS NOT NULL");
-
-                    b.HasIndex("RideId", "Status")
-                        .IsUnique()
-                        .HasFilter("[Status] = 0");
-
-                    b.ToTable("CashCollectionApprovals", t =>
-                        {
-                            t.HasCheckConstraint("CK_CashCollectionApprovals_Amounts", "[CashReceived] >= 0 AND [WalletDebitAmount] > 0");
-                        });
-                });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.CommunicationMessage", b =>
                 {
@@ -398,51 +335,6 @@ namespace YemenDrive.Database.Migrations
                     b.ToTable("EmergencyRecordings");
                 });
 
-            modelBuilder.Entity("YemenDrive.Database.Entities.FinancialParty", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Code")
-                        .IsRequired()
-                        .HasMaxLength(80)
-                        .HasColumnType("nvarchar(80)");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int?>("EntityId")
-                        .HasColumnType("int");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("bit");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<int>("Type")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Code")
-                        .IsUnique();
-
-                    b.HasIndex("Type", "EntityId")
-                        .IsUnique()
-                        .HasFilter("[EntityId] IS NOT NULL");
-
-                    b.ToTable("FinancialParties");
-                });
-
             modelBuilder.Entity("YemenDrive.Database.Entities.JournalEntry", b =>
                 {
                     b.Property<int>("Id")
@@ -454,93 +346,26 @@ namespace YemenDrive.Database.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<int?>("CreatedByUserId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Currency")
-                        .IsRequired()
-                        .HasMaxLength(12)
-                        .HasColumnType("nvarchar(12)");
-
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("nvarchar(1000)");
-
-                    b.Property<string>("EntryNumber")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.Property<string>("IdempotencyKey")
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<bool>("IsPosted")
                         .HasColumnType("bit");
 
-                    b.Property<DateTime>("OccurredAtUtc")
-                        .HasColumnType("datetime2");
-
                     b.Property<DateTime>("PostedAtUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<int?>("PostedByUserId")
-                        .HasColumnType("int");
-
                     b.Property<string>("Reference")
                         .IsRequired()
-                        .HasMaxLength(160)
-                        .HasColumnType("nvarchar(160)");
-
-                    b.Property<int?>("ReversesJournalEntryId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("SourceId")
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<string>("SourceType")
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("TotalCredit")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("TotalDebit")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<int>("Type")
-                        .HasColumnType("int");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
                         .HasColumnType("datetime2");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EntryNumber")
-                        .IsUnique()
-                        .HasFilter("[EntryNumber] <> ''");
-
-                    b.HasIndex("ReversesJournalEntryId")
-                        .IsUnique()
-                        .HasFilter("[ReversesJournalEntryId] IS NOT NULL");
-
-                    b.HasIndex("Status", "PostedAtUtc");
-
-                    b.HasIndex("SourceType", "SourceId", "Type")
-                        .IsUnique()
-                        .HasFilter("[SourceType] IS NOT NULL AND [SourceId] IS NOT NULL");
-
-                    b.ToTable("JournalEntries", t =>
-                        {
-                            t.HasCheckConstraint("CK_JournalEntries_Totals_Balanced", "([Status] = 0 AND [TotalDebit] = 0 AND [TotalCredit] = 0) OR ([Status] = 1 AND [TotalDebit] = [TotalCredit] AND [TotalDebit] > 0)");
-                        });
+                    b.ToTable("JournalEntries");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.JournalLine", b =>
@@ -558,30 +383,14 @@ namespace YemenDrive.Database.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
-                    b.Property<string>("Currency")
-                        .IsRequired()
-                        .HasMaxLength(12)
-                        .HasColumnType("nvarchar(12)");
-
                     b.Property<decimal>("Debit")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
-
-                    b.Property<string>("Description")
-                        .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("nvarchar(1000)");
-
-                    b.Property<int?>("FinancialPartyId")
-                        .HasColumnType("int");
 
                     b.Property<int>("JournalEntryId")
                         .HasColumnType("int");
 
                     b.Property<int>("LedgerAccountId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("LineNumber")
                         .HasColumnType("int");
 
                     b.Property<int?>("RideId")
@@ -595,17 +404,11 @@ namespace YemenDrive.Database.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("FinancialPartyId");
+                    b.HasIndex("JournalEntryId");
 
-                    b.HasIndex("JournalEntryId", "LineNumber")
-                        .IsUnique();
+                    b.HasIndex("LedgerAccountId");
 
-                    b.HasIndex("LedgerAccountId", "CreatedAtUtc");
-
-                    b.ToTable("JournalLines", t =>
-                        {
-                            t.HasCheckConstraint("CK_JournalLines_ExactlyOneSide", "([Debit] > 0 AND [Credit] = 0) OR ([Credit] > 0 AND [Debit] = 0)");
-                        });
+                    b.ToTable("JournalLines");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.LedgerAccount", b =>
@@ -618,39 +421,21 @@ namespace YemenDrive.Database.Migrations
 
                     b.Property<string>("Code")
                         .IsRequired()
-                        .HasMaxLength(80)
-                        .HasColumnType("nvarchar(80)");
+                        .HasColumnType("nvarchar(450)");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
                     b.Property<string>("Currency")
                         .IsRequired()
-                        .HasMaxLength(12)
-                        .HasColumnType("nvarchar(12)");
-
-                    b.Property<int?>("FinancialPartyId")
-                        .HasColumnType("int");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
 
-                    b.Property<bool>("IsPosting")
-                        .HasColumnType("bit");
-
-                    b.Property<bool>("IsSystem")
-                        .HasColumnType("bit");
-
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<int?>("ParentLedgerAccountId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("Purpose")
-                        .HasColumnType("int");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<int>("Type")
                         .HasColumnType("int");
@@ -662,12 +447,6 @@ namespace YemenDrive.Database.Migrations
 
                     b.HasIndex("Code")
                         .IsUnique();
-
-                    b.HasIndex("ParentLedgerAccountId");
-
-                    b.HasIndex("FinancialPartyId", "Purpose", "Currency")
-                        .IsUnique()
-                        .HasFilter("[FinancialPartyId] IS NOT NULL");
 
                     b.ToTable("LedgerAccounts");
                 });
@@ -1603,57 +1382,23 @@ namespace YemenDrive.Database.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("YemenDrive.Database.Entities.JournalEntry", b =>
-                {
-                    b.HasOne("YemenDrive.Database.Entities.JournalEntry", "ReversesJournalEntry")
-                        .WithMany("ReversalEntries")
-                        .HasForeignKey("ReversesJournalEntryId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.Navigation("ReversesJournalEntry");
-                });
-
             modelBuilder.Entity("YemenDrive.Database.Entities.JournalLine", b =>
                 {
-                    b.HasOne("YemenDrive.Database.Entities.FinancialParty", "FinancialParty")
-                        .WithMany()
-                        .HasForeignKey("FinancialPartyId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("YemenDrive.Database.Entities.JournalEntry", "JournalEntry")
                         .WithMany("Lines")
                         .HasForeignKey("JournalEntryId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.HasOne("YemenDrive.Database.Entities.LedgerAccount", "LedgerAccount")
                         .WithMany()
                         .HasForeignKey("LedgerAccountId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.Navigation("FinancialParty");
 
                     b.Navigation("JournalEntry");
 
                     b.Navigation("LedgerAccount");
-                });
-
-            modelBuilder.Entity("YemenDrive.Database.Entities.LedgerAccount", b =>
-                {
-                    b.HasOne("YemenDrive.Database.Entities.FinancialParty", "FinancialParty")
-                        .WithMany("LedgerAccounts")
-                        .HasForeignKey("FinancialPartyId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("YemenDrive.Database.Entities.LedgerAccount", "ParentLedgerAccount")
-                        .WithMany("ChildLedgerAccounts")
-                        .HasForeignKey("ParentLedgerAccountId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.Navigation("FinancialParty");
-
-                    b.Navigation("ParentLedgerAccount");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.LocationUpdate", b =>
@@ -1805,21 +1550,9 @@ namespace YemenDrive.Database.Migrations
                     b.Navigation("Wallet");
                 });
 
-            modelBuilder.Entity("YemenDrive.Database.Entities.FinancialParty", b =>
-                {
-                    b.Navigation("LedgerAccounts");
-                });
-
             modelBuilder.Entity("YemenDrive.Database.Entities.JournalEntry", b =>
                 {
                     b.Navigation("Lines");
-
-                    b.Navigation("ReversalEntries");
-                });
-
-            modelBuilder.Entity("YemenDrive.Database.Entities.LedgerAccount", b =>
-                {
-                    b.Navigation("ChildLedgerAccounts");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.Ride", b =>

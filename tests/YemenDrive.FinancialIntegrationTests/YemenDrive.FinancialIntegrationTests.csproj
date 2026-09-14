@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\YemenDrive.Application\YemenDrive.Application.csproj" />
+    <ProjectReference Include="..\..\src\YemenDrive.Database\YemenDrive.Database.csproj" />
+    <ProjectReference Include="..\..\src\YemenDrive.Shared\YemenDrive.Shared.csproj" />
+  </ItemGroup>
+</Project>

@@ -17,19 +17,58 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<LocationUpdate> LocationUpdates => Set<LocationUpdate>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
+    public DbSet<CashCollectionApproval> CashCollectionApprovals => Set<CashCollectionApproval>();
     public DbSet<PaymentCardToken> PaymentCardTokens => Set<PaymentCardToken>();
     public DbSet<Promotion> Promotions => Set<Promotion>();
     public DbSet<SupportTicket> SupportTickets => Set<SupportTicket>();
     public DbSet<ReferralRedemption> ReferralRedemptions => Set<ReferralRedemption>();
     public DbSet<PricingRule> PricingRules => Set<PricingRule>();
+    public DbSet<FinancialParty> FinancialParties => Set<FinancialParty>();
     public DbSet<LedgerAccount> LedgerAccounts => Set<LedgerAccount>();
     public DbSet<JournalEntry> JournalEntries => Set<JournalEntry>();
     public DbSet<JournalLine> JournalLines => Set<JournalLine>();
     public DbSet<DriverSettlement> DriverSettlements => Set<DriverSettlement>();
+    public DbSet<DriverSettlementPayment> DriverSettlementPayments => Set<DriverSettlementPayment>();
     public DbSet<CommunicationMessage> CommunicationMessages => Set<CommunicationMessage>();
     public DbSet<EmergencyRecording> EmergencyRecordings => Set<EmergencyRecording>();
     public DbSet<RideServiceCatalogItem> ServiceCatalogItems => Set<RideServiceCatalogItem>();
     public DbSet<ServiceKind> ServiceKinds => Set<ServiceKind>();
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        EnforceJournalImmutability();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        EnforceJournalImmutability();
+        return base.SaveChangesAsync(cancellationToken);
+    }
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        EnforceJournalImmutability();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void EnforceJournalImmutability()
+    {
+        foreach (var entry in ChangeTracker.Entries<JournalEntry>())
+        {
+            if (entry.State is not (EntityState.Modified or EntityState.Deleted)) continue;
+            if (entry.Entity.Status == JournalEntryStatus.Posted ||
+                entry.Property(x => x.Status).OriginalValue == JournalEntryStatus.Posted)
+                throw new InvalidOperationException("لا يمكن تعديل أو حذف قيد أستاذ عام منشور. استخدم قيداً عكسياً.");
+        }
+
+        foreach (var line in ChangeTracker.Entries<JournalLine>())
+        {
+            if (line.State is EntityState.Modified or EntityState.Deleted ||
+                (line.State == EntityState.Added && line.Entity.JournalEntryId != 0))
+                throw new InvalidOperationException("سطور الأستاذ العام غير قابلة للتعديل بعد إنشائها.");
+        }
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -65,6 +104,15 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
             .IsUnique().HasFilter("[RideId] IS NOT NULL AND [Status] = 2");
         modelBuilder.Entity<PaymentTransaction>().ToTable(table => table.HasCheckConstraint(
             "CK_PaymentTransactions_Amount_Positive", "[Amount] > 0"));
+        modelBuilder.Entity<CashCollectionApproval>().HasIndex(x => new { x.RideId, x.Status })
+            .IsUnique().HasFilter("[Status] = 0");
+        modelBuilder.Entity<CashCollectionApproval>().HasIndex(x => new { x.DriverId, x.IdempotencyKey })
+            .IsUnique().HasFilter("[IdempotencyKey] IS NOT NULL");
+        modelBuilder.Entity<CashCollectionApproval>().Property(x => x.Currency).HasMaxLength(12).IsRequired();
+        modelBuilder.Entity<CashCollectionApproval>().Property(x => x.IdempotencyKey).HasMaxLength(128);
+        modelBuilder.Entity<CashCollectionApproval>().Property(x => x.DecisionNote).HasMaxLength(500);
+        modelBuilder.Entity<CashCollectionApproval>().ToTable(table =>
+            table.HasCheckConstraint("CK_CashCollectionApprovals_Amounts", "[CashReceived] >= 0 AND [WalletDebitAmount] > 0"));
         modelBuilder.Entity<Notification>().HasIndex(x => new { x.UserId, x.IsRead, x.CreatedAtUtc });
         modelBuilder.Entity<CommunicationMessage>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
         modelBuilder.Entity<CommunicationMessage>().Property(x => x.MessageType).HasMaxLength(32).IsRequired();
@@ -78,7 +126,59 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<ReferralRedemption>().HasIndex(x => new { x.UserId, x.Code });
         modelBuilder.Entity<ReferralRedemption>().Property(x => x.Code).HasMaxLength(100).IsRequired();
         modelBuilder.Entity<ReferralRedemption>().Property(x => x.Status).HasMaxLength(32).IsRequired();
+        modelBuilder.Entity<FinancialParty>().HasIndex(x => x.Code).IsUnique();
+        modelBuilder.Entity<FinancialParty>().HasIndex(x => new { x.Type, x.EntityId })
+            .IsUnique().HasFilter("[EntityId] IS NOT NULL");
+        modelBuilder.Entity<FinancialParty>().Property(x => x.Code).HasMaxLength(80).IsRequired();
+        modelBuilder.Entity<FinancialParty>().Property(x => x.Name).HasMaxLength(200).IsRequired();
+
         modelBuilder.Entity<LedgerAccount>().HasIndex(x => x.Code).IsUnique();
+        modelBuilder.Entity<LedgerAccount>().HasIndex(x => new { x.FinancialPartyId, x.Purpose, x.Currency })
+            .IsUnique().HasFilter("[FinancialPartyId] IS NOT NULL");
+        modelBuilder.Entity<LedgerAccount>().Property(x => x.Code).HasMaxLength(80).IsRequired();
+        modelBuilder.Entity<LedgerAccount>().Property(x => x.Name).HasMaxLength(200).IsRequired();
+        modelBuilder.Entity<LedgerAccount>().Property(x => x.Currency).HasMaxLength(12).IsRequired();
+        modelBuilder.Entity<LedgerAccount>()
+            .HasOne(x => x.ParentLedgerAccount)
+            .WithMany(x => x.ChildLedgerAccounts)
+            .HasForeignKey(x => x.ParentLedgerAccountId)
+            .OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<LedgerAccount>()
+            .HasOne(x => x.FinancialParty)
+            .WithMany(x => x.LedgerAccounts)
+            .HasForeignKey(x => x.FinancialPartyId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<JournalEntry>().HasIndex(x => x.EntryNumber).IsUnique()
+            .HasFilter("[EntryNumber] <> ''");
+        modelBuilder.Entity<JournalEntry>().HasIndex(x => new { x.SourceType, x.SourceId, x.Type })
+            .IsUnique().HasFilter("[SourceType] IS NOT NULL AND [SourceId] IS NOT NULL");
+        modelBuilder.Entity<JournalEntry>().HasIndex(x => new { x.Status, x.PostedAtUtc });
+        modelBuilder.Entity<JournalEntry>().HasIndex(x => x.ReversesJournalEntryId).IsUnique()
+            .HasFilter("[ReversesJournalEntryId] IS NOT NULL");
+        modelBuilder.Entity<JournalEntry>().Property(x => x.EntryNumber).HasMaxLength(64).IsRequired();
+        modelBuilder.Entity<JournalEntry>().Property(x => x.Reference).HasMaxLength(160).IsRequired();
+        modelBuilder.Entity<JournalEntry>().Property(x => x.Currency).HasMaxLength(12).IsRequired();
+        modelBuilder.Entity<JournalEntry>().Property(x => x.Description).HasMaxLength(1000).IsRequired();
+        modelBuilder.Entity<JournalEntry>().Property(x => x.SourceType).HasMaxLength(64);
+        modelBuilder.Entity<JournalEntry>().Property(x => x.SourceId).HasMaxLength(128);
+        modelBuilder.Entity<JournalEntry>().Property(x => x.IdempotencyKey).HasMaxLength(128);
+        modelBuilder.Entity<JournalEntry>().ToTable(table =>
+            table.HasCheckConstraint("CK_JournalEntries_Totals_Balanced",
+                "([Status] = 0 AND [TotalDebit] = 0 AND [TotalCredit] = 0) OR ([Status] = 1 AND [TotalDebit] = [TotalCredit] AND [TotalDebit] > 0)"));
+        modelBuilder.Entity<JournalEntry>()
+            .HasOne(x => x.ReversesJournalEntry)
+            .WithMany(x => x.ReversalEntries)
+            .HasForeignKey(x => x.ReversesJournalEntryId)
+            .OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<DriverSettlementPayment>().HasIndex(x => x.DriverSettlementId);
+        modelBuilder.Entity<DriverSettlementPayment>().HasIndex(x => x.Reference).IsUnique();
+        modelBuilder.Entity<DriverSettlementPayment>().Property(x => x.Currency).HasMaxLength(12).IsRequired();
+        modelBuilder.Entity<DriverSettlementPayment>().Property(x => x.Method).HasMaxLength(48).IsRequired();
+        modelBuilder.Entity<DriverSettlementPayment>().Property(x => x.Reference).HasMaxLength(128).IsRequired();
+        modelBuilder.Entity<DriverSettlementPayment>().Property(x => x.Note).HasMaxLength(1000);
+        modelBuilder.Entity<DriverSettlementPayment>().ToTable(table =>
+            table.HasCheckConstraint("CK_DriverSettlementPayments_Amount_Positive", "[Amount] > 0"));
 
         modelBuilder.Entity<RideServiceCatalogItem>().ToTable("RideServiceCatalogItems");
         modelBuilder.Entity<RideServiceCatalogItem>().HasIndex(x => x.Code).IsUnique();
@@ -108,8 +208,11 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
             table.HasCheckConstraint("CK_Rides_CustomerPrice_NonNegative",
                 "[CustomerPrice] IS NULL OR [CustomerPrice] >= 0");
             table.HasCheckConstraint("CK_Rides_ServiceFee_NonNegative", "[ServiceFee] >= 0");
+            table.HasCheckConstraint("CK_Rides_CancellationFee_NonNegative", "[CancellationFee] >= 0");
             table.HasCheckConstraint("CK_Rides_TotalAmount_NonNegative",
                 "[TotalAmount] IS NULL OR [TotalAmount] >= 0");
+            table.HasCheckConstraint("CK_Rides_DriverCommissionAmount_NonNegative",
+                "[DriverCommissionAmount] >= 0");
         });
         modelBuilder.Entity<Ride>().HasIndex(x => new { x.Status, x.ServiceKindId, x.ServiceCatalogItemId, x.CreatedAtUtc });
         modelBuilder.Entity<RideOffer>().HasIndex(x => new { x.RideId, x.DriverId, x.Status })
@@ -210,7 +313,24 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<JournalLine>()
             .HasOne(x => x.JournalEntry)
             .WithMany(x => x.Lines)
-            .HasForeignKey(x => x.JournalEntryId);
+            .HasForeignKey(x => x.JournalEntryId)
+            .OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<JournalLine>()
+            .HasOne(x => x.LedgerAccount)
+            .WithMany()
+            .HasForeignKey(x => x.LedgerAccountId)
+            .OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<JournalLine>()
+            .HasOne(x => x.FinancialParty)
+            .WithMany()
+            .HasForeignKey(x => x.FinancialPartyId)
+            .OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<JournalLine>().HasIndex(x => new { x.LedgerAccountId, x.CreatedAtUtc });
+        modelBuilder.Entity<JournalLine>().HasIndex(x => new { x.JournalEntryId, x.LineNumber }).IsUnique();
+        modelBuilder.Entity<JournalLine>().Property(x => x.Currency).HasMaxLength(12).IsRequired();
+        modelBuilder.Entity<JournalLine>().Property(x => x.Description).HasMaxLength(1000).IsRequired();
+        modelBuilder.Entity<JournalLine>().ToTable(table => table.HasCheckConstraint(
+            "CK_JournalLines_ExactlyOneSide", "([Debit] > 0 AND [Credit] = 0) OR ([Credit] > 0 AND [Debit] = 0)"));
 
         modelBuilder.Entity<EmergencyRecording>()
             .Property(x => x.StorageKey)

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text.Json.Serialization;
 using YemenDrive.Api;
 using YemenDrive.Application.Users;
+using YemenDrive.Application.Accounting;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
@@ -25,6 +26,7 @@ builder.Services.AddSingleton<OtpChallengeStore>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 builder.Services.AddScoped<DevelopmentDataSeeder>();
+builder.Services.AddScoped<AccountingPostingService>();
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.NumberHandling = JsonNumberHandling.AllowReadingFromString);

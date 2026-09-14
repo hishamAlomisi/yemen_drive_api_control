@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
@@ -66,7 +67,12 @@ public sealed class Ride(
         await dbContext.SaveChangesAsync(cancellationToken);
         var driverIds = await dbContext.DriverProfiles.AsNoTracking()
             .Where(x => x.IsAvailable && x.ServiceKindId == entity.ServiceKindId &&
-                        x.ServiceCatalogItemId == entity.ServiceCatalogItemId)
+                        x.ServiceCatalogItemId == entity.ServiceCatalogItemId &&
+                        !dbContext.Rides.Any(activeRide =>
+                            activeRide.DriverId == x.UserId &&
+                            (activeRide.Status == RideStatus.DriverAssigned ||
+                             activeRide.Status == RideStatus.DriverEnRoute ||
+                             activeRide.Status == RideStatus.InProgress)))
             .Select(x => x.UserId)
             .ToListAsync(cancellationToken);
         foreach (var driverId in driverIds)
@@ -129,13 +135,64 @@ public sealed class Ride(
     protected override async Task<object?> CancelAsync(RideModel model, CancellationToken cancellationToken)
     {
         var entity = await FindAsync(model.Id, cancellationToken);
-        if (entity.Status is RideStatus.Completed or RideStatus.Cancelled)
+        if (entity.Status == RideStatus.Cancelled)
             throw new ServiceException("ride_not_cancellable", "لا يمكن إلغاء الرحلة في حالتها الحالية.");
+
+        if (entity.Status == RideStatus.Completed)
+            return await RefundWalletPaymentAndCancelAsync(entity, cancellationToken);
+
         entity.Status = RideStatus.Cancelled;
         entity.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
         await NotifyOtherParticipantAsync(entity, "تم إلغاء الرحلة", "تم إلغاء الرحلة من الطرف الآخر.", cancellationToken);
         return ToResult(entity);
+    }
+
+    private async Task<object> RefundWalletPaymentAndCancelAsync(RideEntity ride, CancellationToken token)
+    {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        var payment = await dbContext.PaymentTransactions.SingleOrDefaultAsync(
+            x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid, token)
+            ?? throw new ServiceException("payment_not_found", "لا توجد دفعة معتمدة يمكن استردادها.");
+        if (!string.Equals(payment.Provider, "YemenDriveWallet", StringComparison.OrdinalIgnoreCase))
+            throw new ServiceException("manual_refund_required", "استرداد هذه الوسيلة يحتاج معالجة يدوية موثقة.");
+
+        var refundReference = $"refund:payment:{payment.Id}";
+        if (await dbContext.PaymentTransactions.AnyAsync(x => x.ProviderReference == refundReference, token))
+            throw new ServiceException("refund_already_processed", "تمت معالجة استرداد هذه الدفعة مسبقاً.");
+
+        var refundAmount = Math.Max(0m, payment.Amount - ride.CancellationFee);
+        if (ride.DriverId is null)
+            throw new ServiceException("driver_not_assigned", "لا يمكن استرداد رحلة دون سائق مسند.");
+        var customerWallet = await dbContext.Wallets.SingleAsync(x => x.UserId == ride.CustomerId, token);
+        var driverWallet = await dbContext.Wallets.SingleAsync(x => x.UserId == ride.DriverId.Value, token);
+        var driverReversal = ride.DriverShare ?? 0m;
+        if (driverWallet.Balance < driverReversal)
+            throw new ServiceException("driver_settlement_required", "لا يمكن إتمام الاسترداد قبل تسوية صافي مستحق السائق.");
+
+        customerWallet.Balance += refundAmount;
+        driverWallet.Balance -= driverReversal;
+        dbContext.WalletTransactions.AddRange(
+            new WalletTransaction { WalletId = customerWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Refund, Amount = refundAmount, BalanceAfter = customerWallet.Balance, Description = "استرداد إلغاء الرحلة بعد خصم الرسم", ExternalReference = refundReference },
+            new WalletTransaction { WalletId = driverWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Debit, Amount = driverReversal, BalanceAfter = driverWallet.Balance, Description = "عكس صافي مستحق السائق بسبب إلغاء الرحلة", ExternalReference = refundReference });
+        dbContext.PaymentTransactions.Add(new PaymentTransaction { UserId = ride.CustomerId, RideId = ride.Id, Amount = refundAmount, Currency = payment.Currency, Provider = "YemenDriveWallet", Status = PaymentStatus.Refunded, ProviderReference = refundReference });
+        dbContext.DriverSettlements.Add(new DriverSettlement
+        {
+            DriverId = ride.DriverId.Value,
+            PeriodStartUtc = DateTime.UtcNow,
+            PeriodEndUtc = DateTime.UtcNow,
+            GrossRideAmount = 0,
+            PlatformCommission = 0,
+            Adjustments = -driverReversal,
+            NetPayable = -driverReversal,
+            Status = PaymentStatus.Refunded,
+            PaymentReference = refundReference
+        });
+        ride.Status = RideStatus.Cancelled;
+        ride.UpdatedAtUtc = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync(token);
+        await transaction.CommitAsync(token);
+        return new { ride.Id, ride.Status, refundAmount, cancellationFee = ride.CancellationFee, refunded = true };
     }
 
     protected override async Task<object?> GetAsync(RideModel model, CancellationToken cancellationToken)
@@ -153,6 +210,12 @@ public sealed class Ride(
             .OrderByDescending(x => x.CreatedAtUtc)
             .Select(x => new { x.Id, x.Amount, x.Currency, x.Provider, x.Status, x.ProviderReference, x.CreatedAtUtc })
             .ToListAsync(cancellationToken);
+        var cashCollectionApproval = await dbContext.CashCollectionApprovals.AsNoTracking()
+            .Where(x => x.RideId == entity.Id &&
+                (x.CustomerId == currentUser.UserId || x.DriverId == currentUser.UserId))
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .Select(x => new { x.Id, x.CashReceived, x.WalletDebitAmount, x.Currency, x.Status, x.DecidedAtUtc, x.DecisionNote })
+            .FirstOrDefaultAsync(cancellationToken);
         var driverLocation = entity.DriverId is null
             ? null
             : await dbContext.DriverLiveLocations.AsNoTracking()
@@ -188,7 +251,8 @@ public sealed class Ride(
             }),
             entity.ServiceFee,
             entity.TotalAmount,
-            payments
+            payments,
+            cashCollectionApproval
         };
     }
 
@@ -252,7 +316,8 @@ public sealed class Ride(
         serviceCode = x.ServiceCatalogItem?.Code, serviceNameAr = x.ServiceCatalogItem?.NameAr,
         x.PickupLabel, x.PickupAddress, x.PickupLatitude, x.PickupLongitude,
         x.DestinationLabel, x.DestinationAddress, x.DestinationLatitude, x.DestinationLongitude,
-        x.ServerPrice, x.CustomerPrice, x.DriverShare, x.PlatformShare,
+        x.ServerPrice, x.CustomerPrice, x.ServiceFee, x.CancellationFee, x.TotalAmount,
+        x.DriverCommissionAmount, x.DriverShare, x.PlatformShare,
         x.StartedAtUtc, x.CompletedAtUtc, x.CreatedAtUtc, x.UpdatedAtUtc
     };
 

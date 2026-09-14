@@ -34,6 +34,8 @@
         <button class="nav-item" data-view="catalog"><span class="nav-icon">▦</span><span>الخدمات</span></button>
         <button class="nav-item" data-view="pricing"><span class="nav-icon">¤</span><span>التسعير</span></button>
         <button class="nav-item" data-view="wallet"><span class="nav-icon">□</span><span>المحفظة</span></button>
+        <button class="nav-item" data-view="settlements"><span class="nav-icon">⇄</span><span>مديونيات السائقين</span></button>
+        <button class="nav-item" data-view="ledger"><span class="nav-icon">≡</span><span>كشف الحساب</span></button>
         <button class="nav-item" data-view="places"><span class="nav-icon">☆</span><span>المفضلة</span></button>
         <button class="nav-item" data-view="history"><span class="nav-icon">◷</span><span>سجل الرحلات</span></button>
         <button class="nav-item" data-view="console"><span class="nav-icon">›_</span><span>محطة API</span></button>
@@ -112,8 +114,8 @@
         </section>
 
         <section class="view" id="view-pricing">
-          <div class="section-toolbar"><div><h2>قواعد التسعير</h2><p>حساب تكلفة الرحلات ونسب السائق</p></div><div class="command-row"><button class="button" data-form="quote">تجربة تسعير</button><button class="button primary" data-form="pricingRule">إضافة قاعدة</button></div></div>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>نوع الخدمة</th><th>الخدمة</th><th>الأساسي</th><th>لكل كم</th><th>لكل دقيقة</th><th>رسوم الخدمة</th><th>نسبة السائق</th><th>الحالة</th></tr></thead><tbody id="pricing-body"></tbody></table></div><div class="empty-state hidden" id="pricing-empty">لا توجد قواعد تسعير.</div></section>
+          <div class="section-toolbar"><div><h2>قواعد التسعير</h2><p>الأجرة ورسوم الخدمة وعمولة السائق والإلغاء</p></div><div class="command-row"><button class="button" data-form="quote">تجربة تسعير</button><button class="button primary" data-form="pricingRule">إضافة قاعدة</button></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>نوع الخدمة</th><th>الخدمة</th><th>الأساسي</th><th>لكل كم</th><th>لكل دقيقة</th><th>رسوم الخدمة</th><th>عمولة %</th><th>عمولة ثابتة</th><th>رسم الإلغاء</th><th>الحالة</th></tr></thead><tbody id="pricing-body"></tbody></table></div><div class="empty-state hidden" id="pricing-empty">لا توجد قواعد تسعير.</div></section>
         </section>
 
         <section class="view" id="view-wallet">
@@ -121,6 +123,33 @@
           <section class="wallet-query"><label for="wallet-user-id">معرف المستخدم</label><div><input id="wallet-user-id" placeholder="00000000-0000-0000-0000-000000000000"><button class="button" id="wallet-load">عرض المحفظة</button></div></section>
           <div class="wallet-summary hidden" id="wallet-summary"><div><span>الرصيد الحالي</span><strong id="wallet-balance">0</strong><small id="wallet-currency">YER</small></div><div><span>عدد الحركات</span><strong id="wallet-transactions-count">0</strong><small>حركة مالية</small></div></div>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>النوع</th><th>المبلغ</th><th>الرصيد بعد الحركة</th><th>الوصف</th><th>المرجع</th><th>التاريخ</th></tr></thead><tbody id="wallet-body"></tbody></table></div><div class="empty-state" id="wallet-empty">أدخل معرف المستخدم لعرض محفظته.</div></section>
+        </section>
+
+        <section class="view" id="view-settlements">
+          <div class="section-toolbar"><div><h2>مديونيات السائقين</h2><p>تحصيل عمولة المنصة من الرحلات النقدية دون تغيير السجل المالي الأصلي.</p></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>السائق</th><th>معرف المديونية</th><th>العمولة المستحقة</th><th>المحصل</th><th>المتبقي</th><th>مرجع الرحلة</th><th>التاريخ</th><th>الإجراء</th></tr></thead><tbody id="settlements-body"></tbody></table></div><div class="empty-state hidden" id="settlements-empty">لا توجد مديونيات نقدية مستحقة على السائقين.</div></section>
+        </section>
+
+        <section class="view" id="view-ledger">
+          <div class="section-toolbar"><div><h2>كشف الحساب</h2><p>عرض القيود المنشورة فقط؛ لا يمكن تعديلها أو حذفها من هذه الشاشة.</p></div><button class="button" id="accounting-setup-button" type="button">تهيئة الحسابات الأساسية</button></div>
+          <section class="data-section">
+            <div class="section-header"><div><h2>مرشحات الكشف</h2><p>اختر حساباً أو اتركه على كافة الحسابات، ثم حدد الفترة ونوع العملية.</p></div><button class="button primary" id="statement-load" type="button">عرض الكشف</button></div>
+            <div class="form-grid">
+              <label>الحساب<select id="statement-account"><option value="">كافة الحسابات</option></select></label>
+              <label>نوع العملية<select id="statement-type"><option value="">كافة العمليات</option><option value="0">رصيد افتتاحي</option><option value="1">تحصيل نقدي لرحلة</option><option value="2">دفع رحلة من المحفظة</option><option value="3">تغذية محفظة</option><option value="4">إلغاء رحلة</option><option value="5">تحصيل تسوية سائق</option><option value="6">تسوية يدوية</option><option value="7">قيد عكسي</option></select></label>
+              <label>أسلوب الفترة<select id="statement-period"><option value="range">من تاريخ إلى تاريخ</option><option value="day">يوم محدد</option><option value="month">شهر محدد</option><option value="year">سنة محددة</option></select></label>
+              <label class="statement-period-field" data-period-field="range">من تاريخ<input id="statement-from" type="date"></label>
+              <label class="statement-period-field" data-period-field="range">إلى تاريخ<input id="statement-to" type="date"></label>
+              <label class="statement-period-field hidden" data-period-field="day">اليوم<input id="statement-day" type="date"></label>
+              <label class="statement-period-field hidden" data-period-field="month">الشهر<input id="statement-month" type="month"></label>
+              <label class="statement-period-field hidden" data-period-field="year">السنة<input id="statement-year" type="number" min="2000" max="9999" step="1"></label>
+            </div>
+          </section>
+          <section class="data-section">
+            <div class="section-header"><div><h2>ملخص الحسابات</h2><p>الرصيد محسوب بطبيعته المحاسبية لكل حساب.</p></div></div>
+            <div class="table-wrap"><table><thead><tr><th>الحساب</th><th>العملة</th><th>رصيد أول المدة</th><th>إجمالي المدين</th><th>إجمالي الدائن</th><th>رصيد آخر المدة</th></tr></thead><tbody id="statement-summary-body"></tbody></table></div>
+          </section>
+          <section class="data-section"><div class="section-header"><div><h2>تفاصيل الحركة</h2><p>مرتبة زمنياً مع الرصيد الجاري لكل حساب.</p></div></div><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>الحساب</th><th>رقم القيد</th><th>نوع العملية</th><th>البيان</th><th>المرجع</th><th>المدين</th><th>الدائن</th><th>الرصيد الجاري</th></tr></thead><tbody id="statement-lines-body"></tbody></table></div><div class="empty-state" id="statement-empty">لا توجد قيود منشورة مطابقة للمرشحات.</div></section>
         </section>
 
         <section class="view" id="view-places">

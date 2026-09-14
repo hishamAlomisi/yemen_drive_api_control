@@ -42,9 +42,14 @@ public sealed class RideOffer(
                 x => x.UserId == driverId &&
                      x.ServiceKindId == ride.ServiceKindId &&
                      x.ServiceCatalogItemId == ride.ServiceCatalogItemId &&
-                     x.IsAvailable,
+                     x.IsAvailable &&
+                     !dbContext.Rides.Any(activeRide =>
+                         activeRide.DriverId == driverId && activeRide.Id != ride.Id &&
+                         (activeRide.Status == RideStatus.DriverAssigned ||
+                          activeRide.Status == RideStatus.DriverEnRoute ||
+                          activeRide.Status == RideStatus.InProgress)),
                 cancellationToken))
-            throw new ServiceException("driver_not_found", "السائق غير موجود.");
+            throw new ServiceException("driver_not_available", "السائق غير متاح لإرسال عرض جديد حالياً.");
 
         var existing = await dbContext.RideOffers.SingleOrDefaultAsync(
             x => x.RideId == model.RideId && x.DriverId == driverId && x.Status == OfferStatus.Pending,
@@ -157,7 +162,20 @@ public sealed class RideOffer(
                  x.ServiceCatalogItemId == ride.ServiceCatalogItemId,
             cancellationToken);
         ride.ServiceFee = pricingRule?.ServiceFee ?? 0m;
+        ride.CancellationFee = pricingRule?.CancellationFee ?? 0m;
         ride.TotalAmount = ride.CustomerPrice + ride.ServiceFee;
+        var commissionRate = pricingRule?.DriverCommissionRate ?? 0m;
+        var commissionFixed = pricingRule?.DriverCommissionFixed ?? 0m;
+        ride.DriverCommissionAmount = Math.Round(
+            ride.CustomerPrice.Value * commissionRate + commissionFixed,
+            2,
+            MidpointRounding.AwayFromZero);
+        if (ride.DriverCommissionAmount > ride.CustomerPrice)
+            throw new ServiceException("invalid_driver_commission", "عمولة السائق لا يمكن أن تتجاوز أجرة الرحلة.");
+        // The service fee is paid by the customer to the platform. The driver
+        // earns the agreed fare after their own commission is deducted.
+        ride.DriverShare = ride.CustomerPrice - ride.DriverCommissionAmount;
+        ride.PlatformShare = ride.ServiceFee + ride.DriverCommissionAmount;
         ride.Status = RideStatus.DriverAssigned;
         ride.UpdatedAtUtc = DateTime.UtcNow;
         entity.UpdatedAtUtc = DateTime.UtcNow;

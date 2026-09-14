@@ -6,8 +6,7 @@ const state = {
   rides: [],
   catalog: [],
   kinds: [],
-  pricing: []
-  ,places: [], history: []
+  pricing: [], places: [], history: [], settlements: [], ledgerAccounts: []
 };
 
 const ADMIN_TOKEN_KEY = 'yemendrive_admin_token';
@@ -20,6 +19,8 @@ const titles = {
   catalog: ['الخدمات', 'كتالوج الخدمات والتصنيفات'],
   pricing: ['التسعير', 'قواعد احتساب أسعار الرحلات'],
   wallet: ['المحفظة', 'الأرصدة والحركات المالية'],
+  settlements: ['مديونيات السائقين', 'تحصيل عمولة المنصة من الرحلات النقدية'],
+  ledger: ['كشف الحساب', 'استعلام القيود المحاسبية المنشورة والأرصدة'],
   places: ['الأماكن المفضلة', 'الأماكن المحفوظة للمستخدمين'],
   history: ['سجل الرحلات', 'الرحلات السابقة والقادمة'],
   console: ['محطة API', 'تنفيذ الطلبات المتقدمة']
@@ -28,6 +29,7 @@ const titles = {
 const rideStatuses = ['مسودة', 'جاري البحث', 'تفاوض', 'تم تعيين سائق', 'السائق في الطريق', 'قيد التنفيذ', 'مكتملة', 'ملغاة'];
 const roles = ['عميل', 'سائق', 'مدير'];
 const transactionTypes = ['إيداع', 'خصم', 'حجز', 'تحرير', 'استرداد', 'عمولة'];
+const journalEntryTypes = ['رصيد افتتاحي', 'تحصيل نقدي لرحلة', 'دفع رحلة من المحفظة', 'تغذية محفظة', 'إلغاء رحلة', 'تحصيل تسوية سائق', 'تسوية يدوية', 'قيد عكسي'];
 
 const formConfigs = {
   user: {
@@ -82,8 +84,8 @@ const formConfigs = {
     ]
   },
   pricingRule: {
-    title: 'إضافة قاعدة تسعير', subtitle: 'تحديد معادلة السعر ونسبة السائق', model: 'PricingRuleModel', operation: 'add', refresh: 'pricing',
-    fields: [['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],['baseFare','السعر الأساسي','number',true,'500','0.01'],['perKilometer','لكل كيلومتر','number',true,'100','0.01'],['perMinute','لكل دقيقة','number',true,'20','0.01'],['serviceFee','رسوم الخدمة الثابتة','number',true,'0','0.01'],['driverShareRate','نسبة السائق','number',true,'0.80','0.01'],['isActive','نشطة','checkbox',false,true]]
+    title: 'إضافة قاعدة تسعير', subtitle: 'تحديد السعر ورسوم العميل وعمولة السائق', model: 'PricingRuleModel', operation: 'add', refresh: 'pricing',
+    fields: [['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],['baseFare','السعر الأساسي','number',true,'500','0.01'],['perKilometer','لكل كيلومتر','number',true,'100','0.01'],['perMinute','لكل دقيقة','number',true,'20','0.01'],['serviceFee','رسوم الخدمة الثابتة على العميل','number',true,'0','0.01'],['driverCommissionRate','نسبة عمولة السائق (0 إلى 1)','number',true,'0','0.01'],['driverCommissionFixed','عمولة السائق الثابتة','number',true,'0','0.01'],['cancellationFee','رسم الإلغاء','number',true,'0','0.01'],['driverShareRate','نسبة السائق القديمة','number',false,'0','0.01'],['isActive','نشطة','checkbox',false,true]]
   },
   quote: {
     title: 'تجربة التسعير', subtitle: 'احتساب سعر رحلة دون حفظها', model: 'PricingModel', operation: 'report',
@@ -92,6 +94,10 @@ const formConfigs = {
   wallet: {
     title: 'إضافة حركة مالية', subtitle: 'إيداع أو خصم من محفظة مستخدم', model: 'WalletModel', operation: 'add', refresh: 'wallet',
     fields: [['userId','معرف المستخدم','text',true],['amount','المبلغ','number',true,'0','0.01'],['type','نوع الحركة','select',true,[['0','إيداع'],['1','خصم'],['2','حجز'],['3','تحرير'],['4','استرداد'],['5','عمولة']]],['description','الوصف','text',true],['externalReference','المرجع الخارجي','text']]
+  },
+  settlementPayment: {
+    title: 'تحصيل مديونية سائق', subtitle: 'ينشئ قيد تحصيل جديد؛ لا يعدّل الدفعة أو المديونية الأصلية.', model: 'DriverSettlementPaymentModel', operation: 'add', refresh: 'settlements',
+    fields: [['driverSettlementId','معرف سجل المديونية','number',true],['amount','المبلغ المحصل','number',true,'0','0.01'],['currency','العملة','text',true,'YER'],['method','طريقة التحصيل','select',true,[['CashToPlatform','نقد إلى الإدارة'],['BankTransfer','تحويل بنكي'],['WalletTransfer','تحويل محفظة']]],['reference','مرجع التحصيل الفريد','text',true],['note','ملاحظة','textarea']]
   }
 };
 
@@ -259,7 +265,7 @@ window.setDefaultServiceKind = async id => {
 
 async function loadPricing() {
   const result = await execute('PricingRuleModel','list',{}); state.pricing = result.data;
-  toggleEmpty('#pricing-body','#pricing-empty',result.data.map(item => `<tr><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${number(item.baseFare)}</td><td>${number(item.perKilometer)}</td><td>${number(item.perMinute)}</td><td>${number(item.serviceFee)}</td><td>${number(item.driverShareRate * 100)}%</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td></tr>`));
+  toggleEmpty('#pricing-body','#pricing-empty',result.data.map(item => `<tr><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${number(item.baseFare)}</td><td>${number(item.perKilometer)}</td><td>${number(item.perMinute)}</td><td>${number(item.serviceFee)}</td><td>${number((item.driverCommissionRate || 0) * 100)}%</td><td>${number(item.driverCommissionFixed || 0)}</td><td>${number(item.cancellationFee || 0)}</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td></tr>`));
 }
 
 async function loadWallet() {
@@ -274,6 +280,76 @@ async function loadWallet() {
   toggleEmpty('#wallet-body','#wallet-empty',wallet.transactions.map(item => `<tr><td>${badge(transactionTypes[item.type] ?? item.type, item.type === 0 ? 'success' : item.type === 1 ? 'danger' : 'info')}</td><td>${number(item.amount)}</td><td>${number(item.balanceAfter)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.externalReference || '—')}</td><td>${date(item.createdAtUtc)}</td></tr>`));
 }
 
+async function loadSettlements() {
+  const result = await execute('DriverSettlementPaymentModel', 'list', {});
+  state.settlements = result.data || [];
+  const rows = state.settlements.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.driverName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.driverPhone || item.driverId)}</span></td><td>${escapeHtml(item.id)}</td><td>${number(item.amountDue)} YER</td><td>${number(item.amountPaid)} YER</td><td>${number(item.amountOutstanding)} YER</td><td>${escapeHtml(item.paymentReference || '—')}</td><td>${date(item.createdAtUtc)}</td><td>${item.isSettled ? badge('تم التحصيل','success') : `<button class="button small" onclick="openSettlementForm(${Number(item.id)}, ${Number(item.amountOutstanding)})">تسجيل تحصيل</button>`}</td></tr>`);
+  toggleEmpty('#settlements-body', '#settlements-empty', rows);
+}
+
+async function loadLedgerAccounts() {
+  const result = await execute('LedgerAccountModel', 'list', {});
+  state.ledgerAccounts = result.data || [];
+  const select = $('#statement-account');
+  const current = select.value;
+  select.innerHTML = `<option value="">كافة الحسابات</option>${state.ledgerAccounts.map(item => `<option value="${Number(item.id)}">${escapeHtml(item.code)} — ${escapeHtml(item.name)} (${escapeHtml(item.currency)})</option>`).join('')}`;
+  select.value = [...select.options].some(option => option.value === current) ? current : '';
+}
+
+function syncStatementPeriodFields() {
+  const mode = $('#statement-period').value;
+  $$('.statement-period-field').forEach(field => field.classList.toggle('hidden', field.dataset.periodField !== mode));
+}
+
+function statementRequest() {
+  const data = {};
+  const accountId = $('#statement-account').value;
+  const entryType = $('#statement-type').value;
+  if (accountId) data.ledgerAccountId = Number(accountId);
+  if (entryType !== '') data.entryType = Number(entryType);
+  const mode = $('#statement-period').value;
+  if (mode === 'range') {
+    if ($('#statement-from').value) data.dateFromUtc = $('#statement-from').value;
+    if ($('#statement-to').value) data.dateToUtc = $('#statement-to').value;
+  } else if (mode === 'day' && $('#statement-day').value) {
+    data.dateFromUtc = $('#statement-day').value;
+    data.dateToUtc = $('#statement-day').value;
+  } else if (mode === 'month' && $('#statement-month').value) {
+    const [year, month] = $('#statement-month').value.split('-').map(Number);
+    data.year = year; data.month = month;
+  } else if (mode === 'year' && $('#statement-year').value) {
+    data.year = Number($('#statement-year').value);
+  }
+  return data;
+}
+
+async function loadAccountStatement() {
+  const result = await execute('AccountStatementModel', 'report', statementRequest());
+  const data = result.data || { accounts: [], lines: [] };
+  const summaries = (data.accounts || []).map(item => `<tr><td><span class="cell-main">${escapeHtml(item.accountCode)} — ${escapeHtml(item.accountName)}</span><span class="cell-sub">${escapeHtml(item.accountType)}</span></td><td>${escapeHtml(item.currency)}</td><td>${number(item.openingBalance)}</td><td>${number(item.debit)}</td><td>${number(item.credit)}</td><td>${number(item.closingBalance)}</td></tr>`);
+  toggleEmpty('#statement-summary-body', '#statement-empty', summaries);
+  const rows = (data.lines || []).map(item => `<tr><td>${date(item.postedAtUtc)}</td><td><span class="cell-main">${escapeHtml(item.accountCode)} — ${escapeHtml(item.accountName)}</span><span class="cell-sub">${escapeHtml(item.currency)}</span></td><td>${escapeHtml(item.entryNumber)}</td><td>${escapeHtml(journalEntryTypes[item.entryType] || item.entryType)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.entryReference)}</td><td>${number(item.debit)}</td><td>${number(item.credit)}</td><td>${number(item.runningBalance)}</td></tr>`);
+  toggleEmpty('#statement-lines-body', '#statement-empty', rows);
+}
+
+async function initializeAccounting() {
+  if (!window.confirm('سيتم إنشاء الحسابات الأساسية المفقودة فقط، دون تعديل أي حساب موجود. هل تريد المتابعة؟')) return;
+  const button = $('#accounting-setup-button');
+  button.disabled = true;
+  try {
+    const result = await execute('AccountingSetupModel', 'add', {});
+    toast(result.message || 'تمت تهيئة الحسابات الأساسية.');
+    await loadLedgerAccounts();
+    await loadAccountStatement();
+  } finally { button.disabled = false; }
+}
+
+window.openSettlementForm = async (id, outstanding) => {
+  await openForm('settlementPayment');
+  $('#modal-fields [name="driverSettlementId"]').value = String(id);
+  $('#modal-fields [name="amount"]').value = String(outstanding);
+};
+
 async function loadView(view, quiet = false) {
   if (!state.databaseConfigured && view !== 'console') {
     if (!quiet) toast('أعد اتصال قاعدة البيانات أولاً.', true);
@@ -286,6 +362,8 @@ async function loadView(view, quiet = false) {
     if (view === 'rides') await loadRides();
     if (view === 'catalog') await loadCatalog();
     if (view === 'pricing') await loadPricing();
+    if (view === 'settlements') await loadSettlements();
+    if (view === 'ledger') { await loadLedgerAccounts(); await loadAccountStatement(); }
     if (view === 'places') await loadPlaces();
     if (view === 'history') await loadHistory();
   } catch (error) { if (!quiet) toast(error.message, true); }
@@ -454,6 +532,9 @@ function bindEvents() {
   $('#ride-filter').addEventListener('change', loadRides);
   let searchTimer; $('#user-search').addEventListener('input', event => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadUsers(event.target.value.trim()).catch(error => toast(error.message, true)), 300); });
   $('#wallet-load').addEventListener('click', () => loadWallet().catch(error => toast(error.message, true)));
+  $('#statement-load').addEventListener('click', () => loadAccountStatement().catch(error => toast(error.message, true)));
+  $('#statement-period').addEventListener('change', syncStatementPeriodFields);
+  $('#accounting-setup-button').addEventListener('click', () => initializeAccounting().catch(error => toast(error.message, true)));
   $('#db-integrated').addEventListener('change', syncDatabaseAuth);
   $('#db-test').addEventListener('click', () => sendDatabase('/api/setup/database/test'));
   $('#database-form').addEventListener('submit', event => { event.preventDefault(); sendDatabase('/api/setup/database/save'); });
