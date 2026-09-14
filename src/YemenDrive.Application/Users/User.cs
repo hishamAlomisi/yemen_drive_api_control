@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
+using YemenDrive.Application.Accounting;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -11,7 +12,8 @@ namespace YemenDrive.Application.Users;
 public sealed class User(
     YemenDriveDbContext dbContext,
     DatabaseConfigurationStore configurationStore,
-    ICurrentUserContext currentUser) : OperationsService<UserModel>(configurationStore)
+    ICurrentUserContext currentUser,
+    FinancialAccountProvisioningService financialAccounts) : OperationsService<UserModel>(configurationStore)
 {
     protected override string GetSuccessMessage(string operation) => operation.ToLowerInvariant() switch
     {
@@ -62,8 +64,12 @@ public sealed class User(
             Wallet = new() { Currency = "YER" }
         };
 
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         dbContext.Users.Add(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await financialAccounts.ProvisionUserAsync(entity, cancellationToken);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return ToResponse(entity);
     }
 
@@ -91,7 +97,11 @@ public sealed class User(
         entity.District = model.District ?? entity.District;
         entity.UpdatedAtUtc = DateTime.UtcNow;
 
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await financialAccounts.ProvisionUserAsync(entity, cancellationToken);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return ToResponse(entity);
     }
 

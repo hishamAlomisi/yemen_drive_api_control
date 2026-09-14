@@ -27,6 +27,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 builder.Services.AddScoped<DevelopmentDataSeeder>();
 builder.Services.AddScoped<AccountingPostingService>();
+builder.Services.AddScoped<FinancialAccountProvisioningService>();
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.NumberHandling = JsonNumberHandling.AllowReadingFromString);

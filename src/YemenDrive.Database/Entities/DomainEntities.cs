@@ -6,7 +6,11 @@ public enum OfferStatus { Pending, Accepted, Rejected, Expired }
 public enum WalletTransactionType { Credit, Debit, Hold, Release, Refund, Commission }
 public enum NotificationType { RideOffer, RideStatus, Payment, Safety, System }
 public enum LedgerAccountType { Asset, Liability, Equity, Revenue, Expense }
-public enum FinancialPartyType { System, User, Wallet, ExternalProvider, CashBox, Bank, Other }
+public enum FinancialPartyType
+{
+    System = 0, User = 1, Wallet = 2, ExternalProvider = 3,
+    CashBox = 4, Bank = 5, Other = 6, ServiceKind = 7
+}
 public enum LedgerAccountPurpose
 {
     General, CustomerWallet, DriverCurrentAccount, ServiceFee,

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Accounting;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 
@@ -9,7 +10,8 @@ namespace YemenDrive.Application.Drivers;
 
 public sealed class Driver(
     YemenDriveDbContext dbContext,
-    DatabaseConfigurationStore configurationStore) : OperationsService<DriverModel>(configurationStore)
+    DatabaseConfigurationStore configurationStore,
+    FinancialAccountProvisioningService financialAccounts) : OperationsService<DriverModel>(configurationStore)
 {
     protected override bool Vaidate(DriverModel model, CancellationToken cancellationToken)
     {
@@ -49,9 +51,13 @@ public sealed class Driver(
             Rating = model.Rating,
             PhotoUrl = model.PhotoUrl
         };
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         user.Role = UserRole.Driver;
         dbContext.DriverProfiles.Add(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await financialAccounts.ProvisionUserAsync(user, cancellationToken);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return ToResult(entity);
     }
 

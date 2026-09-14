@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Accounting;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
 
@@ -10,7 +11,7 @@ public static class AuthenticationEndpoints
 {
     public static void MapAuthenticationEndpoints(this WebApplication app)
     {
-        app.MapPost("/api/auth/register", async (RegisterRequest request, YemenDriveDbContext db, OtpChallengeStore otpStore, CancellationToken token) =>
+        app.MapPost("/api/auth/register", async (RegisterRequest request, YemenDriveDbContext db, OtpChallengeStore otpStore, FinancialAccountProvisioningService financialAccounts, CancellationToken token) =>
         {
             var errors = ValidateRegistration(request);
             if (errors.Count > 0) return Results.Ok(ApiResult.Invalid(errors));
@@ -35,8 +36,12 @@ public static class AuthenticationEndpoints
                 District = request.District,
                 Wallet = new Wallet { Currency = "YER" }
             };
+            await using var transaction = await db.Database.BeginTransactionAsync(token);
             db.Users.Add(user);
             await db.SaveChangesAsync(token);
+            await financialAccounts.ProvisionUserAsync(user, token);
+            await db.SaveChangesAsync(token);
+            await transaction.CommitAsync(token);
             return Results.Ok(ApiResult.Ok(Session(user), "تم إنشاء الحساب وتسجيل الدخول بنجاح."));
         });
 

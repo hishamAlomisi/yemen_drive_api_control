@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
+using YemenDrive.Application.Accounting;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using ServiceKindEntity = YemenDrive.Database.Entities.ServiceKind;
@@ -9,18 +10,23 @@ namespace YemenDrive.Application.Catalog;
 
 public sealed class ServiceKind(
     YemenDriveDbContext dbContext,
-    DatabaseConfigurationStore configurationStore) : OperationsService<ServiceKindModel>(configurationStore)
+    DatabaseConfigurationStore configurationStore,
+    FinancialAccountProvisioningService financialAccounts) : OperationsService<ServiceKindModel>(configurationStore)
 {
     protected override async Task<object?> AddAsync(ServiceKindModel model, CancellationToken cancellationToken)
     {
         ValidateRequired(model);
         if (await dbContext.ServiceKinds.AnyAsync(x => x.Code == model.Code, cancellationToken))
             throw new ServiceException("kind_exists", "رمز نوع الخدمة موجود مسبقاً.");
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         var entity = new ServiceKindEntity();
         if (model.IsDefault && model.IsActive) await ClearDefaultAsync(null, cancellationToken);
         Apply(entity, model);
         dbContext.ServiceKinds.Add(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await financialAccounts.ProvisionServiceKindAsync(entity, cancellationToken);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return ToResult(entity);
     }
 
@@ -32,6 +38,8 @@ public sealed class ServiceKind(
         if (model.IsDefault && model.IsActive) await ClearDefaultAsync(entity.Id, cancellationToken);
         Apply(entity, model);
         entity.UpdatedAtUtc = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await financialAccounts.ProvisionServiceKindAsync(entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return ToResult(entity);

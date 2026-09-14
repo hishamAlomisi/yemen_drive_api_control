@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Accounting;
 using YemenDrive.Shared.Security;
 
 namespace YemenDrive.Api;
@@ -9,7 +10,9 @@ namespace YemenDrive.Api;
 /// Development-only, non-destructive sample data. Every item has a stable
 /// DEV-SEED marker and is only inserted when it does not exist already.
 /// </summary>
-public sealed class DevelopmentDataSeeder(YemenDriveDbContext db)
+public sealed class DevelopmentDataSeeder(
+    YemenDriveDbContext db,
+    FinancialAccountProvisioningService financialAccounts)
 {
     private const string Marker = "DEV-SEED";
 
@@ -18,6 +21,8 @@ public sealed class DevelopmentDataSeeder(YemenDriveDbContext db)
         await using var transaction = await db.Database.BeginTransactionAsync(token);
         var transport = await EnsureKindAsync("DEV-SEED-TRANSPORT", "نقل تجريبي", 1, token);
         var delivery = await EnsureKindAsync("DEV-SEED-DELIVERY", "توصيل تجريبي", 2, token);
+        await financialAccounts.ProvisionServiceKindAsync(transport, token);
+        await financialAccounts.ProvisionServiceKindAsync(delivery, token);
         var economy = await EnsureServiceAsync(transport, "DEV-SEED-ECONOMY", "سيارة اقتصادية", 4, 1500, token);
         var premium = await EnsureServiceAsync(transport, "DEV-SEED-PREMIUM", "سيارة مميزة", 4, 2400, token);
         await EnsureServiceAsync(delivery, "DEV-SEED-DELIVERY-BIKE", "دراجة توصيل", 1, 900, token);
@@ -25,6 +30,9 @@ public sealed class DevelopmentDataSeeder(YemenDriveDbContext db)
         var customer = await EnsureUserAsync("701000101", "عميل تجريبي", UserRole.Customer, token);
         var driverOne = await EnsureUserAsync("701000201", "سائق تجريبي 1", UserRole.Driver, token);
         var driverTwo = await EnsureUserAsync("701000202", "سائق تجريبي 2", UserRole.Driver, token);
+        await financialAccounts.ProvisionUserAsync(customer, token);
+        await financialAccounts.ProvisionUserAsync(driverOne, token);
+        await financialAccounts.ProvisionUserAsync(driverTwo, token);
         await EnsureDriverAsync(driverOne, transport, economy, "سيارة تجريبية 1", "DEV-101", 4.8m, token);
         await EnsureDriverAsync(driverTwo, transport, premium, "سيارة تجريبية 2", "DEV-202", 4.7m, token);
         await EnsureLiveLocationAsync(driverOne, 15.3694, 44.1910, token);
