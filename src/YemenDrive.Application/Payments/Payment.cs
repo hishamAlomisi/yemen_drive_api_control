@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Accounting;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -12,7 +13,8 @@ namespace YemenDrive.Application.Payments;
 public sealed class Payment(
     YemenDriveDbContext dbContext,
     DatabaseConfigurationStore configurationStore,
-    ICurrentUserContext currentUser) : OperationsService<PaymentModel>(configurationStore)
+    ICurrentUserContext currentUser,
+    RideAccountingPostingService accounting) : OperationsService<PaymentModel>(configurationStore)
 {
     protected override async Task<object?> AddAsync(PaymentModel model, CancellationToken cancellationToken)
     {
@@ -102,6 +104,7 @@ public sealed class Payment(
             Status = PaymentStatus.Paid,
             PaymentReference = $"wallet:ride:{ride.Id}:payment:{idempotencyKey ?? Guid.NewGuid().ToString("N")}" 
         });
+        await accounting.PostWalletPaymentAsync(ride, entity, userId.Value, cancellationToken);
         try
         {
             await dbContext.SaveChangesAsync(cancellationToken);

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Accounting;
 using DriverSettlementPaymentEntity = YemenDrive.Database.Entities.DriverSettlementPayment;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
@@ -13,7 +14,9 @@ namespace YemenDrive.Application.DriverSettlements;
 public sealed class DriverSettlementPayment(
     YemenDriveDbContext db,
     DatabaseConfigurationStore config,
-    ICurrentUserContext currentUser) : OperationsService<DriverSettlementPaymentModel>(config)
+    ICurrentUserContext currentUser,
+    AccountingPostingService accounting,
+    FinancialAccountProvisioningService financialAccounts) : OperationsService<DriverSettlementPaymentModel>(config)
 {
     protected override async Task<object?> AddAsync(DriverSettlementPaymentModel model, CancellationToken token)
     {
@@ -51,8 +54,42 @@ public sealed class DriverSettlementPayment(
         };
         db.DriverSettlementPayments.Add(entity);
         await db.SaveChangesAsync(token);
+        var journal = await PostCollectionAsync(entity, adminId, token);
         await transaction.CommitAsync(token);
-        return new { entity.Id, entity.DriverSettlementId, entity.DriverId, entity.Amount, entity.Currency, entity.Method, entity.Reference, entity.CreatedAtUtc };
+        return new { entity.Id, entity.DriverSettlementId, entity.DriverId, entity.Amount, entity.Currency, entity.Method, entity.Reference, entity.CreatedAtUtc, journalEntryId = journal.JournalEntryId };
+    }
+
+    private async Task<AccountingPostingResult> PostCollectionAsync(
+        DriverSettlementPaymentEntity payment, int adminId, CancellationToken token)
+    {
+        await financialAccounts.EnsureSystemAccountsAsync(token);
+        var driverParty = await db.FinancialParties.SingleOrDefaultAsync(x =>
+            x.Type == FinancialPartyType.User && x.EntityId == payment.DriverId, token)
+            ?? throw new ServiceException("driver_financial_account_not_found", "الحساب المالي للسائق غير موجود.");
+        var driverAccount = await db.LedgerAccounts.SingleOrDefaultAsync(x =>
+            x.FinancialPartyId == driverParty.Id && x.Purpose == LedgerAccountPurpose.DriverCurrentAccount &&
+            x.Currency == payment.Currency, token)
+            ?? throw new ServiceException("driver_financial_account_not_found", "حساب ذمم السائق غير موجود.");
+        var collectionAccountCode = string.Equals(payment.Method, "CashToPlatform", StringComparison.OrdinalIgnoreCase)
+            ? "1000" : "1200";
+        var collectionAccount = await db.LedgerAccounts.SingleOrDefaultAsync(x =>
+            x.Code == collectionAccountCode && x.Currency == payment.Currency, token)
+            ?? throw new ServiceException("collection_account_not_found", "حساب تحصيل التسوية غير موجود.");
+
+        return await accounting.PostAsync(new AccountingPostingRequest(
+            JournalEntryType.DriverSettlementCollection,
+            payment.Reference,
+            "تحصيل مديونية سائق",
+            payment.Currency,
+            [
+                new AccountingPostingLine(collectionAccount.Id, Debit: payment.Amount, Description: "استلام تسوية السائق"),
+                new AccountingPostingLine(driverAccount.Id, Credit: payment.Amount,
+                    FinancialPartyId: driverParty.Id, UserId: payment.DriverId,
+                    Description: "تخفيض مديونية السائق")
+            ],
+            SourceType: "DriverSettlementPayment",
+            SourceId: payment.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            CreatedByUserId: adminId), token);
     }
 
     private async Task<int> RequireAdminAsync(CancellationToken token)

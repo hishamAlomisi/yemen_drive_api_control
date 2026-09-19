@@ -154,21 +154,23 @@ public sealed class RideOffer(
         foreach (var other in ride.Offers.Where(x => x.Id != entity.Id && x.Status == OfferStatus.Pending))
             other.Status = OfferStatus.Rejected;
 
+        var acceptedFare = RoundYemeniRial(entity.Amount);
+        entity.Amount = acceptedFare;
         ride.DriverId = entity.DriverId;
-        ride.ServerPrice = entity.Amount;
-        ride.CustomerPrice = entity.Amount;
+        ride.ServerPrice = acceptedFare;
+        ride.CustomerPrice = acceptedFare;
         var pricingRule = await dbContext.PricingRules.AsNoTracking().SingleOrDefaultAsync(
             x => x.IsActive && x.ServiceKindId == ride.ServiceKindId &&
                  x.ServiceCatalogItemId == ride.ServiceCatalogItemId,
             cancellationToken);
-        ride.ServiceFee = pricingRule?.ServiceFee ?? 0m;
-        ride.CancellationFee = pricingRule?.CancellationFee ?? 0m;
+        ride.ServiceFee = RoundYemeniRial(pricingRule?.ServiceFee ?? 0m);
+        ride.CancellationFee = RoundYemeniRial(pricingRule?.CancellationFee ?? 0m);
         ride.TotalAmount = ride.CustomerPrice + ride.ServiceFee;
         var commissionRate = pricingRule?.DriverCommissionRate ?? 0m;
         var commissionFixed = pricingRule?.DriverCommissionFixed ?? 0m;
-        ride.DriverCommissionAmount = Math.Round(
+        ride.DriverCommissionAmount = decimal.Round(
             ride.CustomerPrice.Value * commissionRate + commissionFixed,
-            2,
+            0,
             MidpointRounding.AwayFromZero);
         if (ride.DriverCommissionAmount > ride.CustomerPrice)
             throw new ServiceException("invalid_driver_commission", "عمولة السائق لا يمكن أن تتجاوز أجرة الرحلة.");
@@ -204,6 +206,9 @@ public sealed class RideOffer(
             rideStatus = ride.Status
         };
     }
+
+    private static decimal RoundYemeniRial(decimal amount) =>
+        decimal.Round(amount, 0, MidpointRounding.AwayFromZero);
 
     protected override async Task<object?> GetAsync(RideOfferModel model, CancellationToken cancellationToken) =>
         ToResult(await FindAsync(model.Id, cancellationToken, true));

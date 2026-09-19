@@ -121,6 +121,7 @@ tbody tr:hover { background: #fafcfc; }
 .wallet-query div { display: flex; gap: 9px; }
 .wallet-query input { width: min(530px, 100%); }
 .wallet-summary { margin-top: 15px; display: grid; grid-template-columns: repeat(2, minmax(0, 260px)); gap: 13px; }
+.payment-method-logo { width: 44px; height: 44px; object-fit: contain; display: block; border-radius: 10px; background: #f4f7f8; padding: 4px; }
 .wallet-summary > div { padding: 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
 .wallet-summary span, .wallet-summary small { display: block; color: var(--muted); }
 .wallet-summary strong { display: inline-block; margin: 5px 0; font-size: 25px; }

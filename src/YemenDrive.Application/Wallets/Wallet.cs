@@ -14,54 +14,15 @@ public sealed class Wallet(
     DatabaseConfigurationStore configurationStore,
     ICurrentUserContext currentUser) : OperationsService<WalletModel>(configurationStore)
 {
-    protected override async Task<object?> AddAsync(WalletModel model, CancellationToken cancellationToken)
+    protected override Task<object?> AddAsync(WalletModel model, CancellationToken cancellationToken)
     {
-        if (model.Amount <= 0 || string.IsNullOrWhiteSpace(model.Description))
-            throw new ServiceException("invalid_transaction", "المبلغ والوصف مطلوبان.");
-
-        // The token wins for client requests; an explicit id is supported for
-        // the administration console, which has no customer session.
-        var userId = currentUser.UserId ?? model.UserId
-            ?? throw new ServiceException("authentication_required", "يجب تسجيل الدخول لتنفيذ هذه العملية.");
-        await using var databaseTransaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken);
-        var wallet = await dbContext.Wallets.SingleOrDefaultAsync(x => x.UserId == userId, cancellationToken)
-            ?? throw new ServiceException("wallet_not_found", "محفظة المستخدم غير موجودة.");
-        var increasesBalance = model.Type is WalletTransactionType.Credit or WalletTransactionType.Release or WalletTransactionType.Refund;
-        var nextBalance = increasesBalance ? wallet.Balance + model.Amount : wallet.Balance - model.Amount;
-        if (nextBalance < 0)
-            throw new ServiceException("insufficient_balance", "رصيد المحفظة غير كافٍ.");
-
-        wallet.Balance = nextBalance;
-        wallet.UpdatedAtUtc = DateTime.UtcNow;
-        var transaction = new WalletTransaction
-        {
-            WalletId = wallet.Id,
-            RideId = model.RideId,
-            Type = model.Type,
-            Amount = model.Amount,
-            BalanceAfter = nextBalance,
-            Description = model.Description.Trim(),
-            ExternalReference = model.ExternalReference
-        };
-        dbContext.WalletTransactions.Add(transaction);
-        try
-        {
-            await dbContext.SaveChangesAsync(cancellationToken);
-            await databaseTransaction.CommitAsync(cancellationToken);
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            await databaseTransaction.RollbackAsync(cancellationToken);
-            throw new ServiceException("wallet_concurrency_conflict", "تغير رصيد المحفظة أثناء تنفيذ العملية. أعد المحاولة.");
-        }
-        return new { transaction.Id, transaction.Type, transaction.Amount, transaction.BalanceAfter, wallet.Currency };
+        return Task.FromException<object?>(new ServiceException("wallet_direct_mutation_not_supported",
+            "لا يمكن إنشاء حركة محفظة مباشرة. استخدم عملية دفع أو استرداد أو طلب شحن مؤكد."));
     }
 
     protected override async Task<object?> GetAsync(WalletModel model, CancellationToken cancellationToken)
     {
-        var userId = currentUser.UserId ?? model.UserId
-            ?? throw new ServiceException("authentication_required", "يجب تسجيل الدخول لتنفيذ هذه العملية.");
+        var userId = await ResolveReadableUserIdAsync(model.UserId, cancellationToken);
         var wallet = await dbContext.Wallets.AsNoTracking().Include(x => x.Transactions)
             .SingleOrDefaultAsync(x => x.UserId == userId, cancellationToken)
             ?? throw new ServiceException("wallet_not_found", "محفظة المستخدم غير موجودة.");
@@ -76,5 +37,16 @@ public sealed class Wallet(
                 x.Id, x.Type, x.Amount, x.BalanceAfter, x.Description, x.ExternalReference, x.CreatedAtUtc
             })
         };
+    }
+
+    private async Task<int> ResolveReadableUserIdAsync(int? requestedUserId, CancellationToken token)
+    {
+        var currentUserId = currentUser.RequireUserId();
+        if (requestedUserId is null || requestedUserId == currentUserId) return currentUserId;
+        var isAdmin = await dbContext.Users.AnyAsync(x => x.Id == currentUserId &&
+            x.Role == UserRole.Admin && x.IsActive, token);
+        if (!isAdmin)
+            throw new ServiceException("wallet_access_denied", "لا يمكنك الاطلاع على محفظة مستخدم آخر.");
+        return requestedUserId.Value;
     }
 }

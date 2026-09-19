@@ -18,7 +18,9 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
     public DbSet<CashCollectionApproval> CashCollectionApprovals => Set<CashCollectionApproval>();
+    public DbSet<RideCancellationRequest> RideCancellationRequests => Set<RideCancellationRequest>();
     public DbSet<PaymentCardToken> PaymentCardTokens => Set<PaymentCardToken>();
+    public DbSet<PaymentMethod> PaymentMethods => Set<PaymentMethod>();
     public DbSet<Promotion> Promotions => Set<Promotion>();
     public DbSet<SupportTicket> SupportTickets => Set<SupportTicket>();
     public DbSet<ReferralRedemption> ReferralRedemptions => Set<ReferralRedemption>();
@@ -104,6 +106,14 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
             .IsUnique().HasFilter("[RideId] IS NOT NULL AND [Status] = 2");
         modelBuilder.Entity<PaymentTransaction>().ToTable(table => table.HasCheckConstraint(
             "CK_PaymentTransactions_Amount_Positive", "[Amount] > 0"));
+        modelBuilder.Entity<PaymentMethod>().HasIndex(x => x.Code).IsUnique();
+        modelBuilder.Entity<PaymentMethod>().HasIndex(x => new { x.IsActive, x.SortOrder });
+        modelBuilder.Entity<PaymentMethod>().Property(x => x.Code).HasMaxLength(80).IsRequired();
+        modelBuilder.Entity<PaymentMethod>().Property(x => x.NameAr).HasMaxLength(200).IsRequired();
+        modelBuilder.Entity<PaymentMethod>().Property(x => x.DescriptionAr).HasMaxLength(1000).IsRequired();
+        modelBuilder.Entity<PaymentMethod>().Property(x => x.ImageUrl).HasMaxLength(500);
+        modelBuilder.Entity<PaymentMethod>().Property(x => x.ProviderCode).HasMaxLength(80).IsRequired();
+        modelBuilder.Entity<PaymentMethod>().Property(x => x.PublicInstructionsAr).HasMaxLength(2000);
         modelBuilder.Entity<CashCollectionApproval>().HasIndex(x => new { x.RideId, x.Status })
             .IsUnique().HasFilter("[Status] = 0");
         modelBuilder.Entity<CashCollectionApproval>().HasIndex(x => new { x.DriverId, x.IdempotencyKey })
@@ -113,6 +123,15 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<CashCollectionApproval>().Property(x => x.DecisionNote).HasMaxLength(500);
         modelBuilder.Entity<CashCollectionApproval>().ToTable(table =>
             table.HasCheckConstraint("CK_CashCollectionApprovals_Amounts", "[CashReceived] >= 0 AND [WalletDebitAmount] > 0"));
+        modelBuilder.Entity<RideCancellationRequest>().Property(x => x.RowVersion).IsRowVersion();
+        modelBuilder.Entity<RideCancellationRequest>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
+        modelBuilder.Entity<RideCancellationRequest>().HasIndex(x => new { x.RideId, x.Status })
+            .IsUnique().HasFilter("[Status] IN (0, 2)");
+        modelBuilder.Entity<RideCancellationRequest>().Property(x => x.Reason).HasMaxLength(1000).IsRequired();
+        modelBuilder.Entity<RideCancellationRequest>().Property(x => x.DriverNote).HasMaxLength(1000);
+        modelBuilder.Entity<RideCancellationRequest>().Property(x => x.AdminNote).HasMaxLength(1000);
+        modelBuilder.Entity<RideCancellationRequest>().ToTable(table => table.HasCheckConstraint(
+            "CK_RideCancellationRequests_Reason_NotBlank", "LEN(LTRIM(RTRIM([Reason]))) >= 3"));
         modelBuilder.Entity<Notification>().HasIndex(x => new { x.UserId, x.IsRead, x.CreatedAtUtc });
         modelBuilder.Entity<CommunicationMessage>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
         modelBuilder.Entity<CommunicationMessage>().Property(x => x.MessageType).HasMaxLength(32).IsRequired();
@@ -266,6 +285,12 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
             .HasOne(x => x.Customer)
             .WithMany()
             .HasForeignKey(x => x.CustomerId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<RideCancellationRequest>()
+            .HasOne(x => x.Ride)
+            .WithMany()
+            .HasForeignKey(x => x.RideId)
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<Ride>()

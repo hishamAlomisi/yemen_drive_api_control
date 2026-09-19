@@ -22,16 +22,25 @@ public sealed class Pricing(
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new ServiceException("pricing_not_found", "لا توجد قاعدة تسعير مطابقة.");
 
-        var amount = rule.BaseFare + rule.PerKilometer * (decimal)model.DistanceKm + rule.PerMinute * (decimal)model.DurationMinutes;
-        var driverShare = decimal.Round(amount * rule.DriverShareRate, 2);
+        // The currently supported currency is the Yemeni rial. Keep the
+        // quote, the accepted fare and every later financial posting in whole
+        // rials so the displayed amount can never create a hidden fraction.
+        var amount = RoundYemeniRial(
+            rule.BaseFare + rule.PerKilometer * (decimal)model.DistanceKm +
+            rule.PerMinute * (decimal)model.DurationMinutes);
+        var serviceFee = RoundYemeniRial(rule.ServiceFee);
+        var driverShare = RoundYemeniRial(amount * rule.DriverShareRate);
         return new
         {
-            amount = decimal.Round(amount, 2),
-            serviceFee = decimal.Round(rule.ServiceFee, 2),
-            total = decimal.Round(amount + rule.ServiceFee, 2),
+            amount,
+            serviceFee,
+            total = amount + serviceFee,
             driverShare,
-            platformShare = decimal.Round(amount - driverShare, 2),
+            platformShare = amount - driverShare,
             currency = "YER"
         };
     }
+
+    private static decimal RoundYemeniRial(decimal amount) =>
+        decimal.Round(amount, 0, MidpointRounding.AwayFromZero);
 }

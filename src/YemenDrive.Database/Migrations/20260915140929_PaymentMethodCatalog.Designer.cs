@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using YemenDrive.Database;
 
@@ -11,9 +12,11 @@ using YemenDrive.Database;
 namespace YemenDrive.Database.Migrations
 {
     [DbContext(typeof(YemenDriveDbContext))]
-    partial class YemenDriveDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260915140929_PaymentMethodCatalog")]
+    partial class PaymentMethodCatalog
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1226,96 +1229,6 @@ namespace YemenDrive.Database.Migrations
                         });
                 });
 
-            modelBuilder.Entity("YemenDrive.Database.Entities.RideCancellationRequest", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime?>("AdminDecidedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("AdminNote")
-                        .HasMaxLength(1000)
-                        .HasColumnType("nvarchar(1000)");
-
-                    b.Property<int?>("AdminUserId")
-                        .HasColumnType("int");
-
-                    b.Property<double?>("CancellationLatitude")
-                        .HasColumnType("float");
-
-                    b.Property<double?>("CancellationLongitude")
-                        .HasColumnType("float");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("CustomerId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("DriverDecidedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("DriverDecision")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("DriverId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("DriverNote")
-                        .HasMaxLength(1000)
-                        .HasColumnType("nvarchar(1000)");
-
-                    b.Property<DateTime?>("LocationObservedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Reason")
-                        .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("nvarchar(1000)");
-
-                    b.Property<decimal?>("RequestedRefundAmount")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<int?>("RequestedRefundMethod")
-                        .HasColumnType("int");
-
-                    b.Property<int>("RideId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("RideStatusAtRequest")
-                        .HasColumnType("int");
-
-                    b.Property<byte[]>("RowVersion")
-                        .IsConcurrencyToken()
-                        .IsRequired()
-                        .ValueGeneratedOnAddOrUpdate()
-                        .HasColumnType("rowversion");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("UpdatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("RideId", "CreatedAtUtc");
-
-                    b.HasIndex("RideId", "Status")
-                        .IsUnique()
-                        .HasFilter("[Status] IN (0, 2)");
-
-                    b.ToTable("RideCancellationRequests", t =>
-                        {
-                            t.HasCheckConstraint("CK_RideCancellationRequests_Reason_NotBlank", "LEN(LTRIM(RTRIM([Reason]))) >= 3");
-                        });
-                });
-
             modelBuilder.Entity("YemenDrive.Database.Entities.RideOffer", b =>
                 {
                     b.Property<int>("Id")
@@ -1886,17 +1799,6 @@ namespace YemenDrive.Database.Migrations
                     b.Navigation("ServiceCatalogItem");
 
                     b.Navigation("ServiceKind");
-                });
-
-            modelBuilder.Entity("YemenDrive.Database.Entities.RideCancellationRequest", b =>
-                {
-                    b.HasOne("YemenDrive.Database.Entities.Ride", "Ride")
-                        .WithMany()
-                        .HasForeignKey("RideId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Ride");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.RideOffer", b =>

@@ -32,8 +32,8 @@ public sealed class Dashboard(
                 x.Status,
                 x.ServiceKindId,
                 x.ServiceCatalogItemId,
-                x.PickupAddress,
-                x.DestinationAddress,
+                pickupDisplayName = x.PickupLabel != "" ? x.PickupLabel : "نقطة الانطلاق",
+                destinationDisplayName = x.DestinationLabel != "" ? x.DestinationLabel : "الوجهة",
                 x.CustomerPrice,
                 x.CreatedAtUtc
             })

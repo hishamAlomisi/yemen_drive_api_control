@@ -42,6 +42,21 @@ public abstract class OperationsService<TModel> : ModelService<TModel> where TMo
                     return RejectAsync(model, cancellationToken);
 
                 }
+            case "refer":
+                {
+                    return ReferAsync(model, cancellationToken);
+
+                }
+            case "adminapprove":
+                {
+                    return AdminApproveAsync(model, cancellationToken);
+
+                }
+            case "adminreject":
+                {
+                    return AdminRejectAsync(model, cancellationToken);
+
+                }
             case "cancel":
                 {
                     return CancelAsync(model, cancellationToken);
@@ -87,6 +102,15 @@ public abstract class OperationsService<TModel> : ModelService<TModel> where TMo
 
     protected virtual Task<object?> RejectAsync(TModel model, CancellationToken cancellationToken) =>
         NotImplemented("الرفض");
+
+    protected virtual Task<object?> ReferAsync(TModel model, CancellationToken cancellationToken) =>
+        NotImplemented("الإحالة");
+
+    protected virtual Task<object?> AdminApproveAsync(TModel model, CancellationToken cancellationToken) =>
+        NotImplemented("موافقة الإدارة");
+
+    protected virtual Task<object?> AdminRejectAsync(TModel model, CancellationToken cancellationToken) =>
+        NotImplemented("رفض الإدارة");
 
     protected virtual Task<object?> CancelAsync(TModel model, CancellationToken cancellationToken) =>
         NotImplemented("الإلغاء");

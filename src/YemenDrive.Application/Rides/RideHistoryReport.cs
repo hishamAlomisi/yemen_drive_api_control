@@ -36,13 +36,20 @@ public sealed class RideHistoryReport(
             {
                 x.Id, x.CustomerId, x.DriverId, x.Status,
                 x.ServiceKindId, x.ServiceCatalogItemId,
-                pickup = x.PickupAddress,
-                destination = x.DestinationAddress,
+                pickup = x.PickupLabel != "" ? x.PickupLabel : "نقطة الانطلاق",
+                destination = x.DestinationLabel != "" ? x.DestinationLabel : "الوجهة",
+                pickupDisplayName = x.PickupLabel != "" ? x.PickupLabel : "نقطة الانطلاق",
+                destinationDisplayName = x.DestinationLabel != "" ? x.DestinationLabel : "الوجهة",
                 x.PickupAddress, x.DestinationAddress,
                 x.PickupLatitude, x.PickupLongitude,
                 x.DestinationLatitude, x.DestinationLongitude,
                 amount = x.CustomerPrice ?? x.ServerPrice ?? 0,
-                x.CustomerPrice, x.ServerPrice,
+                x.CustomerPrice, x.ServerPrice, x.TotalAmount, x.CancellationFee,
+                paidPaymentProvider = dbContext.PaymentTransactions
+                    .Where(payment => payment.RideId == x.Id && payment.Status == PaymentStatus.Paid)
+                    .OrderByDescending(payment => payment.CreatedAtUtc)
+                    .Select(payment => payment.Provider)
+                    .FirstOrDefault(),
                 serviceKindNameAr = x.ServiceKind.NameAr,
                 serviceNameAr = x.ServiceCatalogItem.NameAr,
                 x.CreatedAtUtc, x.StartedAtUtc, x.CompletedAtUtc

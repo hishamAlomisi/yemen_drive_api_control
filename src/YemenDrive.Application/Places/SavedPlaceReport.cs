@@ -14,7 +14,7 @@ public sealed class SavedPlaceReport(
     protected override async Task<object?> ListAsync(SavedPlaceModel model, CancellationToken token)
     {
         var userId = currentUser.RequireUserId();
-        return await db.SavedPlaces.AsNoTracking().Where(x => x.UserId == userId).OrderByDescending(x => x.CreatedAtUtc).Take(500)
+        return await db.SavedPlaces.AsNoTracking().Where(x => x.UserId == userId).OrderByDescending(x => x.UpdatedAtUtc).Take(500)
             .Select(x => new
             {
                 x.Id,

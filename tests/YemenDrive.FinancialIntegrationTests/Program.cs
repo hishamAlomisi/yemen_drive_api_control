@@ -12,8 +12,9 @@ using YemenDrive.Database.Entities;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
 using RideService = YemenDrive.Application.Rides.Ride;
-using LedgerAccountEntity = YemenDrive.Database.Entities.LedgerAccount;
 using CashCollectionApprovalService = YemenDrive.Application.DriverPayments.CashCollectionApproval;
+using UserService = YemenDrive.Application.Users.User;
+using ServiceKindService = YemenDrive.Application.Catalog.ServiceKind;
 
 var databaseName = $"YemenDrive_FinancialTests_{Guid.NewGuid():N}";
 var options = new DbContextOptionsBuilder<YemenDriveDbContext>()
@@ -33,9 +34,10 @@ try
     await db.Database.MigrateAsync();
     var fixture = await SeedAsync(db);
 
+    await FinancialAccountsAreProvisionedForUsersAndServiceKindsAsync(db, configuration, fixture);
     await GeneralLedgerFoundationIsBalancedAndImmutableAsync(db, configuration, fixture);
     await WalletPaymentIsAtomicAndIdempotentAsync(db, configuration, fixture);
-    await WalletPaymentCanBeRefundedWithCancellationFeeAsync(db, configuration, fixture);
+    await RideCancellationRequiresReasonAndFollowsReviewWorkflowAsync(db, configuration, fixture);
     await CashSettlementHandlesExcessAndShortageAsync(db, configuration, fixture);
     await InsufficientCashShortageRollsBackAsync(db, configuration, fixture);
 
@@ -54,18 +56,15 @@ static async Task GeneralLedgerFoundationIsBalancedAndImmutableAsync(
     DatabaseConfigurationStore configuration,
     Fixture fixture)
 {
-    var setup = new AccountingSetup(db, configuration, new TestCurrentUser(fixture.AdminId));
+    var provisioning = new FinancialAccountProvisioningService(db);
+    var setup = new AccountingSetup(db, configuration, new TestCurrentUser(fixture.AdminId), provisioning);
     AssertSuccess(await ExecuteAsync(setup, "add", new AccountingSetupModel()), "accounting chart setup");
     Assert(await db.LedgerAccounts.CountAsync() >= 6, "standard accounting accounts must exist");
 
-    var driverParty = new FinancialParty { Code = "TEST-DRIVER", Name = "جهة اختبار السائق", Type = FinancialPartyType.User, EntityId = fixture.DriverId };
-    var customerParty = new FinancialParty { Code = "TEST-CUSTOMER-WALLET", Name = "جهة اختبار محفظة العميل", Type = FinancialPartyType.Wallet, EntityId = fixture.CustomerWalletId };
-    db.FinancialParties.AddRange(driverParty, customerParty);
-    await db.SaveChangesAsync();
-    var driverAccount = new LedgerAccountEntity { Code = "1100-T", Name = "حساب سائق اختبار", Type = LedgerAccountType.Asset, Purpose = LedgerAccountPurpose.DriverCurrentAccount, Currency = "YER", FinancialPartyId = driverParty.Id };
-    var customerWalletAccount = new LedgerAccountEntity { Code = "2100-T", Name = "محفظة عميل اختبار", Type = LedgerAccountType.Liability, Purpose = LedgerAccountPurpose.CustomerWallet, Currency = "YER", FinancialPartyId = customerParty.Id };
-    db.LedgerAccounts.AddRange(driverAccount, customerWalletAccount);
-    await db.SaveChangesAsync();
+    var driverParty = await db.FinancialParties.SingleAsync(x => x.Type == FinancialPartyType.User && x.EntityId == fixture.DriverId);
+    var customerParty = await db.FinancialParties.SingleAsync(x => x.Type == FinancialPartyType.Wallet && x.EntityId == fixture.CustomerWalletId);
+    var driverAccount = await db.LedgerAccounts.SingleAsync(x => x.FinancialPartyId == driverParty.Id && x.Purpose == LedgerAccountPurpose.DriverCurrentAccount);
+    var customerWalletAccount = await db.LedgerAccounts.SingleAsync(x => x.FinancialPartyId == customerParty.Id && x.Purpose == LedgerAccountPurpose.CustomerWallet);
     var accounts = await db.LedgerAccounts.ToDictionaryAsync(x => x.Code);
 
     var posting = new AccountingPostingService(db);
@@ -104,6 +103,38 @@ static async Task GeneralLedgerFoundationIsBalancedAndImmutableAsync(
     AssertSuccess(await ExecuteAsync(statement, "report", new AccountStatementModel()), "account statement report");
 }
 
+static async Task FinancialAccountsAreProvisionedForUsersAndServiceKindsAsync(
+    YemenDriveDbContext db,
+    DatabaseConfigurationStore configuration,
+    Fixture fixture)
+{
+    var provisioning = new FinancialAccountProvisioningService(db);
+    var setup = new AccountingSetup(db, configuration, new TestCurrentUser(fixture.AdminId), provisioning);
+    AssertSuccess(await ExecuteAsync(setup, "add", new AccountingSetupModel()), "legacy financial account provisioning");
+
+    var existingCustomerWallet = await db.Wallets.SingleAsync(x => x.UserId == fixture.CustomerId);
+    var existingCustomerWalletParty = await db.FinancialParties.SingleAsync(x => x.Type == FinancialPartyType.Wallet && x.EntityId == existingCustomerWallet.Id);
+    Assert(await db.LedgerAccounts.AnyAsync(x => x.FinancialPartyId == existingCustomerWalletParty.Id && x.Purpose == LedgerAccountPurpose.CustomerWallet), "legacy customer wallet has a ledger account");
+    var existingDriverParty = await db.FinancialParties.SingleAsync(x => x.Type == FinancialPartyType.User && x.EntityId == fixture.DriverId);
+    Assert(await db.LedgerAccounts.AnyAsync(x => x.FinancialPartyId == existingDriverParty.Id && x.Purpose == LedgerAccountPurpose.DriverCurrentAccount), "legacy driver has a current account");
+
+    var users = new UserService(db, configuration, new TestCurrentUser(fixture.AdminId), provisioning);
+    AssertSuccess(await ExecuteAsync(users, "add", new YemenDrive.Application.Users.UserModel(DisplayName: "عميل حسابي جديد", PhoneNumber: "+967700000099", Password: "integration-test", Role: UserRole.Customer)), "new customer financial account provisioning");
+    AssertSuccess(await ExecuteAsync(users, "add", new YemenDrive.Application.Users.UserModel(DisplayName: "سائق حسابي جديد", PhoneNumber: "+967700000098", Password: "integration-test", Role: UserRole.Driver)), "new driver financial account provisioning");
+    var newCustomer = await db.Users.Include(x => x.Wallet).SingleAsync(x => x.PhoneNumber == "+967700000099");
+    var newDriver = await db.Users.Include(x => x.Wallet).SingleAsync(x => x.PhoneNumber == "+967700000098");
+    var newCustomerWalletParty = await db.FinancialParties.SingleAsync(x => x.Type == FinancialPartyType.Wallet && x.EntityId == newCustomer.Wallet!.Id);
+    var newDriverParty = await db.FinancialParties.SingleAsync(x => x.Type == FinancialPartyType.User && x.EntityId == newDriver.Id);
+    Assert(await db.LedgerAccounts.AnyAsync(x => x.FinancialPartyId == newCustomerWalletParty.Id && x.Purpose == LedgerAccountPurpose.CustomerWallet), "new customer wallet ledger account");
+    Assert(await db.LedgerAccounts.AnyAsync(x => x.FinancialPartyId == newDriverParty.Id && x.Purpose == LedgerAccountPurpose.DriverCurrentAccount), "new driver current ledger account");
+
+    var kinds = new ServiceKindService(db, configuration, provisioning);
+    AssertSuccess(await ExecuteAsync(kinds, "add", new YemenDrive.Application.Catalog.ServiceKindModel(Code: "financial-auto-kind", NameAr: "نوع اختبار الحسابات")), "service-kind financial accounts");
+    var kind = await db.ServiceKinds.SingleAsync(x => x.Code == "financial-auto-kind");
+    var kindParty = await db.FinancialParties.SingleAsync(x => x.Type == FinancialPartyType.ServiceKind && x.EntityId == kind.Id);
+    AssertEqual(2, await db.LedgerAccounts.CountAsync(x => x.FinancialPartyId == kindParty.Id && (x.Purpose == LedgerAccountPurpose.ServiceFee || x.Purpose == LedgerAccountPurpose.ServiceCollection)), "service kind has fee and collection accounts");
+}
+
 static async Task<Fixture> SeedAsync(YemenDriveDbContext db)
 {
     var customer = new User { PhoneNumber = "+967700000001", DisplayName = "Financial Test Customer", PasswordHash = "test", Role = UserRole.Customer };
@@ -131,7 +162,7 @@ static async Task<Fixture> SeedAsync(YemenDriveDbContext db)
 static async Task WalletPaymentIsAtomicAndIdempotentAsync(YemenDriveDbContext db, DatabaseConfigurationStore configuration, Fixture fixture)
 {
     var ride = await AddRideAsync(db, fixture, RideStatus.Completed, 900m, 100m, 50m);
-    var payment = new Payment(db, configuration, new TestCurrentUser(fixture.CustomerId));
+    var payment = new Payment(db, configuration, new TestCurrentUser(fixture.CustomerId), RideAccounting(db));
     var request = new PaymentModel(ride.Id, ride.Id, null, 1_000m, "YER", "YemenDriveWallet", PaymentStatus.Paid, null, "wallet-payment-idempotency");
     AssertSuccess(await ExecuteAsync(payment, "add", request), "wallet payment");
     AssertSuccess(await ExecuteAsync(payment, "add", request), "wallet payment retry");
@@ -140,37 +171,79 @@ static async Task WalletPaymentIsAtomicAndIdempotentAsync(YemenDriveDbContext db
     AssertEqual(950m, await WalletBalanceAsync(db, fixture.DriverId), "driver wallet after payment");
     AssertEqual(1, await db.PaymentTransactions.CountAsync(x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid), "paid payment count");
     AssertEqual(2, await db.WalletTransactions.CountAsync(x => x.RideId == ride.Id), "wallet movements count");
+    var walletJournal = await db.JournalEntries.Include(x => x.Lines).SingleAsync(x =>
+        x.SourceType == "RideWalletPayment" && x.SourceId == $"ride:{ride.Id}");
+    AssertEqual(JournalEntryType.RideWalletPayment, walletJournal.Type, "wallet payment journal type");
+    AssertEqual(walletJournal.TotalDebit, walletJournal.TotalCredit, "wallet payment journal balanced");
+    Assert(await db.JournalLines.AnyAsync(x => x.JournalEntryId == walletJournal.Id && x.RideId == ride.Id), "wallet journal lines linked to ride");
 }
 
-static async Task WalletPaymentCanBeRefundedWithCancellationFeeAsync(YemenDriveDbContext db, DatabaseConfigurationStore configuration, Fixture fixture)
+static async Task RideCancellationRequiresReasonAndFollowsReviewWorkflowAsync(YemenDriveDbContext db, DatabaseConfigurationStore configuration, Fixture fixture)
 {
-    var ride = await db.Rides.OrderBy(x => x.Id).FirstAsync(x => x.Status == RideStatus.Completed);
-    var cancellation = new RideService(db, configuration, new TestCurrentUser(fixture.CustomerId));
-    AssertSuccess(await ExecuteAsync(cancellation, "cancel", new RideModel(Id: ride.Id)), "wallet cancellation refund");
+    var completedRide = await db.Rides.OrderBy(x => x.Id).FirstAsync(x => x.Status == RideStatus.Completed);
+    var customerCancellation = new RideCancellationRequest(db, configuration, new TestCurrentUser(fixture.CustomerId));
+    Assert(!(await ExecuteAsync(customerCancellation, "add", new RideCancellationRequestModel(RideId: completedRide.Id, Reason: "لا أريد المتابعة"))).Success,
+        "completed ride cannot be cancelled or refunded");
+
+    var ride = await AddRideAsync(db, fixture, RideStatus.DriverEnRoute, 900m, 100m, 50m);
+    Assert(!(await ExecuteAsync(customerCancellation, "add", new RideCancellationRequestModel(RideId: ride.Id, Reason: " "))).Success,
+        "cancellation reason is mandatory");
+    AssertSuccess(await ExecuteAsync(customerCancellation, "add", new RideCancellationRequestModel(RideId: ride.Id, Reason: "تغيرت خططي اليوم")), "customer cancellation request");
     db.ChangeTracker.Clear();
-    AssertEqual(2_950m, await WalletBalanceAsync(db, fixture.CustomerId), "customer wallet after refund");
-    AssertEqual(100m, await WalletBalanceAsync(db, fixture.DriverId), "driver wallet after reversal");
-    AssertEqual(1, await db.PaymentTransactions.CountAsync(x => x.RideId == ride.Id && x.Status == PaymentStatus.Refunded), "refund record count");
-    AssertEqual(RideStatus.Cancelled, await db.Rides.Where(x => x.Id == ride.Id).Select(x => x.Status).SingleAsync(), "ride status after refund");
+    var first = await db.RideCancellationRequests.SingleAsync(x => x.RideId == ride.Id);
+    AssertEqual(RideCancellationStatus.DriverReviewPending, first.Status, "pre-start cancellation is sent to driver");
+    AssertEqual(RideStatus.CancellationPending, await db.Rides.Where(x => x.Id == ride.Id).Select(x => x.Status).SingleAsync(), "ride stops while cancellation is reviewed");
+    var driverCancellation = new RideCancellationRequest(db, configuration, new TestCurrentUser(fixture.DriverId));
+    AssertSuccess(await ExecuteAsync(driverCancellation, "reject", new RideCancellationRequestModel(Id: first.Id, Note: "لا أوافق")), "driver rejects cancellation");
+    db.ChangeTracker.Clear();
+    AssertEqual(RideCancellationStatus.DriverRejected, await db.RideCancellationRequests.Where(x => x.Id == first.Id).Select(x => x.Status).SingleAsync(), "driver rejection is recorded");
+    AssertSuccess(await ExecuteAsync(customerCancellation, "add", new RideCancellationRequestModel(RideId: ride.Id, Reason: "ما زلت بحاجة للإلغاء")), "customer retries cancellation");
+    var second = await db.RideCancellationRequests.OrderByDescending(x => x.Id).FirstAsync(x => x.RideId == ride.Id);
+    AssertSuccess(await ExecuteAsync(driverCancellation, "refer", new RideCancellationRequestModel(Id: second.Id, Note: "مراجعة الإدارة مطلوبة")), "driver refers cancellation to administration");
+    db.ChangeTracker.Clear();
+    AssertEqual(RideCancellationStatus.AdminReviewPending, await db.RideCancellationRequests.Where(x => x.Id == second.Id).Select(x => x.Status).SingleAsync(), "referred cancellation awaits administration");
+    var adminCancellation = new RideCancellationRequest(db, configuration, new TestCurrentUser(fixture.AdminId));
+    AssertSuccess(await ExecuteAsync(adminCancellation, "adminApprove", new RideCancellationRequestModel(Id: second.Id, Note: "تمت المراجعة")), "admin approves cancellation");
+    AssertEqual(RideStatus.Cancelled, await db.Rides.Where(x => x.Id == ride.Id).Select(x => x.Status).SingleAsync(), "admin approval finalizes cancellation");
 }
 
 static async Task CashSettlementHandlesExcessAndShortageAsync(YemenDriveDbContext db, DatabaseConfigurationStore configuration, Fixture fixture)
 {
     var excessRide = await AddRideAsync(db, fixture, RideStatus.InProgress, 900m, 100m, 0m);
-    var cash = new DriverCashPayment(db, configuration, new TestCurrentUser(fixture.DriverId));
+    var cash = new DriverCashPayment(db, configuration, new TestCurrentUser(fixture.DriverId), RideAccounting(db));
     AssertSuccess(await ExecuteAsync(cash, "add", new DriverCashPaymentModel(excessRide.Id, 1_100m, "YER", null, "cash-excess")), "cash excess");
     db.ChangeTracker.Clear();
     AssertEqual(3_050m, await WalletBalanceAsync(db, fixture.CustomerId), "customer wallet after cash excess");
     AssertEqual(PaymentStatus.Pending, await db.DriverSettlements.Where(x => x.PaymentReference!.Contains($"ride:{excessRide.Id}:" )).Select(x => x.Status).SingleAsync(), "cash platform debt status");
+    var cashJournal = await db.JournalEntries.Include(x => x.Lines).SingleAsync(x =>
+        x.SourceType == "RideCashPayment" && x.SourceId == $"cash:ride:{excessRide.Id}:driver:{fixture.DriverId}");
+    AssertEqual(JournalEntryType.RideCashCollection, cashJournal.Type, "cash payment journal type");
+    AssertEqual(cashJournal.TotalDebit, cashJournal.TotalCredit, "cash payment journal balanced");
+    var cashJournalAccountCodes = await db.JournalLines.Where(x => x.JournalEntryId == cashJournal.Id)
+        .Join(db.LedgerAccounts, line => line.LedgerAccountId, account => account.Id, (_, account) => account.Code).ToListAsync();
+    Assert(cashJournalAccountCodes.Any(code => code == $"4100-SK-{fixture.ServiceKindId}"), "cash journal uses service-kind fee account");
+    Assert(cashJournalAccountCodes.Any(code => code == $"4200-SK-{fixture.ServiceKindId}"), "cash journal uses service-kind collection account");
     var debt = await db.DriverSettlements.SingleAsync(x => x.PaymentReference!.Contains($"ride:{excessRide.Id}:"));
+    AssertEqual(150m, debt.PlatformCommission, "cash platform debt includes the configured driver commission but excludes customer excess");
+    AssertEqual(100m, debt.Adjustments, "cash excess is recorded as a driver settlement adjustment");
+    AssertEqual(-250m, debt.NetPayable, "cash excess increases the driver's debt to the customer and platform");
     var originalNetPayable = debt.NetPayable;
-    var settlementPayment = new DriverSettlementPaymentService(db, configuration, new TestCurrentUser(fixture.AdminId));
+    var settlementPayment = new DriverSettlementPaymentService(db, configuration, new TestCurrentUser(fixture.AdminId), new AccountingPostingService(db), new FinancialAccountProvisioningService(db));
     var collection = new DriverSettlementPaymentModel(debt.Id, debt.Id, -debt.NetPayable, "YER", "CashToPlatform", "cash-debt-collection", "اختبار تحصيل");
     AssertSuccess(await ExecuteAsync(settlementPayment, "add", collection), "cash debt collection");
     Assert(! (await ExecuteAsync(settlementPayment, "add", collection)).Success, "duplicate collection reference must be rejected");
     db.ChangeTracker.Clear();
     AssertEqual(originalNetPayable, await db.DriverSettlements.Where(x => x.Id == debt.Id).Select(x => x.NetPayable).SingleAsync(), "source debt remains immutable");
     AssertEqual(-originalNetPayable, await db.DriverSettlementPayments.Where(x => x.DriverSettlementId == debt.Id).SumAsync(x => x.Amount), "cash debt collected amount");
+    var settlementPaymentId = await db.DriverSettlementPayments.Where(x => x.DriverSettlementId == debt.Id)
+        .Select(x => x.Id).SingleAsync();
+    var settlementJournal = await db.JournalEntries.Include(x => x.Lines).SingleAsync(x =>
+        x.SourceType == "DriverSettlementPayment" && x.SourceId == settlementPaymentId.ToString());
+    AssertEqual(JournalEntryType.DriverSettlementCollection, settlementJournal.Type, "driver settlement journal type");
+    AssertEqual(settlementJournal.TotalDebit, settlementJournal.TotalCredit, "driver settlement journal balanced");
+    var settlementCodes = await db.JournalLines.Where(x => x.JournalEntryId == settlementJournal.Id)
+        .Join(db.LedgerAccounts, line => line.LedgerAccountId, account => account.Id, (_, account) => account.Code).ToListAsync();
+    Assert(settlementCodes.Contains("1000") && settlementCodes.Contains($"1100-DRV-{fixture.DriverId}"), "cash settlement uses platform cash and driver accounts");
 
     var shortageRide = await AddRideAsync(db, fixture, RideStatus.InProgress, 900m, 100m, 0m);
     AssertSuccess(await ExecuteAsync(cash, "add", new DriverCashPaymentModel(shortageRide.Id, 900m, "YER", null, "cash-shortage")), "cash shortage approval request");
@@ -187,19 +260,63 @@ static async Task CashSettlementHandlesExcessAndShortageAsync(YemenDriveDbContex
     AssertEqual(2_950m, await WalletBalanceAsync(db, fixture.CustomerId), "customer wallet after cash shortage");
 }
 
+static async Task CashPaidRideCancellationSupportsBothRefundChoicesAsync(
+    YemenDriveDbContext db,
+    DatabaseConfigurationStore configuration,
+    Fixture fixture)
+{
+    var cash = new DriverCashPayment(db, configuration, new TestCurrentUser(fixture.DriverId), RideAccounting(db));
+    var customerCancellation = new RideService(db, configuration, new TestCurrentUser(fixture.CustomerId), RideAccounting(db));
+
+    var directReturnRide = await AddRideAsync(db, fixture, RideStatus.InProgress, 900m, 100m, 50m);
+    AssertSuccess(await ExecuteAsync(cash, "add", new DriverCashPaymentModel(directReturnRide.Id, 1_000m, "YER", null, "cash-cancel-direct")), "cash payment before direct return cancellation");
+    var balanceBeforeDirectReturn = await WalletBalanceAsync(db, fixture.CustomerId);
+    AssertSuccess(await ExecuteAsync(customerCancellation, "cancel", new RideModel(
+        Id: directReturnRide.Id,
+        CashCancellationRefundMethod: CashCancellationRefundMethod.ReturnFromDriver)), "cash cancellation by direct driver return");
+    db.ChangeTracker.Clear();
+    AssertEqual(balanceBeforeDirectReturn, await WalletBalanceAsync(db, fixture.CustomerId), "direct cash return must not change customer wallet");
+    AssertEqual(1, await db.PaymentTransactions.CountAsync(x => x.RideId == directReturnRide.Id && x.Status == PaymentStatus.Refunded && x.Provider == "CashReturnFromDriver"), "direct cash return creates immutable refund record");
+    var directPaymentId = await db.PaymentTransactions.Where(x => x.RideId == directReturnRide.Id && x.Status == PaymentStatus.Paid)
+        .Select(x => x.Id).SingleAsync();
+    AssertEqual(1, await db.JournalEntries.CountAsync(x => x.SourceType == "RideCancellation" && x.SourceId == $"payment:{directPaymentId}:driver-cash"), "direct cash return creates one journal reversal");
+    AssertEqual(0, await db.DriverSettlements.CountAsync(x => x.PaymentReference != null && x.PaymentReference.Contains($"cash-cancellation:payment:") && x.DriverId == fixture.DriverId), "direct cash return creates no additional driver debt");
+    AssertEqual(RideStatus.Cancelled, await db.Rides.Where(x => x.Id == directReturnRide.Id).Select(x => x.Status).SingleAsync(), "direct return ride cancelled");
+    Assert(!(await ExecuteAsync(customerCancellation, "cancel", new RideModel(
+        Id: directReturnRide.Id,
+        CashCancellationRefundMethod: CashCancellationRefundMethod.ReturnFromDriver))).Success, "direct cancellation cannot be repeated");
+
+    var walletRefundRide = await AddRideAsync(db, fixture, RideStatus.InProgress, 900m, 100m, 50m);
+    AssertSuccess(await ExecuteAsync(cash, "add", new DriverCashPaymentModel(walletRefundRide.Id, 1_000m, "YER", null, "cash-cancel-wallet")), "cash payment before wallet refund cancellation");
+    var balanceBeforeWalletRefund = await WalletBalanceAsync(db, fixture.CustomerId);
+    AssertSuccess(await ExecuteAsync(customerCancellation, "cancel", new RideModel(
+        Id: walletRefundRide.Id,
+        CashCancellationRefundMethod: CashCancellationRefundMethod.CreditCustomerWallet)), "cash cancellation to customer wallet");
+    db.ChangeTracker.Clear();
+    const decimal expectedRefund = 950m;
+    AssertEqual(balanceBeforeWalletRefund + expectedRefund, await WalletBalanceAsync(db, fixture.CustomerId), "wallet cancellation credits the customer after cancellation fee");
+    AssertEqual(1, await db.WalletTransactions.CountAsync(x => x.RideId == walletRefundRide.Id && x.Type == WalletTransactionType.Refund && x.Amount == expectedRefund), "wallet cancellation creates refund wallet movement");
+    var cancellationDebt = await db.DriverSettlements.SingleAsync(x => x.PaymentReference != null && x.PaymentReference.StartsWith("cash-cancellation:payment:") && x.DriverId == fixture.DriverId);
+    AssertEqual(-expectedRefund, cancellationDebt.NetPayable, "wallet refund creates separate driver debt");
+    AssertEqual(1, await db.PaymentTransactions.CountAsync(x => x.RideId == walletRefundRide.Id && x.Status == PaymentStatus.Refunded && x.Provider == "CashRefundToCustomerWallet"), "wallet cancellation creates immutable refund record");
+    Assert(await db.JournalEntries.AnyAsync(x => x.SourceType == "RideCancellation" && x.SourceId!.EndsWith(":wallet")), "wallet cancellation creates journal reversal");
+    Assert(await db.Notifications.AnyAsync(x => x.UserId == fixture.DriverId && x.Body.Contains("مديونية مستقلة")), "driver receives wallet-refund debt notification");
+}
+
 static async Task InsufficientCashShortageRollsBackAsync(YemenDriveDbContext db, DatabaseConfigurationStore configuration, Fixture fixture)
 {
     var wallet = await db.Wallets.SingleAsync(x => x.UserId == fixture.CustomerId);
     wallet.Balance = 50m;
     await db.SaveChangesAsync();
     var ride = await AddRideAsync(db, fixture, RideStatus.InProgress, 900m, 100m, 0m);
-    var cash = new DriverCashPayment(db, configuration, new TestCurrentUser(fixture.DriverId));
+    var cash = new DriverCashPayment(db, configuration, new TestCurrentUser(fixture.DriverId), RideAccounting(db));
     AssertSuccess(await ExecuteAsync(cash, "add", new DriverCashPaymentModel(ride.Id, 800m, "YER", null, "cash-insufficient")), "insufficient shortage request");
     db.ChangeTracker.Clear();
     AssertEqual(0, await db.CashCollectionApprovals.CountAsync(x => x.RideId == ride.Id), "insufficient shortage creates no approval request");
     Assert(await db.Notifications.AnyAsync(x => x.UserId == fixture.CustomerId && x.Body.Contains("لا يكفي")), "customer receives insufficient-wallet notification");
     AssertEqual(50m, await WalletBalanceAsync(db, fixture.CustomerId), "wallet unchanged after rejected cash shortage");
     AssertEqual(0, await db.PaymentTransactions.CountAsync(x => x.RideId == ride.Id), "no payment after rejected cash shortage");
+    AssertEqual(0, await db.JournalEntries.CountAsync(x => x.SourceType == "RideCashPayment" && x.SourceId == $"cash:ride:{ride.Id}:driver:{fixture.DriverId}"), "no journal after rejected cash shortage");
     AssertEqual(RideStatus.InProgress, await db.Rides.Where(x => x.Id == ride.Id).Select(x => x.Status).SingleAsync(), "ride remains in progress after rejected cash shortage");
 }
 
@@ -224,6 +341,9 @@ static Task<ApiResult> ExecuteAsync<T>(YemenDrive.Services.Core.ModelService<T> 
 
 static Task<decimal> WalletBalanceAsync(YemenDriveDbContext db, int userId) =>
     db.Wallets.Where(x => x.UserId == userId).Select(x => x.Balance).SingleAsync();
+
+static RideAccountingPostingService RideAccounting(YemenDriveDbContext db) =>
+    new(db, new AccountingPostingService(db));
 
 static void AssertSuccess(ApiResult result, string name) => Assert(result.Success, $"{name} failed: {result.Code}");
 static void AssertEqual<T>(T expected, T actual, string name) where T : notnull => Assert(EqualityComparer<T>.Default.Equals(expected, actual), $"{name}: expected {expected}, got {actual}");

@@ -50,36 +50,81 @@ public sealed class RideReport(
         if (!isAdmin && currentUserId is null && model.CustomerId is not null)
             query = query.Where(x => x.CustomerId == model.CustomerId);
         if (model.Status is not null) query = query.Where(x => x.Status == model.Status);
-        var driverOfferUserId = driverProfile?.UserId;
-
-        return await query.OrderByDescending(x => x.CreatedAtUtc)
+        var rides = await query
+            .Include(x => x.Customer)
+            .Include(x => x.Driver)
+            .Include(x => x.ServiceKind)
+            .Include(x => x.ServiceCatalogItem)
+            .Include(x => x.Offers)
+            .OrderByDescending(x => x.CreatedAtUtc)
             .Take(200)
-            .Select(x => new
+            .ToListAsync(cancellationToken);
+
+        var driverLocation = driverProfile is null
+            ? null
+            : await dbContext.DriverLiveLocations.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.DriverId == driverProfile.UserId, cancellationToken);
+
+        return rides.Select(x =>
+        {
+            var assignedToCurrentDriver = driverProfile is not null && x.DriverId == driverProfile.UserId;
+            // The customer, an administrator and the assigned driver may see
+            // the full destination.  A driver deciding whether to make an
+            // offer receives only pickup navigation and a readable area name.
+            var revealDestination = isAdmin || driverProfile is null || assignedToCurrentDriver;
+            var offer = driverProfile is null
+                ? null
+                : x.Offers.Where(item => item.DriverId == driverProfile.UserId)
+                    .OrderByDescending(item => item.CreatedAtUtc).FirstOrDefault();
+            var pickupName = RideLocationText.DisplayName(x.PickupLabel, x.PickupAddress, "نقطة الانطلاق");
+            var destinationName = revealDestination
+                ? RideLocationText.DisplayName(x.DestinationLabel, x.DestinationAddress, "الوجهة")
+                : RideLocationText.AreaName(x.DestinationLabel, x.DestinationAddress, "ضمن المنطقة المحددة");
+            var pickupDistanceMeters = driverLocation is null
+                ? (double?)null
+                : HaversineMeters(driverLocation.Latitude, driverLocation.Longitude, x.PickupLatitude, x.PickupLongitude);
+
+            return new
             {
-                x.Id, x.CustomerId, customerName = x.Customer.DisplayName,
-                customerPhone = x.Customer.PhoneNumber, x.DriverId,
-                driverName = x.Driver != null ? x.Driver.DisplayName : null,
+                x.Id, x.CustomerId,
+                customerName = revealDestination ? x.Customer.DisplayName : null,
+                customerPhone = revealDestination ? x.Customer.PhoneNumber : null,
+                x.DriverId,
+                driverName = x.Driver?.DisplayName,
                 x.Status, x.ServiceKindId, x.ServiceCatalogItemId,
                 serviceKindCode = x.ServiceKind.Code, serviceKindNameAr = x.ServiceKind.NameAr,
                 serviceCode = x.ServiceCatalogItem.Code, serviceNameAr = x.ServiceCatalogItem.NameAr,
-                x.PickupAddress, x.DestinationAddress, x.CustomerPrice, x.ServiceFee,
-                x.TotalAmount, x.DriverCommissionAmount, x.DriverShare, x.PlatformShare, x.CreatedAtUtc,
-                driverOfferAmount = !isAdmin && driverOfferUserId.HasValue
-                    ? x.Offers.Where(offer => offer.DriverId == driverOfferUserId.Value)
-                        .OrderByDescending(offer => offer.CreatedAtUtc)
-                        .Select(offer => (decimal?)offer.Amount).FirstOrDefault()
-                    : null,
-                driverOfferExpiresAtUtc = !isAdmin && driverOfferUserId.HasValue
-                    ? x.Offers.Where(offer => offer.DriverId == driverOfferUserId.Value)
-                        .OrderByDescending(offer => offer.CreatedAtUtc)
-                        .Select(offer => (DateTime?)offer.ExpiresAtUtc).FirstOrDefault()
-                    : null,
-                driverOfferStatus = !isAdmin && driverOfferUserId.HasValue
-                    ? x.Offers.Where(offer => offer.DriverId == driverOfferUserId.Value)
-                        .OrderByDescending(offer => offer.CreatedAtUtc)
-                        .Select(offer => (OfferStatus?)offer.Status).FirstOrDefault()
-                    : null
-            })
-            .ToListAsync(cancellationToken);
+                pickupDisplayName = pickupName,
+                destinationDisplayName = destinationName,
+                pickupAddress = pickupName,
+                destinationAddress = destinationName,
+                x.PickupLatitude, x.PickupLongitude,
+                destinationLatitude = revealDestination ? x.DestinationLatitude : (double?)null,
+                destinationLongitude = revealDestination ? x.DestinationLongitude : (double?)null,
+                destinationAvailable = revealDestination,
+                pickupDistanceMeters,
+                driverLatitude = driverProfile is null ? (double?)null : driverLocation?.Latitude,
+                driverLongitude = driverProfile is null ? (double?)null : driverLocation?.Longitude,
+                driverLocationObservedAtUtc = driverProfile is null ? null : driverLocation?.ObservedAtUtc,
+                x.CustomerPrice, x.ServiceFee, x.TotalAmount, x.DriverCommissionAmount, x.DriverShare, x.PlatformShare, x.CreatedAtUtc,
+                driverOfferAmount = offer?.Amount,
+                driverOfferExpiresAtUtc = offer?.ExpiresAtUtc,
+                driverOfferStatus = offer?.Status
+            };
+        }).ToList();
     }
+
+    private static double HaversineMeters(double firstLatitude, double firstLongitude,
+        double secondLatitude, double secondLongitude)
+    {
+        const double earthRadiusMeters = 6371000d;
+        var latitudeDelta = DegreesToRadians(secondLatitude - firstLatitude);
+        var longitudeDelta = DegreesToRadians(secondLongitude - firstLongitude);
+        var a = Math.Sin(latitudeDelta / 2) * Math.Sin(latitudeDelta / 2) +
+                Math.Cos(DegreesToRadians(firstLatitude)) * Math.Cos(DegreesToRadians(secondLatitude)) *
+                Math.Sin(longitudeDelta / 2) * Math.Sin(longitudeDelta / 2);
+        return 2 * earthRadiusMeters * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+    }
+
+    private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180d;
 }

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Accounting;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -13,7 +14,8 @@ namespace YemenDrive.Application.DriverPayments;
 public sealed class DriverCashPayment(
     YemenDriveDbContext db,
     DatabaseConfigurationStore config,
-    ICurrentUserContext currentUser) : OperationsService<DriverCashPaymentModel>(config)
+    ICurrentUserContext currentUser,
+    RideAccountingPostingService accounting) : OperationsService<DriverCashPaymentModel>(config)
 {
     protected override async Task<object?> AddAsync(DriverCashPaymentModel model, CancellationToken token)
     {
@@ -144,11 +146,17 @@ public sealed class DriverCashPayment(
             IdempotencyKey = idempotencyKey
         };
         db.PaymentTransactions.Add(payment);
-        if (platformReceivable > 0)
+        // The driver physically holds every cash amount received. Besides the
+        // platform share, any excess returned to the customer's wallet is a
+        // separate receivable from that same driver; it must therefore appear
+        // in the settlement balance as well as in the ledger journal.
+        var customerWalletExcess = Math.Max(0m, difference);
+        var driverSettlementReceivable = platformReceivable + customerWalletExcess;
+        if (driverSettlementReceivable > 0)
         {
             // With cash, the driver physically holds the whole amount. The
-            // platform's service fee and commission remain a documented debt
-            // to be settled with the driver; no driver wallet is debited.
+            // platform share and any excess credited to the customer wallet
+            // remain documented debts; no driver wallet is debited.
             db.DriverSettlements.Add(new DriverSettlement
             {
                 DriverId = driverId,
@@ -156,12 +164,13 @@ public sealed class DriverCashPayment(
                 PeriodEndUtc = DateTime.UtcNow,
                 GrossRideAmount = totalDue,
                 PlatformCommission = platformReceivable,
-                Adjustments = 0,
-                NetPayable = -platformReceivable,
+                Adjustments = customerWalletExcess,
+                NetPayable = -driverSettlementReceivable,
                 Status = PaymentStatus.Pending,
                 PaymentReference = cashReference
             });
         }
+        await accounting.PostCashCollectionAsync(ride, payment, model.CashReceived, difference, driverId, token);
         ride.Status = RideStatus.Completed;
         ride.CompletedAtUtc = DateTime.UtcNow;
         ride.UpdatedAtUtc = DateTime.UtcNow;

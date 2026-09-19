@@ -41,7 +41,13 @@ public sealed class AccountingPostingService(YemenDriveDbContext db)
     {
         ValidateRequest(request);
         var currency = request.Currency.Trim().ToUpperInvariant();
-        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        // Operational payments own one serializable transaction that also
+        // changes wallets, payments and ride state. Reuse it so a journal
+        // entry can never be committed while its payment rolls back.
+        var ownsTransaction = db.Database.CurrentTransaction is null;
+        await using var transaction = ownsTransaction
+            ? await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token)
+            : null;
 
         if (!string.IsNullOrWhiteSpace(request.SourceType) && !string.IsNullOrWhiteSpace(request.SourceId))
         {
@@ -51,7 +57,7 @@ public sealed class AccountingPostingService(YemenDriveDbContext db)
                 x.Type == request.Type, token);
             if (existing is not null)
             {
-                await transaction.CommitAsync(token);
+                if (ownsTransaction) await transaction!.CommitAsync(token);
                 return new AccountingPostingResult(existing.Id, existing.EntryNumber, true);
             }
         }
@@ -131,11 +137,11 @@ public sealed class AccountingPostingService(YemenDriveDbContext db)
         try
         {
             await db.SaveChangesAsync(token);
-            await transaction.CommitAsync(token);
+            if (ownsTransaction) await transaction!.CommitAsync(token);
         }
         catch (DbUpdateException) when (!string.IsNullOrWhiteSpace(request.SourceType) && !string.IsNullOrWhiteSpace(request.SourceId))
         {
-            await transaction.RollbackAsync(token);
+            if (ownsTransaction) await transaction!.RollbackAsync(token);
             db.ChangeTracker.Clear();
             var existing = await db.JournalEntries.AsNoTracking().SingleOrDefaultAsync(x =>
                 x.SourceType == request.SourceType!.Trim() &&

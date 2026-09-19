@@ -34,6 +34,7 @@
         <button class="nav-item" data-view="catalog"><span class="nav-icon">▦</span><span>الخدمات</span></button>
         <button class="nav-item" data-view="pricing"><span class="nav-icon">¤</span><span>التسعير</span></button>
         <button class="nav-item" data-view="wallet"><span class="nav-icon">□</span><span>المحفظة</span></button>
+        <button class="nav-item" data-view="payment-methods"><span class="nav-icon">▣</span><span>طرق الدفع</span></button>
         <button class="nav-item" data-view="settlements"><span class="nav-icon">⇄</span><span>مديونيات السائقين</span></button>
         <button class="nav-item" data-view="ledger"><span class="nav-icon">≡</span><span>كشف الحساب</span></button>
         <button class="nav-item" data-view="places"><span class="nav-icon">☆</span><span>المفضلة</span></button>
@@ -119,10 +120,15 @@
         </section>
 
         <section class="view" id="view-wallet">
-          <div class="section-toolbar"><div><h2>المحفظة</h2><p>عرض الرصيد وإضافة الحركات المالية</p></div><button class="button primary" data-form="wallet">إضافة حركة</button></div>
-          <section class="wallet-query"><label for="wallet-user-id">معرف المستخدم</label><div><input id="wallet-user-id" placeholder="00000000-0000-0000-0000-000000000000"><button class="button" id="wallet-load">عرض المحفظة</button></div></section>
+          <div class="section-toolbar"><div><h2>المحفظة</h2><p>عرض الرصيد والحركات المالية المنشورة. لا يمكن إضافة حركة مباشرة.</p></div></div>
+          <section class="wallet-query"><label for="wallet-user-id">معرف المستخدم الرقمي</label><div><input id="wallet-user-id" type="number" min="1" step="1" placeholder="مثال: 12"><button class="button" id="wallet-load">عرض المحفظة</button></div></section>
           <div class="wallet-summary hidden" id="wallet-summary"><div><span>الرصيد الحالي</span><strong id="wallet-balance">0</strong><small id="wallet-currency">YER</small></div><div><span>عدد الحركات</span><strong id="wallet-transactions-count">0</strong><small>حركة مالية</small></div></div>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>النوع</th><th>المبلغ</th><th>الرصيد بعد الحركة</th><th>الوصف</th><th>المرجع</th><th>التاريخ</th></tr></thead><tbody id="wallet-body"></tbody></table></div><div class="empty-state" id="wallet-empty">أدخل معرف المستخدم لعرض محفظته.</div></section>
+        </section>
+
+        <section class="view" id="view-payment-methods">
+          <div class="section-toolbar"><div><h2>طرق الدفع الخارجية</h2><p>الوسائل التي تظهر للعميل أثناء دفع الرحلة أو شحن المحفظة. لا تحفظ هذه الشاشة مفاتيح مزودي الدفع.</p></div><button class="button primary" data-form="paymentMethod">إضافة طريقة دفع</button></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الصورة</th><th>الاسم والوصف</th><th>النوع</th><th>رمز المزود</th><th>تظهر في</th><th>الترتيب</th><th>الحالة</th></tr></thead><tbody id="payment-methods-body"></tbody></table></div><div class="empty-state hidden" id="payment-methods-empty">لم تتم إضافة طرق دفع خارجية بعد.</div></section>
         </section>
 
         <section class="view" id="view-settlements">
@@ -131,7 +137,7 @@
         </section>
 
         <section class="view" id="view-ledger">
-          <div class="section-toolbar"><div><h2>كشف الحساب</h2><p>عرض القيود المنشورة فقط؛ لا يمكن تعديلها أو حذفها من هذه الشاشة.</p></div><button class="button" id="accounting-setup-button" type="button">تهيئة الحسابات الأساسية</button></div>
+          <div class="section-toolbar"><div><h2>كشف الحساب</h2><p>عرض القيود المنشورة فقط؛ لا يمكن تعديلها أو حذفها من هذه الشاشة.</p></div><button class="button" id="accounting-setup-button" type="button">تهيئة وربط الحسابات المالية</button></div>
           <section class="data-section">
             <div class="section-header"><div><h2>مرشحات الكشف</h2><p>اختر حساباً أو اتركه على كافة الحسابات، ثم حدد الفترة ونوع العملية.</p></div><button class="button primary" id="statement-load" type="button">عرض الكشف</button></div>
             <div class="form-grid">

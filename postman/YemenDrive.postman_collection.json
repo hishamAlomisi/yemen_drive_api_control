@@ -231,7 +231,8 @@
                 ]
               }
             }
-          ]
+          ],
+          "description": "ينشئ حساب العميل ومحفظته، ثم يجهز جهة مالية وحساب محفظة في الأستاذ تلقائياً بالرصيد الافتتاحي صفر. لا ينشئ هذا الطلب قيداً مالياً."
         },
         {
           "name": "Login Customer",
@@ -413,7 +414,8 @@
                 ]
               }
             }
-          ]
+          ],
+          "description": "ينشئ نوع الخدمة ويجهز تلقائياً حساب رسوم الخدمة وحساب تحصيل الخدمة المرتبطين به. الحسابات تبدأ بلا رصيد ولا قيد."
         },
         {
           "name": "Add Service Catalog Item",
@@ -484,6 +486,80 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"PricingModel\",\n  \"operation\": \"report\",\n  \"data\": {\n    \"serviceKindId\": {{serviceKindId}},\n    \"serviceCatalogItemId\": {{serviceCatalogId}},\n    \n    \"distanceKm\": 8.5,\n    \"durationMinutes\": 20\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "04.5 - Maps (server proxy)",
+      "description": "هذه الطلبات تتطلب authToken ومفاتيح Google محفوظة في إعدادات الخادم فقط. لا تضع أي مفتاح في Postman.",
+      "item": [
+        {
+          "name": "Get Driving Route Quote",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"MapRouteQuoteModel\",\n  \"operation\": \"report\",\n  \"data\": {\n    \"originLatitude\": 15.3694,\n    \"originLongitude\": 44.1910,\n    \"destinationLatitude\": 15.3840,\n    \"destinationLongitude\": 44.2060\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Search Places",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"MapLocationSearchModel\",\n  \"operation\": \"search\",\n  \"data\": {\n    \"query\": \"Sanaa\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "Reverse Geocode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"MapLocationSearchModel\",\n  \"operation\": \"report\",\n  \"data\": {\n    \"latitude\": 15.3694,\n    \"longitude\": 44.1910\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute"
+          }
+        },
+        {
+          "name": "List Nearby Available Drivers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"NearbyDriverModel\",\n  \"operation\": \"list\",\n  \"data\": {\n    \"pickupLatitude\": 15.3694,\n    \"pickupLongitude\": 44.1910,\n    \"radiusMeters\": 10000\n  }\n}"
             },
             "url": "{{baseUrl}}/api/execute"
           }
@@ -753,8 +829,8 @@
             "url": "{{baseUrl}}/api/execute"
           }
         },
-        {
-          "name": "Get Customer Ride History",
+    {
+      "name": "Get Customer Ride History",
           "request": {
             "method": "POST",
             "header": [
@@ -767,9 +843,61 @@
               "mode": "raw",
               "raw": "{\n  \"model\": \"RideHistoryModel\",\n  \"operation\": \"list\",\n  \"data\": {}\n}"
             },
-            "url": "{{baseUrl}}/api/execute"
-          }
+        "url": "{{baseUrl}}/api/execute"
+      }
+    },
+    {
+      "name": "Request Ride Cancellation (reason required)",
+      "description": "يوقف الرحلة ويرسلها للسائق قبل البدء، أو للإدارة مباشرة بعد بدء الرحلة. سبب الإلغاء إلزامي.",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{customerAuthToken}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"RideCancellationRequestModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"reason\": \"تغيرت ظروفي ولا أستطيع إكمال الرحلة\",\n    \"requestedRefundMethod\": 2\n  }\n}"
+        },
+        "url": "{{baseUrl}}/api/execute"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": { "exec": ["const body = pm.response.json();", "if (body.success) pm.collectionVariables.set('cancellationRequestId', body.data.id);"] }
         }
+      ]
+    },
+    {
+      "name": "Driver Refer Cancellation To Administration",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"RideCancellationRequestModel\",\n  \"operation\": \"refer\",\n  \"data\": { \"id\": {{cancellationRequestId}}, \"note\": \"يرجى مراجعة الإدارة\" }\n}"
+        },
+        "url": "{{baseUrl}}/api/execute"
+      }
+    },
+    {
+      "name": "Admin Approve Cancellation",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{adminAuthToken}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"RideCancellationRequestModel\",\n  \"operation\": \"adminApprove\",\n  \"data\": { \"id\": {{cancellationRequestId}}, \"note\": \"تمت المراجعة والموافقة\" }\n}"
+        },
+        "url": "{{baseUrl}}/api/admin/execute"
+      }
+    }
       ]
     },
     {
@@ -1120,7 +1248,8 @@
             "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"model\": \"DriverCashPaymentModel\",\n  \"operation\": \"add\",\n  \"data\": { \"rideId\": \"{{rideId}}\", \"cashReceived\": 1000, \"currency\": \"YER\", \"idempotencyKey\": \"{{paymentIdempotencyKey}}\" }\n}" },
             "url": "{{baseUrl}}/api/execute"
-          }
+          },
+          "description": "يتطلب رمز السائق المسند والرحلة قيد التنفيذ. عند نجاح التحصيل يسجل الدفعة ومديونية المنصة وحركة المحفظة عند وجود فرق، وينشر قيداً مزدوجاً ذرياً يستخدم حسابي رسوم الخدمة وتحصيلها لنوع خدمة الرحلة. لا ينشر شيء عند انتظار موافقة العميل أو رفضها."
         },
         {
           "name": "DriverCashPaymentModel / retry with same key",
@@ -1145,7 +1274,7 @@
             "body": { "mode": "raw", "raw": "{\n  \"model\": \"PaymentModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"rideId\": \"{{rideId}}\",\n    \"amount\": 1000,\n    \"currency\": \"YER\",\n    \"provider\": \"YemenDriveWallet\",\n    \"status\": 2,\n    \"idempotencyKey\": \"{{paymentIdempotencyKey}}\"\n  }\n}" },
             "url": "{{baseUrl}}/api/execute"
           },
-          "description": "استبدل amount بإجمالي الرحلة المثبت الظاهر من RideModel / get. يشترط أن تكون الرحلة مكتملة، وأن يكون رصيد العميل كافياً."
+          "description": "استبدل amount بإجمالي الرحلة المثبت الظاهر من RideModel / get. يشترط أن تكون الرحلة مكتملة، وأن يكون رصيد العميل كافياً. ينشئ الخادم الدفعة وحركات المحافظ وقيد الأستاذ العام المتوازن داخل معاملة واحدة، باستخدام حسابات نوع خدمة الرحلة."
         },
         {
           "name": "PaymentModel / retry same wallet payment",
@@ -1166,6 +1295,26 @@
             "url": "{{baseUrl}}/api/execute"
           },
           "description": "لرحلة مكتملة ومدفوعة من محفظة يمن درايف فقط: يعيد المتبقي للعميل بعد رسم الإلغاء، ويسجل قيوداً عكسية دون تعديل الدفعة الأصلية."
+        },
+        {
+          "name": "RideModel / cancel paid cash ride - customer received cash from driver",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"cancel\",\n  \"data\": {\n    \"id\": \"{{rideId}}\",\n    \"cashCancellationRefundMethod\": 1\n  }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "لرحلة مكتملة لها دفعة Cash فقط، وباستخدام رمز العميل صاحب الرحلة. القيمة 1 تعني أن العميل استرد المبلغ مباشرة من السائق. لا تنشأ حركة في المحفظة ولا مديونية إلغاء جديدة على السائق؛ تبقى الدفعة الأصلية وسجل تحصيل المنصة دون تعديل."
+        },
+        {
+          "name": "RideModel / cancel paid cash ride - credit customer wallet",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"cancel\",\n  \"data\": {\n    \"id\": \"{{rideId}}\",\n    \"cashCancellationRefundMethod\": 2\n  }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "لرحلة مكتملة لها دفعة Cash فقط، وباستخدام رمز العميل صاحب الرحلة. القيمة 2 تضيف مبلغ الاسترداد، بعد رسم الإلغاء، إلى محفظة العميل وتنشئ مديونية مستقلة بالقيمة نفسها على السائق. لا تعدل الدفعة النقدية أو مديونية تحصيل المنصة الأصلية."
         }
       ]
     },
@@ -1240,7 +1389,7 @@
             "body": { "mode": "raw", "raw": "{\n  \"model\": \"AccountingSetupModel\",\n  \"operation\": \"add\",\n  \"data\": {}\n}" },
             "url": "{{baseUrl}}/api/execute"
           },
-          "description": "يتطلب مديراً. ينشئ الحسابات النظامية المفقودة فقط، مثل رسوم الخدمة وتحصيل الخدمة وعمولات السائقين؛ لا يغير حساباً موجوداً ولا ينشئ قيداً مالياً."
+          "description": "يتطلب مديراً. ينشئ الحسابات النظامية المفقودة، ويربط بأمان العملاء والسائقين وأنواع الخدمة الموجودة بجهاتهم وحساباتهم المالية الناقصة. لا ينشئ قيداً مالياً ولا يغير أي رصيد أو حساب منشور؛ يمكن إعادة تشغيله بلا تكرار."
         },
         {
           "name": "LedgerAccountModel / list chart of accounts",

@@ -1,7 +1,7 @@
 namespace YemenDrive.Database.Entities;
 
 public enum UserRole { Customer, Driver, Admin }
-public enum RideStatus { Draft, Searching, Negotiating, DriverAssigned, DriverEnRoute, InProgress, Completed, Cancelled }
+public enum RideStatus { Draft, Searching, Negotiating, DriverAssigned, DriverEnRoute, InProgress, Completed, Cancelled, CancellationPending }
 public enum OfferStatus { Pending, Accepted, Rejected, Expired }
 public enum WalletTransactionType { Credit, Debit, Hold, Release, Refund, Commission }
 public enum NotificationType { RideOffer, RideStatus, Payment, Safety, System }
@@ -23,7 +23,16 @@ public enum JournalEntryType
 }
 public enum JournalEntryStatus { Draft, Posted }
 public enum CashCollectionApprovalStatus { Pending, Approved, Rejected, InsufficientBalance }
+/// <summary>
+/// The customer's declared resolution for a paid cash ride cancellation.
+/// Values are explicit because this value is sent by the mobile client.
+/// </summary>
+public enum CashCancellationRefundMethod { ReturnFromDriver = 1, CreditCustomerWallet = 2 }
+/// <summary>Lifecycle of a cancellation case.  Financial reversal is only possible after administration approves it.</summary>
+public enum RideCancellationStatus { DriverReviewPending, DriverRejected, AdminReviewPending, AdminApproved, AdminRejected }
+public enum RideCancellationDriverDecision { None, Accepted, Rejected, ReferredToAdmin }
 public enum PaymentStatus { Pending, Authorized, Paid, Failed, Refunded, Cancelled }
+public enum PaymentMethodKind { ExternalWallet, Card, BankTransfer }
 
 public abstract class Entity
 {
@@ -206,6 +215,34 @@ public sealed class CashCollectionApproval : Entity
     public string? DecisionNote { get; set; }
 }
 
+/// <summary>
+/// An auditable cancellation request. It is intentionally separate from the
+/// ride status so a stopped ride can wait for a driver or administrator
+/// decision without creating or changing any financial movement prematurely.
+/// </summary>
+public sealed class RideCancellationRequest : Entity
+{
+    public byte[] RowVersion { get; set; } = [];
+    public int RideId { get; set; }
+    public Ride Ride { get; set; } = null!;
+    public int CustomerId { get; set; }
+    public int? DriverId { get; set; }
+    public RideStatus RideStatusAtRequest { get; set; }
+    public RideCancellationStatus Status { get; set; }
+    public RideCancellationDriverDecision DriverDecision { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public CashCancellationRefundMethod? RequestedRefundMethod { get; set; }
+    public decimal? RequestedRefundAmount { get; set; }
+    public double? CancellationLatitude { get; set; }
+    public double? CancellationLongitude { get; set; }
+    public DateTime? LocationObservedAtUtc { get; set; }
+    public DateTime? DriverDecidedAtUtc { get; set; }
+    public string? DriverNote { get; set; }
+    public int? AdminUserId { get; set; }
+    public DateTime? AdminDecidedAtUtc { get; set; }
+    public string? AdminNote { get; set; }
+}
+
 public sealed class PaymentCardToken : Entity
 {
     public int UserId { get; set; }
@@ -216,6 +253,22 @@ public sealed class PaymentCardToken : Entity
     public int ExpiryMonth { get; set; }
     public int ExpiryYear { get; set; }
     public bool IsDefault { get; set; }
+}
+
+/// <summary>Public, non-secret catalog data for an external payment channel.</summary>
+public sealed class PaymentMethod : Entity
+{
+    public string Code { get; set; } = string.Empty;
+    public string NameAr { get; set; } = string.Empty;
+    public string DescriptionAr { get; set; } = string.Empty;
+    public string? ImageUrl { get; set; }
+    public PaymentMethodKind Kind { get; set; }
+    public string ProviderCode { get; set; } = string.Empty;
+    public string? PublicInstructionsAr { get; set; }
+    public bool IsActive { get; set; }
+    public bool IsAvailableForRidePayment { get; set; }
+    public bool IsAvailableForWalletTopUp { get; set; }
+    public int SortOrder { get; set; }
 }
 
 public sealed class Promotion : Entity

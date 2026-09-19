@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using YemenDrive.Api;
 using YemenDrive.Application.Users;
 using YemenDrive.Application.Accounting;
+using YemenDrive.Application.Maps;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
@@ -27,7 +28,18 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 builder.Services.AddScoped<DevelopmentDataSeeder>();
 builder.Services.AddScoped<AccountingPostingService>();
+builder.Services.AddScoped<RideAccountingPostingService>();
 builder.Services.AddScoped<FinancialAccountProvisioningService>();
+// Google provider keys are read only from server configuration (for example
+// environment variables or user-secrets). They are never persisted or sent
+// to Flutter clients.
+builder.Services.AddSingleton(
+    builder.Configuration.GetSection("GoogleMaps").Get<GoogleMapsOptions>()
+    ?? new GoogleMapsOptions());
+builder.Services.AddHttpClient<GoogleMapsGateway>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.NumberHandling = JsonNumberHandling.AllowReadingFromString);

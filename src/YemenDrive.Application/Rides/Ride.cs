@@ -1,19 +1,23 @@
 using System.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Accounting;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
 using RideEntity = YemenDrive.Database.Entities.Ride;
+using SavedPlaceEntity = YemenDrive.Database.Entities.SavedPlace;
 
 namespace YemenDrive.Application.Rides;
 
 public sealed class Ride(
     YemenDriveDbContext dbContext,
     DatabaseConfigurationStore configurationStore,
-    ICurrentUserContext currentUser) : OperationsService<RideModel>(configurationStore)
+    ICurrentUserContext currentUser,
+    RideAccountingPostingService accounting) : OperationsService<RideModel>(configurationStore)
 {
     public override IReadOnlyCollection<string> Operations { get; } = ["add", "create", "update", "delete", "get", "cancel"];
     protected override async Task<object?> AddAsync(RideModel model, CancellationToken cancellationToken)
@@ -64,6 +68,7 @@ public sealed class Ride(
             Status = model.Status ?? RideStatus.Searching
         };
         dbContext.Rides.Add(entity);
+        await StoreRecentDestinationAsync(entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
         var driverIds = await dbContext.DriverProfiles.AsNoTracking()
             .Where(x => x.IsAvailable && x.ServiceKindId == entity.ServiceKindId &&
@@ -82,7 +87,7 @@ public sealed class Ride(
                 UserId = driverId,
                 Type = NotificationType.RideOffer,
                 Title = "طلب رحلة جديد",
-                Body = $"يوجد طلب جديد من العميل في {entity.PickupAddress} إلى {entity.DestinationAddress}.",
+                Body = $"يوجد طلب جديد {RideLocationText.RouteSummary(entity.PickupLabel, entity.PickupAddress, entity.DestinationLabel, entity.DestinationAddress)}.",
                 DataJson = $"{{\"rideId\":{entity.Id}}}"
             });
         }
@@ -134,29 +139,34 @@ public sealed class Ride(
 
     protected override async Task<object?> CancelAsync(RideModel model, CancellationToken cancellationToken)
     {
-        var entity = await FindAsync(model.Id, cancellationToken);
-        if (entity.Status == RideStatus.Cancelled)
-            throw new ServiceException("ride_not_cancellable", "لا يمكن إلغاء الرحلة في حالتها الحالية.");
-
-        if (entity.Status == RideStatus.Completed)
-            return await RefundWalletPaymentAndCancelAsync(entity, cancellationToken);
-
-        entity.Status = RideStatus.Cancelled;
-        entity.UpdatedAtUtc = DateTime.UtcNow;
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await NotifyOtherParticipantAsync(entity, "تم إلغاء الرحلة", "تم إلغاء الرحلة من الطرف الآخر.", cancellationToken);
-        return ToResult(entity);
+        // Cancellation now has its own auditable workflow.  Keeping the old
+        // shortcut disabled prevents a mobile client from bypassing the
+        // mandatory reason, driver decision, and administrative review.
+        throw new ServiceException("cancellation_request_required", "استخدم طلب الإلغاء الرسمي مع سبب واضح؛ لا يمكن إلغاء الرحلة مباشرة.");
     }
 
-    private async Task<object> RefundWalletPaymentAndCancelAsync(RideEntity ride, CancellationToken token)
+    private async Task<object> RefundPaidRideAndCancelAsync(
+        RideEntity ride,
+        CashCancellationRefundMethod? cashRefundMethod,
+        CancellationToken token)
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         var payment = await dbContext.PaymentTransactions.SingleOrDefaultAsync(
             x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid, token)
             ?? throw new ServiceException("payment_not_found", "لا توجد دفعة معتمدة يمكن استردادها.");
-        if (!string.Equals(payment.Provider, "YemenDriveWallet", StringComparison.OrdinalIgnoreCase))
-            throw new ServiceException("manual_refund_required", "استرداد هذه الوسيلة يحتاج معالجة يدوية موثقة.");
+        if (string.Equals(payment.Provider, "YemenDriveWallet", StringComparison.OrdinalIgnoreCase))
+            return await RefundWalletPaymentAndCancelAsync(ride, payment, transaction, token);
+        if (string.Equals(payment.Provider, "Cash", StringComparison.OrdinalIgnoreCase))
+            return await CancelCashPaymentAsync(ride, payment, cashRefundMethod, transaction, token);
+        throw new ServiceException("manual_refund_required", "استرداد هذه الوسيلة يحتاج معالجة يدوية موثقة.");
+    }
 
+    private async Task<object> RefundWalletPaymentAndCancelAsync(
+        RideEntity ride,
+        PaymentTransaction payment,
+        IDbContextTransaction transaction,
+        CancellationToken token)
+    {
         var refundReference = $"refund:payment:{payment.Id}";
         if (await dbContext.PaymentTransactions.AnyAsync(x => x.ProviderReference == refundReference, token))
             throw new ServiceException("refund_already_processed", "تمت معالجة استرداد هذه الدفعة مسبقاً.");
@@ -188,11 +198,128 @@ public sealed class Ride(
             Status = PaymentStatus.Refunded,
             PaymentReference = refundReference
         });
+        await accounting.PostCancellationAsync(ride, payment, refundAmount, true, driverReversal, currentUser.UserId ?? ride.CustomerId, token);
         ride.Status = RideStatus.Cancelled;
         ride.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
         return new { ride.Id, ride.Status, refundAmount, cancellationFee = ride.CancellationFee, refunded = true };
+    }
+
+    private async Task<object> CancelCashPaymentAsync(
+        RideEntity ride,
+        PaymentTransaction payment,
+        CashCancellationRefundMethod? refundMethod,
+        IDbContextTransaction transaction,
+        CancellationToken token)
+    {
+        if (currentUser.UserId != ride.CustomerId)
+            throw new ServiceException("cash_cancellation_customer_required", "اختيار استرداد الدفع النقدي متاح للعميل صاحب الرحلة فقط.");
+        if (refundMethod is null)
+            throw new ServiceException("cash_refund_method_required", "حدد هل استعدت المبلغ من السائق أم تريد إضافته إلى محفظتك.");
+        if (ride.DriverId is null)
+            throw new ServiceException("driver_not_assigned", "لا يمكن معالجة إلغاء نقدي دون سائق مسند.");
+
+        var refundAmount = Math.Max(0m, payment.Amount - ride.CancellationFee);
+        var refundReference = $"cash-cancellation:payment:{payment.Id}:{refundMethod}";
+        if (await dbContext.PaymentTransactions.AnyAsync(x => x.ProviderReference == refundReference, token))
+            throw new ServiceException("refund_already_processed", "تمت معالجة استرداد هذه الدفعة مسبقاً.");
+
+        var returnedToWallet = refundMethod == CashCancellationRefundMethod.CreditCustomerWallet;
+        if (returnedToWallet && refundAmount > 0)
+        {
+            var customerWallet = await dbContext.Wallets.SingleAsync(x => x.UserId == ride.CustomerId, token);
+            if (!string.Equals(customerWallet.Currency, payment.Currency, StringComparison.OrdinalIgnoreCase))
+                throw new ServiceException("currency_mismatch", "عملة الاسترداد لا تطابق عملة محفظة العميل.");
+            customerWallet.Balance += refundAmount;
+            dbContext.WalletTransactions.Add(new WalletTransaction
+            {
+                WalletId = customerWallet.Id,
+                RideId = ride.Id,
+                Type = WalletTransactionType.Refund,
+                Amount = refundAmount,
+                BalanceAfter = customerWallet.Balance,
+                Description = "تحويل استرداد رحلة نقدية ملغاة إلى المحفظة بعد خصم الرسم",
+                ExternalReference = refundReference
+            });
+            // The platform has funded the customer wallet while the driver
+            // still holds the cash. Keep the original cash debt immutable and
+            // create a separate receivable for this exact cancellation.
+            dbContext.DriverSettlements.Add(new DriverSettlement
+            {
+                DriverId = ride.DriverId.Value,
+                PeriodStartUtc = DateTime.UtcNow,
+                PeriodEndUtc = DateTime.UtcNow,
+                GrossRideAmount = 0,
+                PlatformCommission = 0,
+                Adjustments = -refundAmount,
+                NetPayable = -refundAmount,
+                Status = PaymentStatus.Pending,
+                PaymentReference = refundReference
+            });
+        }
+
+        if (refundAmount > 0)
+        {
+            dbContext.PaymentTransactions.Add(new PaymentTransaction
+            {
+                UserId = ride.CustomerId,
+                RideId = ride.Id,
+                Amount = refundAmount,
+                Currency = payment.Currency,
+                Provider = refundMethod == CashCancellationRefundMethod.CreditCustomerWallet
+                    ? "CashRefundToCustomerWallet"
+                    : "CashReturnFromDriver",
+                Status = PaymentStatus.Refunded,
+                ProviderReference = refundReference
+            });
+        }
+
+        await accounting.PostCancellationAsync(
+            ride,
+            payment,
+            refundAmount,
+            returnedToWallet,
+            driverCommissionReversal: 0,
+            actorUserId: currentUser.UserId ?? ride.CustomerId,
+            token: token);
+
+        dbContext.Notifications.AddRange(
+            new Notification
+            {
+                UserId = ride.CustomerId,
+                Type = NotificationType.Payment,
+                Title = "تم إلغاء الرحلة النقدية",
+                Body = returnedToWallet
+                    ? $"أُضيف {refundAmount:0.##} {payment.Currency} إلى محفظتك بعد خصم رسم الإلغاء."
+                    : "تم تسجيل أنك استعدت مبلغ الرحلة من السائق مباشرة بعد خصم رسم الإلغاء.",
+                DataJson = $"{{\"rideId\":{ride.Id},\"refundMethod\":\"{refundMethod}\",\"refundAmount\":{refundAmount.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}"
+            },
+            new Notification
+            {
+                UserId = ride.DriverId.Value,
+                Type = NotificationType.Payment,
+                Title = "إلغاء رحلة مدفوعة نقداً",
+                Body = returnedToWallet
+                    ? $"أُعيد {refundAmount:0.##} {payment.Currency} لمحفظة العميل وسُجل المبلغ كمديونية مستقلة عليك."
+                    : "أكد العميل استرداد مبلغ الرحلة منك مباشرة بعد خصم رسم الإلغاء.",
+                DataJson = $"{{\"rideId\":{ride.Id},\"refundMethod\":\"{refundMethod}\",\"refundAmount\":{refundAmount.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}"
+            });
+        ride.Status = RideStatus.Cancelled;
+        ride.UpdatedAtUtc = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync(token);
+        await transaction.CommitAsync(token);
+        return new
+        {
+            ride.Id,
+            ride.Status,
+            refundAmount,
+            cancellationFee = ride.CancellationFee,
+            refundMethod,
+            refunded = refundAmount > 0,
+            creditedToWallet = returnedToWallet,
+            driverDebtCreated = returnedToWallet && refundAmount > 0
+        };
     }
 
     protected override async Task<object?> GetAsync(RideModel model, CancellationToken cancellationToken)
@@ -314,12 +441,59 @@ public sealed class Ride(
         x.Id, x.CustomerId, x.DriverId, x.Status, x.ServiceKindId, x.ServiceCatalogItemId,
         serviceKindCode = x.ServiceKind?.Code, serviceKindNameAr = x.ServiceKind?.NameAr,
         serviceCode = x.ServiceCatalogItem?.Code, serviceNameAr = x.ServiceCatalogItem?.NameAr,
+        pickupDisplayName = RideLocationText.DisplayName(x.PickupLabel, x.PickupAddress, "نقطة الانطلاق"),
+        destinationDisplayName = RideLocationText.DisplayName(x.DestinationLabel, x.DestinationAddress, "الوجهة"),
         x.PickupLabel, x.PickupAddress, x.PickupLatitude, x.PickupLongitude,
         x.DestinationLabel, x.DestinationAddress, x.DestinationLatitude, x.DestinationLongitude,
         x.ServerPrice, x.CustomerPrice, x.ServiceFee, x.CancellationFee, x.TotalAmount,
         x.DriverCommissionAmount, x.DriverShare, x.PlatformShare,
         x.StartedAtUtc, x.CompletedAtUtc, x.CreatedAtUtc, x.UpdatedAtUtc
     };
+
+    private async Task StoreRecentDestinationAsync(RideEntity ride, CancellationToken token)
+    {
+        const string recentKind = "recent";
+        const double samePointTolerance = 0.0001d;
+        var label = RideLocationText.DisplayName(ride.DestinationLabel, ride.DestinationAddress, "وجهة حديثة");
+        var existing = await dbContext.SavedPlaces
+            .Where(x => x.UserId == ride.CustomerId && x.Kind == recentKind)
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .FirstOrDefaultAsync(x =>
+                Math.Abs(x.Latitude - ride.DestinationLatitude) < samePointTolerance &&
+                Math.Abs(x.Longitude - ride.DestinationLongitude) < samePointTolerance, token);
+
+        if (existing is null)
+        {
+            dbContext.SavedPlaces.Add(new SavedPlaceEntity
+            {
+                UserId = ride.CustomerId,
+                Label = label,
+                Kind = recentKind,
+                Address = RideLocationText.DisplayName(ride.DestinationLabel, ride.DestinationAddress, "وجهة محددة"),
+                Latitude = ride.DestinationLatitude,
+                Longitude = ride.DestinationLongitude,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            existing.Label = label;
+            existing.Address = RideLocationText.DisplayName(ride.DestinationLabel, ride.DestinationAddress, "وجهة محددة");
+            existing.Latitude = ride.DestinationLatitude;
+            existing.Longitude = ride.DestinationLongitude;
+            existing.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        // Recent locations are a convenience list, not a second favorites
+        // store.  Keep the newest 20 and never touch the user's other kinds.
+        var keepExisting = existing is null ? 19 : 20;
+        var excess = await dbContext.SavedPlaces
+            .Where(x => x.UserId == ride.CustomerId && x.Kind == recentKind)
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .Skip(keepExisting)
+            .ToListAsync(token);
+        if (excess.Count > 0) dbContext.SavedPlaces.RemoveRange(excess);
+    }
 
     private static void ValidateStatusTransition(RideStatus current, RideStatus next)
     {

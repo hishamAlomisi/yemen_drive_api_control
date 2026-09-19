@@ -6,7 +6,7 @@ const state = {
   rides: [],
   catalog: [],
   kinds: [],
-  pricing: [], places: [], history: [], settlements: [], ledgerAccounts: []
+  pricing: [], places: [], history: [], settlements: [], ledgerAccounts: [], paymentMethods: []
 };
 
 const ADMIN_TOKEN_KEY = 'yemendrive_admin_token';
@@ -19,6 +19,7 @@ const titles = {
   catalog: ['الخدمات', 'كتالوج الخدمات والتصنيفات'],
   pricing: ['التسعير', 'قواعد احتساب أسعار الرحلات'],
   wallet: ['المحفظة', 'الأرصدة والحركات المالية'],
+  'payment-methods': ['طرق الدفع الخارجية', 'إدارة وسائل الشحن والدفع الظاهرة للعميل'],
   settlements: ['مديونيات السائقين', 'تحصيل عمولة المنصة من الرحلات النقدية'],
   ledger: ['كشف الحساب', 'استعلام القيود المحاسبية المنشورة والأرصدة'],
   places: ['الأماكن المفضلة', 'الأماكن المحفوظة للمستخدمين'],
@@ -91,13 +92,13 @@ const formConfigs = {
     title: 'تجربة التسعير', subtitle: 'احتساب سعر رحلة دون حفظها', model: 'PricingModel', operation: 'report',
     fields: [['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],['distanceKm','المسافة بالكيلومتر','number',true,'8.5','0.1'],['durationMinutes','المدة بالدقائق','number',true,'20','0.1']]
   },
-  wallet: {
-    title: 'إضافة حركة مالية', subtitle: 'إيداع أو خصم من محفظة مستخدم', model: 'WalletModel', operation: 'add', refresh: 'wallet',
-    fields: [['userId','معرف المستخدم','text',true],['amount','المبلغ','number',true,'0','0.01'],['type','نوع الحركة','select',true,[['0','إيداع'],['1','خصم'],['2','حجز'],['3','تحرير'],['4','استرداد'],['5','عمولة']]],['description','الوصف','text',true],['externalReference','المرجع الخارجي','text']]
-  },
   settlementPayment: {
     title: 'تحصيل مديونية سائق', subtitle: 'ينشئ قيد تحصيل جديد؛ لا يعدّل الدفعة أو المديونية الأصلية.', model: 'DriverSettlementPaymentModel', operation: 'add', refresh: 'settlements',
     fields: [['driverSettlementId','معرف سجل المديونية','number',true],['amount','المبلغ المحصل','number',true,'0','0.01'],['currency','العملة','text',true,'YER'],['method','طريقة التحصيل','select',true,[['CashToPlatform','نقد إلى الإدارة'],['BankTransfer','تحويل بنكي'],['WalletTransfer','تحويل محفظة']]],['reference','مرجع التحصيل الفريد','text',true],['note','ملاحظة','textarea']]
+  }
+  ,paymentMethod: {
+    title: 'إضافة طريقة دفع خارجية', subtitle: 'بيانات تعريف وتشغيل فقط؛ لا تضع مفاتيح API أو بيانات سرية هنا.', model: 'PaymentMethodModel', operation: 'add', refresh: 'payment-methods',
+    fields: [['code','رمز فريد','text',true],['nameAr','الاسم الظاهر للعميل','text',true],['descriptionAr','الوصف المختصر','textarea',true],['imageFile','الشعار أو الصورة','file'],['imageUrl','رابط الصورة (اختياري)','url'],['kind','النوع','select',true,[['0','محفظة خارجية'],['1','بطاقة'],['2','حساب/تحويل بنكي']]],['providerCode','رمز المزود غير السري','text',true],['publicInstructionsAr','تعليمات ظاهرة للعميل','textarea'],['sortOrder','الترتيب','number',false,'0'],['isAvailableForRidePayment','تظهر أثناء دفع الرحلة','checkbox',false,true],['isAvailableForWalletTopUp','تظهر أثناء شحن المحفظة','checkbox',false,true],['isActive','نشطة','checkbox',false,true]]
   }
 };
 
@@ -219,7 +220,7 @@ async function loadDashboard() {
   $('#stat-drivers').textContent = number(data.drivers);
   $('#stat-active-rides').textContent = number(data.activeRides);
   $('#stat-wallet').textContent = number(data.walletBalance);
-  const rows = data.recentRides.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.id)}</span></td><td><span class="cell-main">${escapeHtml(item.pickupAddress)}</span><span class="cell-sub">${escapeHtml(item.destinationAddress)}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td></tr>`);
+  const rows = data.recentRides.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.id)}</span></td><td><span class="cell-main">${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')}</span><span class="cell-sub">${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td></tr>`);
   toggleEmpty('#recent-rides-body', '#overview-empty', rows);
 }
 
@@ -241,7 +242,7 @@ async function loadRides() {
   const value = $('#ride-filter').value;
   const result = await execute('RideModel', 'list', value ? { status: Number(value) } : {});
   state.rides = result.data;
-  const rows = result.data.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.customerName || item.customerId)}</span></td><td>${escapeHtml(item.driverName || 'لم يحدد')}</td><td><span class="cell-main">${escapeHtml(item.pickupAddress)}</span><span class="cell-sub">${escapeHtml(item.destinationAddress)}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td></tr>`);
+  const rows = result.data.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.customerName || item.customerId)}</span></td><td>${escapeHtml(item.driverName || 'لم يحدد')}</td><td><span class="cell-main">${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')}</span><span class="cell-sub">${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td></tr>`);
   toggleEmpty('#rides-body', '#rides-empty', rows);
 }
 
@@ -271,7 +272,9 @@ async function loadPricing() {
 async function loadWallet() {
   const userId = $('#wallet-user-id').value.trim();
   if (!userId) return toast('أدخل معرف المستخدم أولاً.', true);
-  const result = await execute('WalletModel','get',{ userId });
+  const numericUserId = Number(userId);
+  if (!Number.isInteger(numericUserId) || numericUserId <= 0) return toast('معرف المستخدم يجب أن يكون رقماً صحيحاً.', true);
+  const result = await execute('WalletModel','get',{ userId: numericUserId });
   const wallet = result.data;
   $('#wallet-summary').classList.remove('hidden');
   $('#wallet-balance').textContent = number(wallet.balance);
@@ -285,6 +288,18 @@ async function loadSettlements() {
   state.settlements = result.data || [];
   const rows = state.settlements.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.driverName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.driverPhone || item.driverId)}</span></td><td>${escapeHtml(item.id)}</td><td>${number(item.amountDue)} YER</td><td>${number(item.amountPaid)} YER</td><td>${number(item.amountOutstanding)} YER</td><td>${escapeHtml(item.paymentReference || '—')}</td><td>${date(item.createdAtUtc)}</td><td>${item.isSettled ? badge('تم التحصيل','success') : `<button class="button small" onclick="openSettlementForm(${Number(item.id)}, ${Number(item.amountOutstanding)})">تسجيل تحصيل</button>`}</td></tr>`);
   toggleEmpty('#settlements-body', '#settlements-empty', rows);
+}
+
+async function loadPaymentMethods() {
+  const result = await execute('PaymentMethodModel', 'list', {});
+  state.paymentMethods = result.data || [];
+  const kinds = ['محفظة خارجية','بطاقة','حساب/تحويل بنكي'];
+  const rows = state.paymentMethods.map(item => {
+    const image = item.imageUrl ? `<img class="payment-method-logo" src="${escapeHtml(item.imageUrl)}" alt="شعار ${escapeHtml(item.nameAr)}">` : '—';
+    const visibility = [item.isAvailableForRidePayment ? 'دفع الرحلة' : '', item.isAvailableForWalletTopUp ? 'شحن المحفظة' : ''].filter(Boolean).join(' + ') || '—';
+    return `<tr><td>${image}</td><td><span class="cell-main">${escapeHtml(item.nameAr)}</span><span class="cell-sub">${escapeHtml(item.descriptionAr)}</span></td><td>${escapeHtml(kinds[item.kind] || item.kind)}</td><td>${escapeHtml(item.providerCode)}</td><td>${escapeHtml(visibility)}</td><td>${number(item.sortOrder)}</td><td>${badge(item.isActive ? 'نشطة' : 'موقوفه', item.isActive ? 'success' : 'danger')}</td></tr>`;
+  });
+  toggleEmpty('#payment-methods-body', '#payment-methods-empty', rows);
 }
 
 async function loadLedgerAccounts() {
@@ -333,12 +348,12 @@ async function loadAccountStatement() {
 }
 
 async function initializeAccounting() {
-  if (!window.confirm('سيتم إنشاء الحسابات الأساسية المفقودة فقط، دون تعديل أي حساب موجود. هل تريد المتابعة؟')) return;
+  if (!window.confirm('سيتم إنشاء الحسابات الأساسية المفقودة وربط العملاء والسائقين وأنواع الخدمة الموجودة بحساباتها المالية، دون إنشاء قيود أو تغيير أرصدة. هل تريد المتابعة؟')) return;
   const button = $('#accounting-setup-button');
   button.disabled = true;
   try {
     const result = await execute('AccountingSetupModel', 'add', {});
-    toast(result.message || 'تمت تهيئة الحسابات الأساسية.');
+    toast(result.message || 'تمت تهيئة وربط الحسابات المالية.');
     await loadLedgerAccounts();
     await loadAccountStatement();
   } finally { button.disabled = false; }
@@ -362,6 +377,7 @@ async function loadView(view, quiet = false) {
     if (view === 'rides') await loadRides();
     if (view === 'catalog') await loadCatalog();
     if (view === 'pricing') await loadPricing();
+    if (view === 'payment-methods') await loadPaymentMethods();
     if (view === 'settlements') await loadSettlements();
     if (view === 'ledger') { await loadLedgerAccounts(); await loadAccountStatement(); }
     if (view === 'places') await loadPlaces();
@@ -376,7 +392,7 @@ async function loadPlaces() {
 
 async function loadHistory() {
   const result = await execute('RideModel', 'list', {}); state.history = result.data;
-  toggleEmpty('#history-body', '#history-empty', (result.data || []).map(item => `<tr><td>${escapeHtml(item.customerName || item.customerId)}</td><td>${escapeHtml(item.pickupAddress)} ← ${escapeHtml(item.destinationAddress)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td></tr>`));
+  toggleEmpty('#history-body', '#history-empty', (result.data || []).map(item => `<tr><td>${escapeHtml(item.customerName || item.customerId)}</td><td>${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')} ← ${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td></tr>`));
 }
 
 function setView(view) {

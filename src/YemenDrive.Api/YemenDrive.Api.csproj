@@ -11,6 +11,7 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>yemendrive-api-development-maps</UserSecretsId>
     <DefaultItemExcludes>$(DefaultItemExcludes);buildcheck*/**;**/buildcheck*/**</DefaultItemExcludes>
   </PropertyGroup>
 
