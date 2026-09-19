@@ -6,7 +6,7 @@ const state = {
   rides: [],
   catalog: [],
   kinds: [],
-  pricing: [], places: [], history: [], settlements: [], ledgerAccounts: [], paymentMethods: []
+  pricing: [], places: [], history: [], settlements: [], ledgerAccounts: [], paymentMethods: [], cancellations: []
 };
 
 const ADMIN_TOKEN_KEY = 'yemendrive_admin_token';
@@ -16,6 +16,7 @@ const titles = {
   users: ['المستخدمون', 'إدارة حسابات العملاء والسائقين'],
   drivers: ['السائقون', 'المركبات والخدمات وحالة التوفر'],
   rides: ['الرحلات', 'متابعة الطلبات وحالات التنفيذ'],
+  cancellations: ['طلبات الإلغاء', 'مراجعة القرارات والإحالات قبل اعتماد الإدارة'],
   catalog: ['الخدمات', 'كتالوج الخدمات والتصنيفات'],
   pricing: ['التسعير', 'قواعد احتساب أسعار الرحلات'],
   wallet: ['المحفظة', 'الأرصدة والحركات المالية'],
@@ -27,7 +28,9 @@ const titles = {
   console: ['محطة API', 'تنفيذ الطلبات المتقدمة']
 };
 
-const rideStatuses = ['مسودة', 'جاري البحث', 'تفاوض', 'تم تعيين سائق', 'السائق في الطريق', 'قيد التنفيذ', 'مكتملة', 'ملغاة'];
+const rideStatuses = ['مسودة', 'جاري البحث', 'تفاوض', 'تم تعيين سائق', 'السائق في الطريق', 'قيد التنفيذ', 'مكتملة', 'ملغاة', 'الإلغاء قيد المراجعة'];
+const cancellationStatuses = ['بانتظار قرار السائق', 'رفض السائق', 'قيد مراجعة الإدارة', 'وافقت الإدارة', 'رفضت الإدارة'];
+const cancellationDriverDecisions = ['—', 'وافق السائق', 'رفض السائق', 'أحال السائق للإدارة'];
 const roles = ['عميل', 'سائق', 'مدير'];
 const transactionTypes = ['إيداع', 'خصم', 'حجز', 'تحرير', 'استرداد', 'عمولة'];
 const journalEntryTypes = ['رصيد افتتاحي', 'تحصيل نقدي لرحلة', 'دفع رحلة من المحفظة', 'تغذية محفظة', 'إلغاء رحلة', 'تحصيل تسوية سائق', 'تسوية يدوية', 'قيد عكسي'];
@@ -302,6 +305,36 @@ async function loadPaymentMethods() {
   toggleEmpty('#payment-methods-body', '#payment-methods-empty', rows);
 }
 
+async function loadCancellations() {
+  const selected = $('#cancellation-filter').value;
+  const data = selected === '' ? {} : { status: Number(selected) };
+  const result = await execute('RideCancellationReportModel', 'list', data);
+  state.cancellations = result.data || [];
+  const rows = state.cancellations.map(item => {
+    const isAdminReview = Number(item.status) === 2;
+    const decision = `${cancellationStatuses[item.status] || item.status}${item.driverDecision ? ` · ${cancellationDriverDecisions[item.driverDecision] || item.driverDecision}` : ''}`;
+    const payment = item.paymentProvider ? `${item.paymentProvider} · ${number(item.paymentAmount)} YER` : 'لا توجد دفعة مسجلة';
+    const place = item.cancellationLatitude == null ? '—' : `${number(item.cancellationLatitude)}, ${number(item.cancellationLongitude)}`;
+    const actions = isAdminReview ? `<div class="action-row"><button class="button small primary" onclick="decideCancellation(${Number(item.id)}, true)">اعتماد الإلغاء</button><button class="button small" onclick="decideCancellation(${Number(item.id)}, false)">رفض الطلب</button></div>` : '—';
+    return `<tr><td>#${escapeHtml(item.id)}</td><td><span class="cell-main">${escapeHtml(item.customerName || item.customerPhone || item.customerId)}</span><span class="cell-sub">السائق: ${escapeHtml(item.driverName || 'غير معيّن')}</span></td><td><span class="cell-main">${escapeHtml(item.pickup)} ← ${escapeHtml(item.destination)}</span><span class="cell-sub">الإجمالي: ${number(item.totalAmount)} YER</span></td><td><span class="cell-main">${escapeHtml(item.reason)}</span>${item.driverNote ? `<span class="cell-sub">ملاحظة السائق: ${escapeHtml(item.driverNote)}</span>` : ''}</td><td>${badge(decision, isAdminReview ? 'warning' : Number(item.status) === 3 ? 'success' : Number(item.status) === 4 ? 'danger' : 'info')}</td><td><span class="cell-main">${escapeHtml(payment)}</span>${item.paymentStatus != null ? `<span class="cell-sub">حالة: ${escapeHtml(item.paymentStatus)}</span>` : ''}</td><td>${escapeHtml(place)}</td><td>${date(item.createdAtUtc)}</td><td>${actions}</td></tr>`;
+  });
+  toggleEmpty('#cancellations-body', '#cancellations-empty', rows);
+}
+
+window.decideCancellation = async (id, approve) => {
+  const label = approve ? 'اعتماد إلغاء الرحلة' : 'رفض طلب الإلغاء';
+  const warning = approve
+    ? 'سيتم إلغاء الرحلة وإشعار الطرفين. لا ينفذ هذا الإجراء استرداداً مالياً تلقائياً.'
+    : 'سيتم رفض الطلب وإشعار العميل والسائق.';
+  if (!window.confirm(`${label}\n${warning}`)) return;
+  const note = window.prompt('ملاحظة الإدارة (اختيارية):') || undefined;
+  try {
+    const result = await execute('RideCancellationRequestModel', approve ? 'adminApprove' : 'adminReject', { id, note });
+    toast(result.message || 'تم حفظ قرار الإدارة.');
+    await loadCancellations();
+  } catch (error) { toast(error.message, true); }
+};
+
 async function loadLedgerAccounts() {
   const result = await execute('LedgerAccountModel', 'list', {});
   state.ledgerAccounts = result.data || [];
@@ -375,6 +408,7 @@ async function loadView(view, quiet = false) {
     if (view === 'users') await loadUsers($('#user-search').value.trim());
     if (view === 'drivers') await loadDrivers();
     if (view === 'rides') await loadRides();
+    if (view === 'cancellations') await loadCancellations();
     if (view === 'catalog') await loadCatalog();
     if (view === 'pricing') await loadPricing();
     if (view === 'payment-methods') await loadPaymentMethods();
@@ -546,6 +580,8 @@ function bindEvents() {
   $('#sidebar-backdrop').addEventListener('click', closeSidebar);
   $('#entity-form').addEventListener('submit', submitEntityForm);
   $('#ride-filter').addEventListener('change', loadRides);
+  $('#cancellation-filter').addEventListener('change', () => loadCancellations().catch(error => toast(error.message, true)));
+  $('#cancellations-refresh').addEventListener('click', () => loadCancellations().catch(error => toast(error.message, true)));
   let searchTimer; $('#user-search').addEventListener('input', event => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadUsers(event.target.value.trim()).catch(error => toast(error.message, true)), 300); });
   $('#wallet-load').addEventListener('click', () => loadWallet().catch(error => toast(error.message, true)));
   $('#statement-load').addEventListener('click', () => loadAccountStatement().catch(error => toast(error.message, true)));

@@ -64,6 +64,11 @@ public sealed class RideReport(
             ? null
             : await dbContext.DriverLiveLocations.AsNoTracking()
                 .SingleOrDefaultAsync(x => x.DriverId == driverProfile.UserId, cancellationToken);
+        var rideIds = rides.Select(x => x.Id).ToArray();
+        var cashRequests = await dbContext.CashPaymentRequests.AsNoTracking()
+            .Where(x => rideIds.Contains(x.RideId))
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
 
         return rides.Select(x =>
         {
@@ -83,6 +88,7 @@ public sealed class RideReport(
             var pickupDistanceMeters = driverLocation is null
                 ? (double?)null
                 : HaversineMeters(driverLocation.Latitude, driverLocation.Longitude, x.PickupLatitude, x.PickupLongitude);
+            var cashRequest = cashRequests.FirstOrDefault(item => item.RideId == x.Id);
 
             return new
             {
@@ -109,7 +115,9 @@ public sealed class RideReport(
                 x.CustomerPrice, x.ServiceFee, x.TotalAmount, x.DriverCommissionAmount, x.DriverShare, x.PlatformShare, x.CreatedAtUtc,
                 driverOfferAmount = offer?.Amount,
                 driverOfferExpiresAtUtc = offer?.ExpiresAtUtc,
-                driverOfferStatus = offer?.Status
+                driverOfferStatus = offer?.Status,
+                cashPaymentRequestId = cashRequest?.Id,
+                cashPaymentRequestStatus = cashRequest?.Status
             };
         }).ToList();
     }

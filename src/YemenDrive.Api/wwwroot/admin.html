@@ -31,6 +31,7 @@
         <button class="nav-item" data-view="users"><span class="nav-icon">◎</span><span>المستخدمون</span></button>
         <button class="nav-item" data-view="drivers"><span class="nav-icon">◇</span><span>السائقون</span></button>
         <button class="nav-item" data-view="rides"><span class="nav-icon">↗</span><span>الرحلات</span></button>
+        <button class="nav-item" data-view="cancellations"><span class="nav-icon">!</span><span>طلبات الإلغاء</span></button>
         <button class="nav-item" data-view="catalog"><span class="nav-icon">▦</span><span>الخدمات</span></button>
         <button class="nav-item" data-view="pricing"><span class="nav-icon">¤</span><span>التسعير</span></button>
         <button class="nav-item" data-view="wallet"><span class="nav-icon">□</span><span>المحفظة</span></button>
@@ -104,6 +105,11 @@
         <section class="view" id="view-rides">
           <div class="section-toolbar"><div><h2>الرحلات</h2><p>متابعة الطلبات وحالات التنفيذ</p></div><div class="command-row"><select class="filter-select" id="ride-filter"><option value="">كل الحالات</option><option value="1">جاري البحث</option><option value="3">تم تعيين سائق</option><option value="4">السائق في الطريق</option><option value="5">قيد التنفيذ</option><option value="6">مكتملة</option><option value="7">ملغاة</option></select><button class="button primary" data-form="ride">إنشاء رحلة</button></div></div>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>العميل</th><th>السائق</th><th>المسار</th><th>المركبة</th><th>الحالة</th><th>السعر</th><th>التاريخ</th></tr></thead><tbody id="rides-body"></tbody></table></div><div class="empty-state hidden" id="rides-empty">لا توجد رحلات في هذه الحالة.</div></section>
+        </section>
+
+        <section class="view" id="view-cancellations">
+          <div class="section-toolbar"><div><h2>طلبات إلغاء الرحلات</h2><p>مراجعة السبب وقرار السائق وبيانات الرحلة قبل قرار الإدارة. لا يُنشأ استرداد مالي تلقائياً هنا.</p></div><div class="command-row"><select class="filter-select" id="cancellation-filter"><option value="">كل الحالات</option><option value="0">بانتظار السائق</option><option value="1">رفض السائق</option><option value="2">قيد مراجعة الإدارة</option><option value="3">وافقت الإدارة</option><option value="4">رفضت الإدارة</option></select><button class="button" id="cancellations-refresh">تحديث</button></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الطلب</th><th>العميل / السائق</th><th>الرحلة</th><th>سبب الإلغاء</th><th>القرار</th><th>الدفع</th><th>الموقع عند الإلغاء</th><th>التاريخ</th><th>إجراء الإدارة</th></tr></thead><tbody id="cancellations-body"></tbody></table></div><div class="empty-state hidden" id="cancellations-empty">لا توجد طلبات إلغاء مطابقة.</div></section>
         </section>
 
         <section class="view" id="view-catalog">

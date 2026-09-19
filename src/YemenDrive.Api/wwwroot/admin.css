@@ -79,6 +79,8 @@ button { letter-spacing: 0; }
 .button.primary { border-color: var(--primary); background: var(--primary); color: #fff; }
 .button.primary:hover { background: var(--primary-dark); }
 .button:disabled { opacity: .6; cursor: wait; }
+.button.small { min-height: 31px; padding: 0 10px; font-size: 12px; }
+.action-row { display: flex; flex-wrap: wrap; gap: 6px; min-width: 180px; }
 .text-button { border: 0; background: transparent; color: var(--primary); font-weight: 700; cursor: pointer; }
 
 .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }

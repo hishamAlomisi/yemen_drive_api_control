@@ -1379,6 +1379,41 @@
       ]
     },
     {
+      "name": "13 - Customer Cash Confirmation",
+      "item": [
+        {
+          "name": "CashPaymentRequestModel / customer requests cash",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"CashPaymentRequestModel\",\n  \"operation\": \"add\",\n  \"data\": { \"rideId\": \"{{rideId}}\", \"idempotencyKey\": \"cash-request-unique-reference\" }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "لرحلة مكتملة لم يسجل السائق لها تحصيلاً. ينشئ طلب تأكيد فقط ويرسل إشعاراً للسائق؛ لا ينشئ دفعة أو قيداً مالياً. انسخ id الناتج إلى cashPaymentRequestId."
+        },
+        {
+          "name": "CashPaymentRequestModel / driver confirms",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"CashPaymentRequestModel\",\n  \"operation\": \"accept\",\n  \"data\": { \"id\": \"{{cashPaymentRequestId}}\" }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "يتطلب السائق المسند. التأكيد وحده لا يسجل مالاً؛ بعدها يسجل السائق التحصيل الفعلي عبر DriverCashPaymentModel/add."
+        },
+        {
+          "name": "CashPaymentRequestModel / driver rejects",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{driverAuthToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"model\": \"CashPaymentRequestModel\",\n  \"operation\": \"reject\",\n  \"data\": { \"id\": \"{{cashPaymentRequestId}}\", \"note\": \"لم يتم الاستلام\" }\n}" },
+            "url": "{{baseUrl}}/api/execute"
+          },
+          "description": "يرفض التأكيد ويرسل للعميل إشعاراً باختيار وسيلة دفع أخرى؛ لا ينشئ دفعة ولا حركة محفظة."
+        }
+      ]
+    },
+    {
       "name": "12 - General Ledger",
       "item": [
         {

@@ -8,6 +8,7 @@ using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
 using CashCollectionApprovalEntity = YemenDrive.Database.Entities.CashCollectionApproval;
+using CashPaymentRequestEntity = YemenDrive.Database.Entities.CashPaymentRequest;
 
 namespace YemenDrive.Application.DriverPayments;
 
@@ -45,8 +46,17 @@ public sealed class DriverCashPayment(
 
         if (ride.DriverId != driverId)
             throw new ServiceException("ride_access_denied", "هذه الرحلة ليست مسندة إلى السائق الحالي.");
+        CashPaymentRequestEntity? confirmedCustomerCashRequest = null;
         if (ride.Status != RideStatus.InProgress)
-            throw new ServiceException("ride_payment_not_ready", "يجب أن تكون الرحلة قيد التنفيذ قبل تسجيل الدفع.");
+        {
+            if (ride.Status != RideStatus.Completed)
+                throw new ServiceException("ride_payment_not_ready", "لا يمكن تسجيل التحصيل النقدي في حالة الرحلة الحالية.");
+            confirmedCustomerCashRequest = await db.CashPaymentRequests.SingleOrDefaultAsync(x =>
+                x.RideId == ride.Id && x.DriverId == driverId &&
+                x.Status == CashPaymentRequestStatus.DriverConfirmed, token);
+            if (confirmedCustomerCashRequest is null)
+                throw new ServiceException("cash_confirmation_required", "يلزم تأكيد طلب العميل للدفع النقدي أولاً.");
+        }
 
         var fare = ride.CustomerPrice ?? ride.ServerPrice
             ?? throw new ServiceException("fare_not_set", "لا يوجد مبلغ متفق عليه لهذه الرحلة.");
@@ -171,8 +181,13 @@ public sealed class DriverCashPayment(
             });
         }
         await accounting.PostCashCollectionAsync(ride, payment, model.CashReceived, difference, driverId, token);
-        ride.Status = RideStatus.Completed;
-        ride.CompletedAtUtc = DateTime.UtcNow;
+        if (confirmedCustomerCashRequest is not null)
+        {
+            confirmedCustomerCashRequest.Status = CashPaymentRequestStatus.Collected;
+            confirmedCustomerCashRequest.DecidedAtUtc = DateTime.UtcNow;
+        }
+        // Cash collection is financial, not operational: the driver still
+        // chooses when the trip reaches its real completion state.
         ride.UpdatedAtUtc = DateTime.UtcNow;
         try
         {

@@ -23,6 +23,8 @@ public enum JournalEntryType
 }
 public enum JournalEntryStatus { Draft, Posted }
 public enum CashCollectionApprovalStatus { Pending, Approved, Rejected, InsufficientBalance }
+/// <summary>Customer-selected cash payment awaits the driver's confirmation before collection.</summary>
+public enum CashPaymentRequestStatus { Pending, DriverConfirmed, DriverRejected, Collected }
 /// <summary>
 /// The customer's declared resolution for a paid cash ride cancellation.
 /// Values are explicit because this value is sent by the mobile client.
@@ -210,6 +212,23 @@ public sealed class CashCollectionApproval : Entity
     public decimal WalletDebitAmount { get; set; }
     public string Currency { get; set; } = "YER";
     public CashCollectionApprovalStatus Status { get; set; } = CashCollectionApprovalStatus.Pending;
+    public string? IdempotencyKey { get; set; }
+    public DateTime? DecidedAtUtc { get; set; }
+    public string? DecisionNote { get; set; }
+}
+
+/// <summary>
+/// Non-financial confirmation workflow used when a customer selects cash only
+/// after the driver has completed the trip without recording a collection.
+/// </summary>
+public sealed class CashPaymentRequest : Entity
+{
+    public int RideId { get; set; }
+    public int CustomerId { get; set; }
+    public int DriverId { get; set; }
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = "YER";
+    public CashPaymentRequestStatus Status { get; set; } = CashPaymentRequestStatus.Pending;
     public string? IdempotencyKey { get; set; }
     public DateTime? DecidedAtUtc { get; set; }
     public string? DecisionNote { get; set; }

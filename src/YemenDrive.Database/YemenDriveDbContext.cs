@@ -17,6 +17,7 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<LocationUpdate> LocationUpdates => Set<LocationUpdate>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
+    public DbSet<CashPaymentRequest> CashPaymentRequests => Set<CashPaymentRequest>();
     public DbSet<CashCollectionApproval> CashCollectionApprovals => Set<CashCollectionApproval>();
     public DbSet<RideCancellationRequest> RideCancellationRequests => Set<RideCancellationRequest>();
     public DbSet<PaymentCardToken> PaymentCardTokens => Set<PaymentCardToken>();
@@ -123,6 +124,15 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<CashCollectionApproval>().Property(x => x.DecisionNote).HasMaxLength(500);
         modelBuilder.Entity<CashCollectionApproval>().ToTable(table =>
             table.HasCheckConstraint("CK_CashCollectionApprovals_Amounts", "[CashReceived] >= 0 AND [WalletDebitAmount] > 0"));
+        modelBuilder.Entity<CashPaymentRequest>().HasIndex(x => new { x.RideId, x.Status })
+            .IsUnique().HasFilter("[Status] IN (0, 1)");
+        modelBuilder.Entity<CashPaymentRequest>().HasIndex(x => new { x.CustomerId, x.IdempotencyKey })
+            .IsUnique().HasFilter("[IdempotencyKey] IS NOT NULL");
+        modelBuilder.Entity<CashPaymentRequest>().Property(x => x.Currency).HasMaxLength(12).IsRequired();
+        modelBuilder.Entity<CashPaymentRequest>().Property(x => x.IdempotencyKey).HasMaxLength(128);
+        modelBuilder.Entity<CashPaymentRequest>().Property(x => x.DecisionNote).HasMaxLength(500);
+        modelBuilder.Entity<CashPaymentRequest>().ToTable(table => table.HasCheckConstraint(
+            "CK_CashPaymentRequests_Amount_Positive", "[Amount] > 0"));
         modelBuilder.Entity<RideCancellationRequest>().Property(x => x.RowVersion).IsRowVersion();
         modelBuilder.Entity<RideCancellationRequest>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
         modelBuilder.Entity<RideCancellationRequest>().HasIndex(x => new { x.RideId, x.Status })
