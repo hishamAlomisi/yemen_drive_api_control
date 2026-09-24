@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YemenDrive | لوحة التحكم</title>
-  <link rel="stylesheet" href="/admin.css">
+  <link rel="stylesheet" href="/admin.css?v=20260923-1">
 </head>
 <body>
   <div class="admin-login" id="admin-login">
@@ -32,13 +32,16 @@
         <button class="nav-item" data-view="drivers"><span class="nav-icon">◇</span><span>السائقون</span></button>
         <button class="nav-item" data-view="rides"><span class="nav-icon">↗</span><span>الرحلات</span></button>
         <button class="nav-item" data-view="cancellations"><span class="nav-icon">!</span><span>طلبات الإلغاء</span></button>
+        <button class="nav-item" data-view="safety"><span class="nav-icon">⌁</span><span>بلاغات السلامة</span></button>
+        <button class="nav-item" data-view="safety-recordings"><span class="nav-icon">♫</span><span>تسجيلات السلامة</span></button>
         <button class="nav-item" data-view="catalog"><span class="nav-icon">▦</span><span>الخدمات</span></button>
         <button class="nav-item" data-view="pricing"><span class="nav-icon">¤</span><span>التسعير</span></button>
         <button class="nav-item" data-view="wallet"><span class="nav-icon">□</span><span>المحفظة</span></button>
         <button class="nav-item" data-view="payment-methods"><span class="nav-icon">▣</span><span>طرق الدفع</span></button>
         <button class="nav-item" data-view="settlements"><span class="nav-icon">⇄</span><span>مديونيات السائقين</span></button>
         <button class="nav-item" data-view="ledger"><span class="nav-icon">≡</span><span>كشف الحساب</span></button>
-        <button class="nav-item" data-view="places"><span class="nav-icon">☆</span><span>المفضلة</span></button>
+      <button class="nav-item" data-view="places"><span class="nav-icon">☆</span><span>المفضلة</span></button>
+      <button class="nav-item" data-view="areas"><span class="nav-icon">⌖</span><span>مناطق الخدمة</span></button>
         <button class="nav-item" data-view="history"><span class="nav-icon">◷</span><span>سجل الرحلات</span></button>
         <button class="nav-item" data-view="console"><span class="nav-icon">›_</span><span>محطة API</span></button>
       </nav>
@@ -108,8 +111,17 @@
         </section>
 
         <section class="view" id="view-cancellations">
-          <div class="section-toolbar"><div><h2>طلبات إلغاء الرحلات</h2><p>مراجعة السبب وقرار السائق وبيانات الرحلة قبل قرار الإدارة. لا يُنشأ استرداد مالي تلقائياً هنا.</p></div><div class="command-row"><select class="filter-select" id="cancellation-filter"><option value="">كل الحالات</option><option value="0">بانتظار السائق</option><option value="1">رفض السائق</option><option value="2">قيد مراجعة الإدارة</option><option value="3">وافقت الإدارة</option><option value="4">رفضت الإدارة</option></select><button class="button" id="cancellations-refresh">تحديث</button></div></div>
+          <div class="section-toolbar"><div><h2>طلبات إلغاء الرحلات</h2><p>مراجعة السبب وقرار السائق وبيانات الرحلة. اعتماد الإدارة للرحلة المدفوعة ينفذ التسوية المالية ومسار الاسترداد المحدد مرة واحدة.</p></div><div class="command-row"><select class="filter-select" id="cancellation-filter"><option value="">كل الحالات</option><option value="0">بانتظار السائق</option><option value="1">رفض السائق</option><option value="2">قيد مراجعة الإدارة</option><option value="3">وافقت الإدارة</option><option value="4">رفضت الإدارة</option></select><button class="button" id="cancellations-refresh">تحديث</button></div></div>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الطلب</th><th>العميل / السائق</th><th>الرحلة</th><th>سبب الإلغاء</th><th>القرار</th><th>الدفع</th><th>الموقع عند الإلغاء</th><th>التاريخ</th><th>إجراء الإدارة</th></tr></thead><tbody id="cancellations-body"></tbody></table></div><div class="empty-state hidden" id="cancellations-empty">لا توجد طلبات إلغاء مطابقة.</div></section>
+        </section>
+        <section class="view" id="view-safety">
+          <div class="section-toolbar"><div><h2>بلاغات السلامة</h2><p>مراجعة البلاغات الواردة، بيانات السائق وموقع الرحلة الحالي لمتابعة الحالة.</p></div><div class="command-row"><select class="filter-select" id="safety-filter"><option value="">كل الحالات</option><option value="0">جديد</option><option value="1">تم الاستلام</option><option value="2">مغلق</option></select><button class="button" id="safety-refresh">تحديث</button></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>البلاغ</th><th>صاحب البلاغ</th><th>السائق</th><th>الرحلة</th><th>التفاصيل</th><th>الموقع وقت البلاغ</th><th>الحالة</th><th>التاريخ</th><th>إجراء</th></tr></thead><tbody id="safety-body"></tbody></table></div><div class="empty-state hidden" id="safety-empty">لا توجد بلاغات مطابقة.</div></section>
+        </section>
+
+        <section class="view" id="view-safety-recordings">
+          <div class="section-toolbar"><div><h2>تسجيلات السلامة الصوتية</h2><p>تسجيلات اكتمل رفعها بعد موافقة صريحة من المستخدم. التشغيل متاح للإدارة فقط ولا تُكشف روابط الملفات مباشرة.</p></div><button class="button" id="safety-recordings-refresh">تحديث</button></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>التسجيل</th><th>الرحلة</th><th>المسار</th><th>صاحب التسجيل</th><th>السائق</th><th>المدة والحجم</th><th>بدأ التسجيل</th><th>الموافقة</th><th>التشغيل</th></tr></thead><tbody id="safety-recordings-body"></tbody></table></div><div class="empty-state hidden" id="safety-recordings-empty">لا توجد تسجيلات صوتية مكتملة حتى الآن.</div></section>
         </section>
 
         <section class="view" id="view-catalog">
@@ -168,6 +180,10 @@
           <div class="section-toolbar"><div><h2>الأماكن المفضلة</h2><p>الأماكن المحفوظة للمستخدمين</p></div></div>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>المستخدم</th><th>الاسم</th><th>النوع</th><th>العنوان</th><th>الإحداثيات</th><th>التاريخ</th></tr></thead><tbody id="places-body"></tbody></table></div><div class="empty-state hidden" id="places-empty">لا توجد أماكن محفوظة.</div></section>
         </section>
+        <section class="view" id="view-areas">
+          <div class="section-toolbar"><div><h2>مناطق الخدمة</h2><p>حدد الدول والمدن التي تعمل فيها الخدمة.</p></div><button class="button primary" data-form="serviceArea">إضافة مدينة</button></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الدولة</th><th>رمز الدولة</th><th>المدينة</th><th>الحالة</th><th>التاريخ</th></tr></thead><tbody id="areas-body"></tbody></table></div><div class="empty-state hidden" id="areas-empty">لم تتم إضافة مناطق خدمة.</div></section>
+        </section>
 
         <section class="view" id="view-history">
           <div class="section-toolbar"><div><h2>سجل الرحلات</h2><p>الرحلات السابقة والقادمة للمستخدمين</p></div></div>
@@ -191,6 +207,8 @@
   <dialog class="modal" id="form-modal"><form class="modal-shell" id="entity-form"><header><div><h2 id="modal-title">إضافة</h2><p id="modal-subtitle"></p></div><button class="icon-button" type="button" data-close="form-modal" title="إغلاق" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="form-grid" id="modal-fields"></div><div class="inline-result hidden" id="modal-result"></div></div><footer><button class="button" type="button" data-close="form-modal">إلغاء</button><button class="button primary" id="modal-submit" type="submit">حفظ</button></footer></form></dialog>
 
   <dialog class="modal" id="database-modal"><form class="modal-shell" id="database-form"><header><div><h2>اتصال قاعدة البيانات</h2><p>اختبار الاتصال وإنشاء الجداول المطلوبة</p></div><button class="icon-button" type="button" data-close="database-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="form-grid"><label class="full">نوع النظام<select id="db-provider"></select></label><label>اسم الخادم<input id="db-server" placeholder=".\SQLEXPRESS" required></label><label>اسم القاعدة<input id="db-name" required></label><label>اسم المستخدم<input id="db-username"></label><label>كلمة المرور<input id="db-password" type="password"></label><label class="check-field full"><input id="db-integrated" type="checkbox"> استخدام مصادقة Windows</label><label class="check-field"><input id="db-trust" type="checkbox" checked> الوثوق بالشهادة</label><label class="check-field"><input id="db-encrypt" type="checkbox"> تشفير الاتصال</label></div><div class="inline-result hidden" id="database-result"></div></div><footer><button class="button" id="db-test" type="button">اختبار الاتصال</button><button class="button primary" type="submit">حفظ وتجهيز القاعدة</button></footer></form></dialog>
+
+  <dialog class="modal safety-map-modal" id="safety-map-modal"><div class="modal-shell"><header><div><h2>متابعة موقع الرحلة</h2><p id="safety-map-summary">—</p></div><button class="icon-button" type="button" data-close="safety-map-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="safety-map-details" id="safety-map-details"></div><div class="safety-map-privacy"><span>تنبيه خصوصية: تحميل الخريطة يرسل إحداثيات الرحلة إلى OpenStreetMap. أثناء المتابعة تُحدّث الإحداثيات الحية كل 12 ثانية. لن تُحمّل قبل الضغط على الزر.</span><button class="button small" id="safety-map-load" type="button">تحميل الخريطة</button></div><iframe class="hidden" id="safety-map-frame" title="خريطة متابعة بلاغ السلامة" loading="lazy" referrerpolicy="no-referrer"></iframe><div class="safety-map-footer"><span id="safety-map-updated">—</span><a class="button small hidden" id="safety-map-route-link" target="_blank" rel="noopener noreferrer">فتح مسار الرحلة</a></div></div></div></dialog>
 
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
   <script src="/admin.js" defer></script>

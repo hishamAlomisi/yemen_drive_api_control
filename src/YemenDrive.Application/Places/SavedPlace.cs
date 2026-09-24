@@ -19,14 +19,32 @@ public sealed class SavedPlace(
         var userId = currentUser.RequireUserId();
         if (!await db.Users.AnyAsync(x => x.Id == userId, token))
             throw new ServiceException("user_not_found", "المستخدم غير موجود.");
-        var item = new SavedPlaceEntity { UserId = userId, Label = model.Label!.Trim(), Kind = string.IsNullOrWhiteSpace(model.Kind) ? "place" : model.Kind.Trim(), Address = model.Address!.Trim(), Latitude = model.Latitude!.Value, Longitude = model.Longitude!.Value };
+        var locationKey = SavedPlaceLocationKey.Create(model.Latitude!.Value, model.Longitude!.Value);
+        var duplicate = await db.SavedPlaces
+            .SingleOrDefaultAsync(x => x.UserId == userId && x.LocationKey == locationKey, token);
+        if (duplicate is not null)
+        {
+            duplicate.Label = model.Label!.Trim();
+            duplicate.Kind = string.IsNullOrWhiteSpace(model.Kind) ? "place" : model.Kind.Trim();
+            duplicate.Address = model.Address!.Trim();
+            duplicate.Latitude = model.Latitude.Value;
+            duplicate.Longitude = model.Longitude.Value;
+            await db.SaveChangesAsync(token);
+            return Result(duplicate);
+        }
+        var item = new SavedPlaceEntity { UserId = userId, Label = model.Label!.Trim(), Kind = string.IsNullOrWhiteSpace(model.Kind) ? "place" : model.Kind.Trim(), Address = model.Address!.Trim(), Latitude = model.Latitude!.Value, Longitude = model.Longitude!.Value, LocationKey = locationKey };
         db.SavedPlaces.Add(item); await db.SaveChangesAsync(token); return Result(item);
     }
     protected override async Task<object?> UpdateAsync(SavedPlaceModel model, CancellationToken token)
     {
         var item = await FindAsync(model, token);
         if (model.Label is not null) item.Label = model.Label.Trim(); if (model.Kind is not null) item.Kind = model.Kind.Trim(); if (model.Address is not null) item.Address = model.Address.Trim();
-        if (model.Latitude is not null) item.Latitude = model.Latitude.Value; if (model.Longitude is not null) item.Longitude = model.Longitude.Value;
+        var latitude = model.Latitude ?? item.Latitude;
+        var longitude = model.Longitude ?? item.Longitude;
+        var locationKey = SavedPlaceLocationKey.Create(latitude, longitude);
+        var duplicate = await db.SavedPlaces.AnyAsync(x => x.UserId == item.UserId && x.LocationKey == locationKey && x.Id != item.Id, token);
+        if (duplicate) throw new ServiceException("place_already_saved", "هذا الموقع محفوظ مسبقاً.");
+        item.Latitude = latitude; item.Longitude = longitude; item.LocationKey = locationKey;
         await db.SaveChangesAsync(token); return Result(item);
     }
     protected override async Task<object?> DeleteAsync(SavedPlaceModel model, CancellationToken token)

@@ -6,8 +6,17 @@ const state = {
   rides: [],
   catalog: [],
   kinds: [],
-  pricing: [], places: [], history: [], settlements: [], ledgerAccounts: [], paymentMethods: [], cancellations: []
+  pricing: [], places: [], areas: [], history: [], settlements: [], ledgerAccounts: [], paymentMethods: [], cancellations: [], safety: [], safetyRecordings: []
 };
+
+const busySafetyActions = new Set();
+const safetyAudioUrls = new Map();
+let safetyMapTimer = null;
+let safetyMapIncidentId = null;
+let safetyMapLastMarker = '';
+let safetyMapPendingUrl = '';
+let safetyMapPendingMarker = '';
+let safetyMapLoaded = false;
 
 const ADMIN_TOKEN_KEY = 'yemendrive_admin_token';
 
@@ -17,6 +26,8 @@ const titles = {
   drivers: ['السائقون', 'المركبات والخدمات وحالة التوفر'],
   rides: ['الرحلات', 'متابعة الطلبات وحالات التنفيذ'],
   cancellations: ['طلبات الإلغاء', 'مراجعة القرارات والإحالات قبل اعتماد الإدارة'],
+  safety: ['بلاغات السلامة', 'بلاغات الرحلات التي تحتاج متابعة فورية'],
+  'safety-recordings': ['تسجيلات السلامة', 'مراجعة التسجيلات المكتملة التي وافق أصحابها على تسجيلها'],
   catalog: ['الخدمات', 'كتالوج الخدمات والتصنيفات'],
   pricing: ['التسعير', 'قواعد احتساب أسعار الرحلات'],
   wallet: ['المحفظة', 'الأرصدة والحركات المالية'],
@@ -24,6 +35,7 @@ const titles = {
   settlements: ['مديونيات السائقين', 'تحصيل عمولة المنصة من الرحلات النقدية'],
   ledger: ['كشف الحساب', 'استعلام القيود المحاسبية المنشورة والأرصدة'],
   places: ['الأماكن المفضلة', 'الأماكن المحفوظة للمستخدمين'],
+  areas: ['مناطق الخدمة', 'الدول والمدن التي تعمل فيها الخدمة'],
   history: ['سجل الرحلات', 'الرحلات السابقة والقادمة'],
   console: ['محطة API', 'تنفيذ الطلبات المتقدمة']
 };
@@ -31,6 +43,8 @@ const titles = {
 const rideStatuses = ['مسودة', 'جاري البحث', 'تفاوض', 'تم تعيين سائق', 'السائق في الطريق', 'قيد التنفيذ', 'مكتملة', 'ملغاة', 'الإلغاء قيد المراجعة'];
 const cancellationStatuses = ['بانتظار قرار السائق', 'رفض السائق', 'قيد مراجعة الإدارة', 'وافقت الإدارة', 'رفضت الإدارة'];
 const cancellationDriverDecisions = ['—', 'وافق السائق', 'رفض السائق', 'أحال السائق للإدارة'];
+const cancellationRefundMethods = { 1: 'استرداد نقدي مباشر من السائق', 2: 'إضافة الاسترداد إلى محفظة العميل' };
+const safetyStatuses = ['جديد', 'تم الاستلام', 'مغلق'];
 const roles = ['عميل', 'سائق', 'مدير'];
 const transactionTypes = ['إيداع', 'خصم', 'حجز', 'تحرير', 'استرداد', 'عمولة'];
 const journalEntryTypes = ['رصيد افتتاحي', 'تحصيل نقدي لرحلة', 'دفع رحلة من المحفظة', 'تغذية محفظة', 'إلغاء رحلة', 'تحصيل تسوية سائق', 'تسوية يدوية', 'قيد عكسي'];
@@ -102,6 +116,10 @@ const formConfigs = {
   ,paymentMethod: {
     title: 'إضافة طريقة دفع خارجية', subtitle: 'بيانات تعريف وتشغيل فقط؛ لا تضع مفاتيح API أو بيانات سرية هنا.', model: 'PaymentMethodModel', operation: 'add', refresh: 'payment-methods',
     fields: [['code','رمز فريد','text',true],['nameAr','الاسم الظاهر للعميل','text',true],['descriptionAr','الوصف المختصر','textarea',true],['imageFile','الشعار أو الصورة','file'],['imageUrl','رابط الصورة (اختياري)','url'],['kind','النوع','select',true,[['0','محفظة خارجية'],['1','بطاقة'],['2','حساب/تحويل بنكي']]],['providerCode','رمز المزود غير السري','text',true],['publicInstructionsAr','تعليمات ظاهرة للعميل','textarea'],['sortOrder','الترتيب','number',false,'0'],['isAvailableForRidePayment','تظهر أثناء دفع الرحلة','checkbox',false,true],['isAvailableForWalletTopUp','تظهر أثناء شحن المحفظة','checkbox',false,true],['isActive','نشطة','checkbox',false,true]]
+  }
+  ,serviceArea: {
+    title: 'إضافة مدينة خدمة', subtitle: 'تفعيل الخدمة في دولة ومدينة محددة', model: 'ServiceAreaModel', operation: 'add', refresh: 'areas',
+    fields: [['countryCode','رمز الدولة','text',true,'YE'],['countryNameAr','اسم الدولة','text',true,'اليمن'],['cityNameAr','اسم المدينة','text',true],['isActive','الخدمة متاحة','checkbox',false,true]]
   }
 };
 
@@ -314,17 +332,167 @@ async function loadCancellations() {
     const isAdminReview = Number(item.status) === 2;
     const decision = `${cancellationStatuses[item.status] || item.status}${item.driverDecision ? ` · ${cancellationDriverDecisions[item.driverDecision] || item.driverDecision}` : ''}`;
     const payment = item.paymentProvider ? `${item.paymentProvider} · ${number(item.paymentAmount)} YER` : 'لا توجد دفعة مسجلة';
+    const refundRoute = item.requestedRefundMethod ? (cancellationRefundMethods[item.requestedRefundMethod] || 'مسار استرداد غير معروف') : 'لا يوجد مسار استرداد مطلوب';
     const place = item.cancellationLatitude == null ? '—' : `${number(item.cancellationLatitude)}, ${number(item.cancellationLongitude)}`;
     const actions = isAdminReview ? `<div class="action-row"><button class="button small primary" onclick="decideCancellation(${Number(item.id)}, true)">اعتماد الإلغاء</button><button class="button small" onclick="decideCancellation(${Number(item.id)}, false)">رفض الطلب</button></div>` : '—';
-    return `<tr><td>#${escapeHtml(item.id)}</td><td><span class="cell-main">${escapeHtml(item.customerName || item.customerPhone || item.customerId)}</span><span class="cell-sub">السائق: ${escapeHtml(item.driverName || 'غير معيّن')}</span></td><td><span class="cell-main">${escapeHtml(item.pickup)} ← ${escapeHtml(item.destination)}</span><span class="cell-sub">الإجمالي: ${number(item.totalAmount)} YER</span></td><td><span class="cell-main">${escapeHtml(item.reason)}</span>${item.driverNote ? `<span class="cell-sub">ملاحظة السائق: ${escapeHtml(item.driverNote)}</span>` : ''}</td><td>${badge(decision, isAdminReview ? 'warning' : Number(item.status) === 3 ? 'success' : Number(item.status) === 4 ? 'danger' : 'info')}</td><td><span class="cell-main">${escapeHtml(payment)}</span>${item.paymentStatus != null ? `<span class="cell-sub">حالة: ${escapeHtml(item.paymentStatus)}</span>` : ''}</td><td>${escapeHtml(place)}</td><td>${date(item.createdAtUtc)}</td><td>${actions}</td></tr>`;
+    return `<tr><td>#${escapeHtml(item.id)}</td><td><span class="cell-main">${escapeHtml(item.customerName || item.customerPhone || item.customerId)}</span><span class="cell-sub">السائق: ${escapeHtml(item.driverName || 'غير معيّن')}</span></td><td><span class="cell-main">${escapeHtml(item.pickup)} ← ${escapeHtml(item.destination)}</span><span class="cell-sub">الإجمالي: ${number(item.totalAmount)} YER</span></td><td><span class="cell-main">${escapeHtml(item.reason)}</span>${item.driverNote ? `<span class="cell-sub">ملاحظة السائق: ${escapeHtml(item.driverNote)}</span>` : ''}</td><td>${badge(decision, isAdminReview ? 'warning' : Number(item.status) === 3 ? 'success' : Number(item.status) === 4 ? 'danger' : 'info')}</td><td><span class="cell-main">${escapeHtml(payment)}</span><span class="cell-sub">الاسترداد: ${escapeHtml(refundRoute)}</span>${item.paymentStatus != null ? `<span class="cell-sub">حالة: ${escapeHtml(item.paymentStatus)}</span>` : ''}</td><td>${escapeHtml(place)}</td><td>${date(item.createdAtUtc)}</td><td>${actions}</td></tr>`;
   });
   toggleEmpty('#cancellations-body', '#cancellations-empty', rows);
 }
 
+async function loadSafety() {
+  const selected = $('#safety-filter').value;
+  const result = await execute('SafetyAdminReportModel', 'list', selected === '' ? {} : { status: Number(selected) });
+  state.safety = result.data || [];
+  const rows = state.safety.map(item => {
+    const status = Number(item.status);
+    const location = item.latitude == null ? 'لا يوجد موقع حي' : `${number(item.latitude)}, ${number(item.longitude)}`;
+    const actions = status === 2 ? '—' : `<div class="action-row">${status === 0 ? `<button class="button small" ${busySafetyActions.has(Number(item.id)) ? 'disabled' : ''} onclick="decideSafety(${Number(item.id)}, false)">استلام</button>` : ''}<button class="button small primary" ${busySafetyActions.has(Number(item.id)) ? 'disabled' : ''} onclick="decideSafety(${Number(item.id)}, true)">إغلاق البلاغ</button></div>`;
+    const driver = item.driverId ? `<span class="cell-main">${escapeHtml(item.driverName || 'السائق')}</span><span class="cell-sub">${escapeHtml(item.driverPhone || 'لا يوجد رقم مسجل')}</span>` : 'لم يعيّن سائق';
+    const mapAction = item.rideId ? `<button class="button small" onclick="openSafetyMap(${Number(item.id)})">عرض الرحلة على الخريطة</button>` : '—';
+    return `<tr><td>#${Number(item.id)}</td><td><span class="cell-main">${escapeHtml(item.userName || item.userPhone || '—')}</span><span class="cell-sub">${escapeHtml(item.userPhone || '')}</span></td><td>${driver}</td><td><span class="cell-main">#${Number(item.rideId || 0) || '—'}</span><span class="cell-sub">${mapAction}</span></td><td>${escapeHtml(item.message)}</td><td>${escapeHtml(location)}</td><td>${badge(safetyStatuses[status] || item.status, status === 2 ? 'success' : status === 1 ? 'info' : 'danger')}</td><td>${date(item.createdAtUtc)}</td><td>${actions}</td></tr>`;
+  });
+  toggleEmpty('#safety-body', '#safety-empty', rows);
+}
+
+window.decideSafety = async (id, resolve) => {
+  const incidentId = Number(id);
+  if (busySafetyActions.has(incidentId)) return;
+  busySafetyActions.add(incidentId);
+  try {
+    await loadSafety();
+    await execute('SafetyIncidentModel', resolve ? 'adminApprove' : 'accept', { id: incidentId });
+    toast(resolve ? 'تم إغلاق بلاغ السلامة.' : 'تم استلام البلاغ، وأزيل إجراء الاستلام لمنع تكراره.');
+  } catch (error) { toast(error.message, true); }
+  finally { busySafetyActions.delete(incidentId); await loadSafety().catch(error => toast(error.message, true)); }
+};
+
+async function loadSafetyRecordings() {
+  for (const url of safetyAudioUrls.values()) URL.revokeObjectURL(url);
+  safetyAudioUrls.clear();
+  const result = await execute('SafetyRecordingAdminReportModel', 'list', {});
+  state.safetyRecordings = result.data || [];
+  const rows = state.safetyRecordings.map(item => {
+    const role = Number(item.userRole) === 1 ? 'سائق' : Number(item.userRole) === 0 ? 'عميل' : 'مستخدم';
+    const recordingPath = `${escapeHtml(item.pickupLabel || 'الانطلاق')} ← ${escapeHtml(item.destinationLabel || 'الوجهة')}`;
+    const driver = item.driverId ? `<span class="cell-main">${escapeHtml(item.driverName || '—')}</span><span class="cell-sub">${escapeHtml(item.driverPhone || '')}</span>` : 'غير معيّن';
+    return `<tr><td>#${Number(item.id)}</td><td>#${Number(item.rideId || 0) || '—'}</td><td>${recordingPath}</td><td><span class="cell-main">${escapeHtml(item.userName || '—')} (${role})</span><span class="cell-sub">${escapeHtml(item.userPhone || '')}</span></td><td>${driver}</td><td>${number((Number(item.durationMilliseconds) || 0) / 1000)} ث<span class="cell-sub">${number((Number(item.uploadedBytes) || 0) / 1024)} ك.ب</span></td><td>${date(item.startedAtUtc)}</td><td>${date(item.consentAtUtc)}</td><td><div class="recording-player"><button class="button small" onclick="prepareSafetyRecording(${Number(item.id)})">تجهيز التشغيل</button><audio controls preload="none" class="hidden" id="safety-audio-${Number(item.id)}" aria-label="تشغيل تسجيل السلامة رقم ${Number(item.id)}"></audio></div></td></tr>`;
+  });
+  toggleEmpty('#safety-recordings-body', '#safety-recordings-empty', rows);
+}
+
+window.prepareSafetyRecording = async id => {
+  const recordingId = Number(id);
+  const button = document.querySelector(`#safety-recordings-body button[onclick="prepareSafetyRecording(${recordingId})"]`);
+  const audio = document.getElementById(`safety-audio-${recordingId}`);
+  if (!audio) return;
+  if (button) { button.disabled = true; button.textContent = 'جارٍ تحميل الصوت…'; }
+  try {
+    const token = localStorage.getItem(ADMIN_TOKEN_KEY);
+    const response = await fetch(`/api/admin/safety/recordings/${recordingId}/audio`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      cache: 'no-store'
+    });
+    if (response.status === 401 || response.status === 403) throw new Error('انتهت جلسة الإدارة أو لا تملك صلاحية التشغيل.');
+    if (!response.ok) throw new Error(response.status === 413 ? 'التسجيل أكبر من الحد المسموح للتشغيل في المتصفح.' : 'تعذر جلب التسجيل الصوتي.');
+    const blob = await response.blob();
+    if (!blob.size) throw new Error('ملف التسجيل فارغ.');
+    if (safetyAudioUrls.has(recordingId)) URL.revokeObjectURL(safetyAudioUrls.get(recordingId));
+    const url = URL.createObjectURL(new Blob([blob], { type: 'audio/wav' }));
+    safetyAudioUrls.set(recordingId, url);
+    audio.src = url;
+    audio.classList.remove('hidden');
+    audio.load();
+    if (button) { button.textContent = 'تم التجهيز'; button.title = 'استخدم أزرار مشغل الصوت للاستماع'; }
+  } catch (error) {
+    toast(error.message, true);
+    if (button) button.textContent = 'إعادة المحاولة';
+  } finally { if (button) button.disabled = false; }
+};
+
+function validMapPoint(latitude, longitude) {
+  const lat = Number(latitude), lon = Number(longitude);
+  return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
+}
+
+function updateSafetyMap(item) {
+  const driverPoint = validMapPoint(item.driverLatitude, item.driverLongitude);
+  const incidentPoint = validMapPoint(item.latitude, item.longitude);
+  const pickupPoint = validMapPoint(item.pickupLatitude, item.pickupLongitude);
+  const destinationPoint = validMapPoint(item.destinationLatitude, item.destinationLongitude);
+  const marker = driverPoint || incidentPoint || pickupPoint;
+  $('#safety-map-summary').textContent = `البلاغ #${item.id} · الرحلة #${item.rideId || '—'} · ${rideStatuses[Number(item.rideStatus)] || 'حالة غير متاحة'}`;
+  const coordinates = [driverPoint && `موقع السائق الحالي: ${number(driverPoint.lat)}, ${number(driverPoint.lon)}`, incidentPoint && `موقع البلاغ: ${number(incidentPoint.lat)}, ${number(incidentPoint.lon)}`, item.driverLocationObservedAtUtc && `آخر تحديث للسائق: ${date(item.driverLocationObservedAtUtc)}`].filter(Boolean);
+  $('#safety-map-details').textContent = `${item.driverName || 'لم يعيّن سائق'}${item.driverPhone ? ` · ${item.driverPhone}` : ''} | ${item.pickupAddress || item.pickupLabel || 'نقطة الانطلاق'} ← ${item.destinationAddress || item.destinationLabel || 'الوجهة'}${coordinates.length ? ` | ${coordinates.join(' | ')}` : ''}`;
+  $('#safety-map-updated').textContent = item.driverLocationObservedAtUtc ? `تم تحديث الموقع ${date(item.driverLocationObservedAtUtc)}` : 'لا يتوفر موقع مباشر للسائق؛ تعرض الخريطة موقع البلاغ إن وُجد.';
+
+  if (marker) {
+    const points = [marker, incidentPoint, pickupPoint, destinationPoint].filter(Boolean);
+    const minLat = Math.min(...points.map(point => point.lat)) - 0.004;
+    const maxLat = Math.max(...points.map(point => point.lat)) + 0.004;
+    const minLon = Math.min(...points.map(point => point.lon)) - 0.004;
+    const maxLon = Math.max(...points.map(point => point.lon)) + 0.004;
+    const markerKey = `${marker.lat.toFixed(5)},${marker.lon.toFixed(5)}:${minLat.toFixed(3)},${minLon.toFixed(3)},${maxLat.toFixed(3)},${maxLon.toFixed(3)}`;
+    if (markerKey !== (safetyMapLoaded ? safetyMapLastMarker : safetyMapPendingMarker)) {
+      const params = new URLSearchParams({ bbox: `${minLon},${minLat},${maxLon},${maxLat}`, layer: 'mapnik', marker: `${marker.lat},${marker.lon}` });
+      safetyMapPendingUrl = `https://www.openstreetmap.org/export/embed.html?${params.toString()}`;
+      safetyMapPendingMarker = markerKey;
+      if (safetyMapLoaded) {
+        $('#safety-map-frame').src = safetyMapPendingUrl;
+        safetyMapLastMarker = markerKey;
+      }
+    }
+  } else {
+    safetyMapPendingUrl = '';
+    safetyMapPendingMarker = '';
+    $('#safety-map-frame').removeAttribute('src');
+  }
+
+  const routePoints = [driverPoint || incidentPoint, pickupPoint, destinationPoint].filter(Boolean);
+  if (routePoints.length >= 2) {
+    const route = routePoints.map(point => `${point.lat},${point.lon}`).join(';');
+    $('#safety-map-route-link').href = `https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${encodeURIComponent(route)}`;
+    $('#safety-map-route-link').classList.toggle('hidden', !safetyMapLoaded);
+  } else {
+    $('#safety-map-route-link').classList.add('hidden');
+  }
+}
+
+window.openSafetyMap = async id => {
+  safetyMapIncidentId = Number(id);
+  safetyMapLastMarker = '';
+  safetyMapPendingMarker = '';
+  safetyMapPendingUrl = '';
+  safetyMapLoaded = false;
+  clearInterval(safetyMapTimer);
+  $('#safety-map-frame').removeAttribute('src');
+  $('#safety-map-frame').classList.add('hidden');
+  $('#safety-map-load').classList.remove('hidden');
+  $('#safety-map-route-link').removeAttribute('href');
+  $('#safety-map-route-link').classList.add('hidden');
+  $('#safety-map-modal').showModal();
+  try {
+    const result = await execute('SafetyAdminReportModel', 'list', {});
+    const item = (result.data || []).find(row => Number(row.id) === safetyMapIncidentId);
+    if (!item) { toast('تعذر العثور على بيانات الرحلة.', true); $('#safety-map-modal').close(); return; }
+    updateSafetyMap(item);
+    safetyMapTimer = setInterval(async () => {
+      if (!$('#safety-map-modal').open) { clearInterval(safetyMapTimer); return; }
+      try {
+        const refreshed = await execute('SafetyAdminReportModel', 'list', {});
+        const latest = (refreshed.data || []).find(row => Number(row.id) === safetyMapIncidentId);
+        if (!latest) { clearInterval(safetyMapTimer); return; }
+        updateSafetyMap(latest);
+        if (![3, 4, 5, 8].includes(Number(latest.rideStatus))) clearInterval(safetyMapTimer);
+      } catch (error) { console.warn('تعذر تحديث موقع الرحلة:', error); }
+    }, 12000);
+  } catch (error) { toast(error.message, true); $('#safety-map-modal').close(); }
+};
+
 window.decideCancellation = async (id, approve) => {
   const label = approve ? 'اعتماد إلغاء الرحلة' : 'رفض طلب الإلغاء';
   const warning = approve
-    ? 'سيتم إلغاء الرحلة وإشعار الطرفين. لا ينفذ هذا الإجراء استرداداً مالياً تلقائياً.'
+    ? 'سيتم إلغاء الرحلة وإشعار الطرفين وتنفيذ التسوية المالية لمسار الاسترداد المحدد، مرة واحدة فقط.'
     : 'سيتم رفض الطلب وإشعار العميل والسائق.';
   if (!window.confirm(`${label}\n${warning}`)) return;
   const note = window.prompt('ملاحظة الإدارة (اختيارية):') || undefined;
@@ -409,12 +577,15 @@ async function loadView(view, quiet = false) {
     if (view === 'drivers') await loadDrivers();
     if (view === 'rides') await loadRides();
     if (view === 'cancellations') await loadCancellations();
+    if (view === 'safety') await loadSafety();
+    if (view === 'safety-recordings') await loadSafetyRecordings();
     if (view === 'catalog') await loadCatalog();
     if (view === 'pricing') await loadPricing();
     if (view === 'payment-methods') await loadPaymentMethods();
     if (view === 'settlements') await loadSettlements();
     if (view === 'ledger') { await loadLedgerAccounts(); await loadAccountStatement(); }
     if (view === 'places') await loadPlaces();
+    if (view === 'areas') await loadAreas();
     if (view === 'history') await loadHistory();
   } catch (error) { if (!quiet) toast(error.message, true); }
 }
@@ -422,6 +593,11 @@ async function loadView(view, quiet = false) {
 async function loadPlaces() {
   const result = await execute('SavedPlaceAdminModel', 'list', {}); state.places = result.data;
   toggleEmpty('#places-body', '#places-empty', (result.data || []).map(item => `<tr><td><span class="cell-main">${escapeHtml(item.userName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.userId)}</span></td><td>${escapeHtml(item.label)}</td><td>${escapeHtml(item.kind || 'place')}</td><td>${escapeHtml(item.address)}</td><td>${number(item.latitude)}, ${number(item.longitude)}</td><td>${date(item.updatedAtUtc || item.createdAtUtc)}</td></tr>`));
+}
+
+async function loadAreas() {
+  const result = await execute('ServiceAreaModel', 'list', {}); state.areas = result.data || [];
+  toggleEmpty('#areas-body', '#areas-empty', state.areas.map(item => `<tr><td>${escapeHtml(item.countryNameAr)}</td><td>${escapeHtml(item.countryCode)}</td><td>${escapeHtml(item.cityNameAr)}</td><td>${item.isActive ? badge('متاحة','success') : badge('موقوفة','warning')}</td><td>${date(item.updatedAtUtc || item.createdAtUtc)}</td></tr>`));
 }
 
 async function loadHistory() {
@@ -582,6 +758,19 @@ function bindEvents() {
   $('#ride-filter').addEventListener('change', loadRides);
   $('#cancellation-filter').addEventListener('change', () => loadCancellations().catch(error => toast(error.message, true)));
   $('#cancellations-refresh').addEventListener('click', () => loadCancellations().catch(error => toast(error.message, true)));
+  $('#safety-filter').addEventListener('change', () => loadSafety().catch(error => toast(error.message, true)));
+  $('#safety-refresh').addEventListener('click', () => loadSafety().catch(error => toast(error.message, true)));
+  $('#safety-recordings-refresh').addEventListener('click', () => loadSafetyRecordings().catch(error => toast(error.message, true)));
+  $('#safety-map-modal').addEventListener('close', () => { clearInterval(safetyMapTimer); safetyMapTimer = null; safetyMapIncidentId = null; safetyMapLastMarker = ''; $('#safety-map-frame').removeAttribute('src'); });
+  $('#safety-map-load').addEventListener('click', () => {
+    if (!safetyMapPendingUrl) { toast('لا تتوفر إحداثيات لعرضها على الخريطة.', true); return; }
+    safetyMapLoaded = true;
+    safetyMapLastMarker = safetyMapPendingMarker;
+    $('#safety-map-frame').src = safetyMapPendingUrl;
+    $('#safety-map-frame').classList.remove('hidden');
+    $('#safety-map-load').classList.add('hidden');
+    $('#safety-map-route-link').classList.toggle('hidden', !$('#safety-map-route-link').href);
+  });
   let searchTimer; $('#user-search').addEventListener('input', event => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadUsers(event.target.value.trim()).catch(error => toast(error.message, true)), 300); });
   $('#wallet-load').addEventListener('click', () => loadWallet().catch(error => toast(error.message, true)));
   $('#statement-load').addEventListener('click', () => loadAccountStatement().catch(error => toast(error.message, true)));
@@ -621,6 +810,11 @@ function bindEvents() {
   });
   $('#copy-response').addEventListener('click', () => navigator.clipboard.writeText($('#console-response').textContent).then(() => toast('تم نسخ الاستجابة.')));
 }
+
+window.addEventListener('beforeunload', () => {
+  clearInterval(safetyMapTimer);
+  for (const url of safetyAudioUrls.values()) URL.revokeObjectURL(url);
+});
 
 async function start() {
   bindEvents();

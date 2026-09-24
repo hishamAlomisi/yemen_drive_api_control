@@ -5,6 +5,7 @@ using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
 using YemenDrive.Application.Accounting;
+using YemenDrive.Application.Places;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -70,16 +71,25 @@ public sealed class Ride(
         dbContext.Rides.Add(entity);
         await StoreRecentDestinationAsync(entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
-        var driverIds = await dbContext.DriverProfiles.AsNoTracking()
-            .Where(x => x.IsAvailable && x.ServiceKindId == entity.ServiceKindId &&
+        var initialRadiusMeters = RideDriverProximity.RadiusMeters(entity, DateTime.UtcNow);
+        var locationFreshAfter = DateTime.UtcNow.AddMinutes(-5);
+        var driverIds = (await dbContext.DriverProfiles.AsNoTracking()
+            .Where(x => x.User.IsActive && x.IsAvailable &&
+                        x.ServiceKindId == entity.ServiceKindId &&
                         x.ServiceCatalogItemId == entity.ServiceCatalogItemId &&
                         !dbContext.Rides.Any(activeRide =>
                             activeRide.DriverId == x.UserId &&
                             (activeRide.Status == RideStatus.DriverAssigned ||
                              activeRide.Status == RideStatus.DriverEnRoute ||
                              activeRide.Status == RideStatus.InProgress)))
+            .Join(dbContext.DriverLiveLocations.AsNoTracking().Where(x => x.IsOnline && x.ObservedAtUtc >= locationFreshAfter),
+                profile => profile.UserId, location => location.DriverId,
+                (profile, location) => new { profile.UserId, location.Latitude, location.Longitude })
+            .Take(200)
+            .ToListAsync(cancellationToken))
+            .Where(x => RideDriverProximity.HaversineMeters(entity.PickupLatitude, entity.PickupLongitude, x.Latitude, x.Longitude) <= initialRadiusMeters)
             .Select(x => x.UserId)
-            .ToListAsync(cancellationToken);
+            .ToList();
         foreach (var driverId in driverIds)
         {
             dbContext.Notifications.Add(new Notification
@@ -113,7 +123,18 @@ public sealed class Ride(
             if (model.Status.Value is RideStatus.DriverEnRoute or RideStatus.InProgress or RideStatus.Completed &&
                 (currentUser.UserId != entity.DriverId && !await IsAdminAsync(cancellationToken)))
                 throw new ServiceException("driver_action_required", "تغيير حالة الرحلة التشغيلية متاح للسائق المسند فقط.");
+            if (model.Status.Value == RideStatus.Completed &&
+                !await dbContext.PaymentTransactions.AnyAsync(x => x.RideId == entity.Id && x.Status == PaymentStatus.Paid, cancellationToken))
+                throw new ServiceException("payment_required", "لا يمكن إنهاء الرحلة قبل تسجيل تحصيل المبلغ.");
             entity.Status = model.Status.Value;
+        }
+        if (model.CustomerPaymentEnabled is not null)
+        {
+            if (entity.DriverId != currentUser.UserId && !await IsAdminAsync(cancellationToken))
+                throw new ServiceException("driver_action_required", "تمكين الدفع متاح للسائق المسند فقط.");
+            if (entity.Status is not (RideStatus.InProgress or RideStatus.Completed))
+                throw new ServiceException("invalid_payment_stage", "لا يمكن تمكين الدفع في هذه المرحلة.");
+            entity.CustomerPaymentEnabled = model.CustomerPaymentEnabled.Value;
         }
         if (model.CustomerPrice is not null)
         {
@@ -447,20 +468,21 @@ public sealed class Ride(
         x.DestinationLabel, x.DestinationAddress, x.DestinationLatitude, x.DestinationLongitude,
         x.ServerPrice, x.CustomerPrice, x.ServiceFee, x.CancellationFee, x.TotalAmount,
         x.DriverCommissionAmount, x.DriverShare, x.PlatformShare,
+        x.CustomerPaymentEnabled,
         x.StartedAtUtc, x.CompletedAtUtc, x.CreatedAtUtc, x.UpdatedAtUtc
     };
 
     private async Task StoreRecentDestinationAsync(RideEntity ride, CancellationToken token)
     {
         const string recentKind = "recent";
-        const double samePointTolerance = 0.0001d;
+        var locationKey = SavedPlaceLocationKey.Create(
+            ride.DestinationLatitude,
+            ride.DestinationLongitude);
         var label = RideLocationText.DisplayName(ride.DestinationLabel, ride.DestinationAddress, "وجهة حديثة");
         var existing = await dbContext.SavedPlaces
-            .Where(x => x.UserId == ride.CustomerId && x.Kind == recentKind)
+            .Where(x => x.UserId == ride.CustomerId)
             .OrderByDescending(x => x.UpdatedAtUtc)
-            .FirstOrDefaultAsync(x =>
-                Math.Abs(x.Latitude - ride.DestinationLatitude) < samePointTolerance &&
-                Math.Abs(x.Longitude - ride.DestinationLongitude) < samePointTolerance, token);
+            .FirstOrDefaultAsync(x => x.LocationKey == locationKey, token);
 
         if (existing is null)
         {
@@ -472,15 +494,21 @@ public sealed class Ride(
                 Address = RideLocationText.DisplayName(ride.DestinationLabel, ride.DestinationAddress, "وجهة محددة"),
                 Latitude = ride.DestinationLatitude,
                 Longitude = ride.DestinationLongitude,
+                LocationKey = locationKey,
                 UpdatedAtUtc = DateTime.UtcNow
             });
         }
         else
         {
-            existing.Label = label;
-            existing.Address = RideLocationText.DisplayName(ride.DestinationLabel, ride.DestinationAddress, "وجهة محددة");
-            existing.Latitude = ride.DestinationLatitude;
-            existing.Longitude = ride.DestinationLongitude;
+            // A manually saved place at this coordinate remains the user's
+            // own place; a repeat trip must not replace its label or kind.
+            if (existing.Kind == recentKind)
+            {
+                existing.Label = label;
+                existing.Address = RideLocationText.DisplayName(ride.DestinationLabel, ride.DestinationAddress, "وجهة محددة");
+                existing.Latitude = ride.DestinationLatitude;
+                existing.Longitude = ride.DestinationLongitude;
+            }
             existing.UpdatedAtUtc = DateTime.UtcNow;
         }
 

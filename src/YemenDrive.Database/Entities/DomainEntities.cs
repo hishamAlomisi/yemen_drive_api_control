@@ -5,6 +5,7 @@ public enum RideStatus { Draft, Searching, Negotiating, DriverAssigned, DriverEn
 public enum OfferStatus { Pending, Accepted, Rejected, Expired }
 public enum WalletTransactionType { Credit, Debit, Hold, Release, Refund, Commission }
 public enum NotificationType { RideOffer, RideStatus, Payment, Safety, System }
+public enum SafetyIncidentStatus { Open, Acknowledged, Resolved }
 public enum LedgerAccountType { Asset, Liability, Equity, Revenue, Expense }
 public enum FinancialPartyType
 {
@@ -96,6 +97,16 @@ public sealed class SavedPlace : Entity
     public string Address { get; set; } = string.Empty;
     public double Latitude { get; set; }
     public double Longitude { get; set; }
+    /// <summary>Normalized coordinate pair used to keep one saved location per user.</summary>
+    public string LocationKey { get; set; } = string.Empty;
+}
+
+public sealed class ServiceArea : Entity
+{
+    public string CountryCode { get; set; } = "YE";
+    public string CountryNameAr { get; set; } = "اليمن";
+    public string CityNameAr { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
 }
 
 public sealed class Ride : Entity
@@ -127,6 +138,7 @@ public sealed class Ride : Entity
     public decimal DriverCommissionAmount { get; set; }
     public decimal? DriverShare { get; set; }
     public decimal? PlatformShare { get; set; }
+    public bool CustomerPaymentEnabled { get; set; }
     public string? RoutePolyline { get; set; }
     public DateTime? StartedAtUtc { get; set; }
     public DateTime? CompletedAtUtc { get; set; }
@@ -448,6 +460,43 @@ public sealed class EmergencyRecording : Entity
     public DateTime StartedAtUtc { get; set; }
     public DateTime? LastChunkAtUtc { get; set; }
     public DateTime? EndedAtUtc { get; set; }
+}
+
+/// <summary>Private emergency contact owned and managed by one customer.</summary>
+public sealed class EmergencyContact : Entity
+{
+    public int UserId { get; set; }
+    public User User { get; set; } = null!;
+    public string Name { get; set; } = string.Empty;
+    public string PhoneNumber { get; set; } = string.Empty;
+    public string? Relationship { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+/// <summary>Auditable safety alert with a snapshot of the most recent ride location.</summary>
+public sealed class SafetyIncident : Entity
+{
+    public int UserId { get; set; }
+    public int? RideId { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public double? Latitude { get; set; }
+    public double? Longitude { get; set; }
+    public DateTime? LocationObservedAtUtc { get; set; }
+    public SafetyIncidentStatus Status { get; set; } = SafetyIncidentStatus.Open;
+    public int? AdminUserId { get; set; }
+    public DateTime? AcknowledgedAtUtc { get; set; }
+    public DateTime? ResolvedAtUtc { get; set; }
+    public string? AdminNote { get; set; }
+}
+
+/// <summary>Opaque, revocable and time-limited public view of an active ride.</summary>
+public sealed class RideSafetyShare : Entity
+{
+    public int RideId { get; set; }
+    public int OwnerUserId { get; set; }
+    public string TokenHash { get; set; } = string.Empty;
+    public DateTime ExpiresAtUtc { get; set; }
+    public DateTime? RevokedAtUtc { get; set; }
 }
 
 public sealed class PricingRule : Entity

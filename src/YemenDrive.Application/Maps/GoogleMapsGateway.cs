@@ -130,11 +130,16 @@ public sealed class GoogleMapsGateway(
             results.ValueKind != JsonValueKind.Array || results.GetArrayLength() == 0)
             return null;
         var result = results[0];
+        var street = FindComponent(result, "route") ?? string.Empty;
+        var area = FindCityComponent(result);
+        var formatted = result.TryGetProperty("formatted_address", out var address)
+            ? address.GetString() ?? string.Empty
+            : string.Empty;
         return new MapPlace(
-            Title: FindComponent(result, "premise", "point_of_interest", "establishment", "neighborhood") ?? "موقع",
-            FormattedAddress: result.TryGetProperty("formatted_address", out var address) ? address.GetString() ?? string.Empty : string.Empty,
-            Street: FindComponent(result, "route") ?? string.Empty,
-            Area: FindComponent(result, "neighborhood", "sublocality", "locality", "administrative_area_level_1") ?? string.Empty,
+            Title: FindComponent(result, "premise", "point_of_interest", "establishment", "neighborhood", "sublocality", "route") ?? "موقع",
+            FormattedAddress: BuildLocalAddress(street, area, formatted),
+            Street: street,
+            Area: area,
             Latitude: latitude,
             Longitude: longitude);
     }
@@ -164,14 +169,47 @@ public sealed class GoogleMapsGateway(
                     displayName.TryGetProperty("text", out var text)
             ? text.GetString() ?? "موقع"
             : "موقع";
+        var street = FindComponent(place, "route") ?? string.Empty;
+        var area = FindCityComponent(place);
+        var formatted = place.TryGetProperty("formattedAddress", out var address)
+            ? address.GetString() ?? string.Empty
+            : string.Empty;
         return new MapPlace(
             title,
-            place.TryGetProperty("formattedAddress", out var address) ? address.GetString() ?? string.Empty : string.Empty,
-            FindComponent(place, "route") ?? string.Empty,
-            FindComponent(place, "neighborhood", "sublocality", "locality", "administrative_area_level_1") ?? string.Empty,
+            BuildLocalAddress(street, area, formatted),
+            street,
+            area,
             lat,
             lng);
     }
+
+    /// The operational UI is limited to Sana'a. Repeating the city and
+    /// country in every search row consumes the useful space needed for the
+    /// street and neighbourhood, so expose a concise local address instead.
+    private static string BuildLocalAddress(string street, string area, string fallback)
+    {
+        var parts = new[] { street, area }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (parts.Length > 0)
+            return string.Join("، ", parts);
+
+        return string.Join("، ", fallback
+            .Split(new[] { ',', '،' }, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Where(part => !IsSanaaOrYemen(part)));
+    }
+
+    private static bool IsSanaaOrYemen(string value)
+    {
+        var normalized = value.Trim().ToLowerInvariant();
+        return normalized is "اليمن" or "yemen" or "صنعاء" or "sanaa" or "sana'a";
+    }
+
+    private static string FindCityComponent(JsonElement item) =>
+        FindComponent(item, "locality", "administrative_area_level_2", "administrative_area_level_1", "postal_town")
+        ?? string.Empty;
 
     private static string? FindComponent(JsonElement item, params string[] wanted)
     {

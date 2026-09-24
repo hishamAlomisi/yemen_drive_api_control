@@ -3,6 +3,8 @@ using YemenDrive.Database;
 using YemenDrive.Database.Entities;
 using YemenDrive.Application.Accounting;
 using YemenDrive.Shared.Security;
+using YemenDrive.Application.Places;
+using SavedPlaceEntity = YemenDrive.Database.Entities.SavedPlace;
 
 namespace YemenDrive.Api;
 
@@ -38,6 +40,7 @@ public sealed class DevelopmentDataSeeder(
         await EnsureLiveLocationAsync(driverOne, 15.3694, 44.1910, token);
         await EnsureLiveLocationAsync(driverTwo, 15.3558, 44.2044, token);
         await EnsureSavedPlacesAsync(customer, token);
+        await EnsureServiceAreaAsync(token);
         await EnsurePricingAsync(transport, economy, 1200, 120, 20, token);
         await EnsurePricingAsync(transport, premium, 2000, 180, 25, token);
 
@@ -127,8 +130,15 @@ public sealed class DevelopmentDataSeeder(
     {
         if (await db.SavedPlaces.AnyAsync(x => x.UserId == customer.Id && x.Label == "المنزل التجريبي", token)) return;
         db.SavedPlaces.AddRange(
-            new SavedPlace { UserId = customer.Id, Label = "المنزل التجريبي", Kind = "home", Address = "صنعاء - حدة", Latitude = 15.3694, Longitude = 44.1910 },
-            new SavedPlace { UserId = customer.Id, Label = "العمل التجريبي", Kind = "work", Address = "صنعاء - التحرير", Latitude = 15.3547, Longitude = 44.2067 });
+            new SavedPlaceEntity { UserId = customer.Id, Label = "المنزل التجريبي", Kind = "home", Address = "صنعاء - حدة", Latitude = 15.3694, Longitude = 44.1910, LocationKey = SavedPlaceLocationKey.Create(15.3694, 44.1910) },
+            new SavedPlaceEntity { UserId = customer.Id, Label = "العمل التجريبي", Kind = "work", Address = "صنعاء - التحرير", Latitude = 15.3547, Longitude = 44.2067, LocationKey = SavedPlaceLocationKey.Create(15.3547, 44.2067) });
+        await db.SaveChangesAsync(token);
+    }
+
+    private async Task EnsureServiceAreaAsync(CancellationToken token)
+    {
+        if (await db.ServiceAreas.AnyAsync(x => x.CountryCode == "YE" && x.CityNameAr == "صنعاء", token)) return;
+        db.ServiceAreas.Add(new ServiceArea { CountryCode = "YE", CountryNameAr = "اليمن", CityNameAr = "صنعاء", IsActive = true });
         await db.SaveChangesAsync(token);
     }
 

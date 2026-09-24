@@ -23,10 +23,11 @@ public sealed class NearbyDriverReport(
             throw new ServiceException("invalid_pickup_location", "إحداثيات نقطة الانطلاق غير صحيحة.");
 
         var radiusMeters = Math.Clamp(model.RadiusMeters, 250, 25000);
+        var locationFreshAfter = DateTime.UtcNow.AddMinutes(-5);
         var query = dbContext.DriverProfiles.AsNoTracking()
             .Where(profile => profile.User.IsActive && profile.IsAvailable)
             .Join(
-                dbContext.DriverLiveLocations.AsNoTracking().Where(location => location.IsOnline),
+                dbContext.DriverLiveLocations.AsNoTracking().Where(location => location.IsOnline && location.ObservedAtUtc >= locationFreshAfter),
                 profile => profile.UserId,
                 location => location.DriverId,
                 (profile, location) => new { profile, location })

@@ -402,6 +402,48 @@ namespace YemenDrive.Database.Migrations
                         });
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.EmergencyContact", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("PhoneNumber")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<string>("Relationship")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "PhoneNumber")
+                        .IsUnique();
+
+                    b.ToTable("EmergencyContacts");
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.EmergencyRecording", b =>
                 {
                     b.Property<int>("Id")
@@ -1171,6 +1213,9 @@ namespace YemenDrive.Database.Migrations
                     b.Property<int>("CustomerId")
                         .HasColumnType("int");
 
+                    b.Property<bool>("CustomerPaymentEnabled")
+                        .HasColumnType("bit");
+
                     b.Property<decimal?>("CustomerPrice")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
@@ -1423,6 +1468,47 @@ namespace YemenDrive.Database.Migrations
                     b.ToTable("RideOffers");
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideSafetyShare", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("OwnerUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("RideId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("RideId", "ExpiresAtUtc");
+
+                    b.ToTable("RideSafetyShares");
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.RideServiceCatalogItem", b =>
                 {
                     b.Property<int>("Id")
@@ -1492,6 +1578,65 @@ namespace YemenDrive.Database.Migrations
                     b.ToTable("RideServiceCatalogItems", (string)null);
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.SafetyIncident", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("AcknowledgedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("AdminNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int?>("AdminUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<double?>("Latitude")
+                        .HasColumnType("float");
+
+                    b.Property<DateTime?>("LocationObservedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<double?>("Longitude")
+                        .HasColumnType("float");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTime?>("ResolvedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("RideId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RideId", "CreatedAtUtc");
+
+                    b.HasIndex("Status", "CreatedAtUtc");
+
+                    b.ToTable("SafetyIncidents");
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.SavedPlace", b =>
                 {
                     b.Property<int>("Id")
@@ -1519,6 +1664,11 @@ namespace YemenDrive.Database.Migrations
                     b.Property<double>("Latitude")
                         .HasColumnType("float");
 
+                    b.Property<string>("LocationKey")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)");
+
                     b.Property<double>("Longitude")
                         .HasColumnType("float");
 
@@ -1532,7 +1682,50 @@ namespace YemenDrive.Database.Migrations
 
                     b.HasIndex("UserId", "Label");
 
+                    b.HasIndex("UserId", "LocationKey")
+                        .IsUnique();
+
                     b.ToTable("SavedPlaces");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.ServiceArea", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("CityNameAr")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("CountryCode")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("nvarchar(8)");
+
+                    b.Property<string>("CountryNameAr")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CountryCode", "CityNameAr")
+                        .IsUnique();
+
+                    b.ToTable("ServiceAreas");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.ServiceKind", b =>
@@ -1818,6 +2011,17 @@ namespace YemenDrive.Database.Migrations
                     b.Navigation("ServiceCatalogItem");
 
                     b.Navigation("ServiceKind");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.EmergencyContact", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("User");
                 });

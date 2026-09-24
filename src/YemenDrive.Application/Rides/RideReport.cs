@@ -63,12 +63,25 @@ public sealed class RideReport(
         var driverLocation = driverProfile is null
             ? null
             : await dbContext.DriverLiveLocations.AsNoTracking()
-                .SingleOrDefaultAsync(x => x.DriverId == driverProfile.UserId, cancellationToken);
+                .SingleOrDefaultAsync(x => x.DriverId == driverProfile.UserId && x.IsOnline && x.ObservedAtUtc >= DateTime.UtcNow.AddMinutes(-5), cancellationToken);
+        if (driverProfile is not null)
+        {
+            var now = DateTime.UtcNow;
+            rides = rides.Where(x =>
+                x.DriverId == driverProfile.UserId ||
+                (driverProfile.IsAvailable && driverLocation?.IsOnline == true &&
+                 (x.Status == RideStatus.Searching || x.Status == RideStatus.Negotiating) &&
+                 RideDriverProximity.IsWithinRadius(x, driverLocation.Latitude, driverLocation.Longitude, now)))
+                .ToList();
+        }
         var rideIds = rides.Select(x => x.Id).ToArray();
         var cashRequests = await dbContext.CashPaymentRequests.AsNoTracking()
             .Where(x => rideIds.Contains(x.RideId))
             .OrderByDescending(x => x.CreatedAtUtc)
             .ToListAsync(cancellationToken);
+        var paidRideIds = await dbContext.PaymentTransactions.AsNoTracking()
+            .Where(x => x.RideId.HasValue && rideIds.Contains(x.RideId.Value) && x.Status == PaymentStatus.Paid)
+            .Select(x => x.RideId!.Value).Distinct().ToListAsync(cancellationToken);
 
         return rides.Select(x =>
         {
@@ -113,6 +126,7 @@ public sealed class RideReport(
                 driverLongitude = driverProfile is null ? (double?)null : driverLocation?.Longitude,
                 driverLocationObservedAtUtc = driverProfile is null ? null : driverLocation?.ObservedAtUtc,
                 x.CustomerPrice, x.ServiceFee, x.TotalAmount, x.DriverCommissionAmount, x.DriverShare, x.PlatformShare, x.CreatedAtUtc,
+                x.CustomerPaymentEnabled, paymentCompleted = paidRideIds.Contains(x.Id),
                 driverOfferAmount = offer?.Amount,
                 driverOfferExpiresAtUtc = offer?.ExpiresAtUtc,
                 driverOfferStatus = offer?.Status,

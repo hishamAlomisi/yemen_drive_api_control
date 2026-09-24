@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Serialization;
 using YemenDrive.Api;
 using YemenDrive.Application.Users;
@@ -200,6 +201,84 @@ app.MapPost("/api/safety/recordings/{recordingId:int}/complete", async (
         await db.SaveChangesAsync(token);
     }
     return Results.Ok(new { success = true, recordingId, recording.UploadedBytes, recording.DurationMilliseconds, recording.EndedAtUtc });
+});
+
+// Only authenticated administrators may listen to a completed, consented
+// recording. Convert the stored mono PCM16 chunks to WAV for browser playback.
+app.MapGet("/api/admin/safety/recordings/{recordingId:int}/audio", async (
+    int recordingId,
+    HttpContext context,
+    IWebHostEnvironment environment,
+    YemenDriveDbContext db,
+    ICurrentUserContext currentUser,
+    CancellationToken token) =>
+{
+    if (!await IsAdminAsync(currentUser.UserId, db, token))
+        return Results.Unauthorized();
+
+    var recording = await db.EmergencyRecordings.AsNoTracking()
+        .SingleOrDefaultAsync(x => x.Id == recordingId && x.EndedAtUtc != null && x.UploadedBytes > 0, token);
+    if (recording is null)
+        return Results.NotFound(ApiResult.Fail("safety_recording_not_found", "التسجيل غير موجود أو لم يكتمل رفعه."));
+
+    const long maxPlaybackBytes = 64 * 1024 * 1024;
+    if (recording.UploadedBytes > maxPlaybackBytes)
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+
+    var recordingsRoot = Path.GetFullPath(Path.Combine(environment.ContentRootPath, "data", "safety-recordings"));
+    var recordingDirectory = Path.GetFullPath(Path.Combine(recordingsRoot, recording.StorageKey));
+    if (!recordingDirectory.StartsWith(recordingsRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+        !Directory.Exists(recordingDirectory))
+        return Results.NotFound(ApiResult.Fail("safety_recording_not_found", "ملفات التسجيل غير متاحة."));
+
+    var chunks = Directory.GetFiles(recordingDirectory, "*.pcm")
+        .OrderBy(Path.GetFileName, StringComparer.Ordinal)
+        .ToArray();
+    var actualBytes = chunks.Sum(path => new FileInfo(path).Length);
+    if (actualBytes != recording.UploadedBytes)
+        return Results.Conflict(ApiResult.Fail("safety_recording_incomplete", "لم تكتمل ملفات التسجيل على الخادم."));
+
+    using var wave = new MemoryStream(checked((int)actualBytes + 44));
+    using (var writer = new BinaryWriter(wave, Encoding.UTF8, leaveOpen: true))
+    {
+        writer.Write(0x46464952); // RIFF
+        writer.Write(checked((int)actualBytes + 36));
+        writer.Write(0x45564157); // WAVE
+        writer.Write(0x20746d66); // fmt chunk
+        writer.Write(16);
+        writer.Write((short)1);   // PCM
+        writer.Write((short)1);   // mono
+        writer.Write(16000);
+        writer.Write(32000);
+        writer.Write((short)2);
+        writer.Write((short)16);
+        writer.Write(0x61746164); // data
+        writer.Write(checked((int)actualBytes));
+    }
+
+    foreach (var chunkPath in chunks)
+    {
+        await using var chunk = File.OpenRead(chunkPath);
+        await chunk.CopyToAsync(wave, token);
+    }
+
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.File(wave.ToArray(), "audio/wav");
+});
+
+// A live-share URL is an opaque, revocable capability. It exposes only the
+// active ride snapshot and latest location, never account or payment data.
+app.MapGet("/api/safety/shares/{token}", async (string token, YemenDriveDbContext db, CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(token) || token.Length > 128) return Results.NotFound();
+    var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token.Trim())));
+    var now = DateTime.UtcNow;
+    var share = await db.RideSafetyShares.AsNoTracking().SingleOrDefaultAsync(x => x.TokenHash == hash && x.RevokedAtUtc == null && x.ExpiresAtUtc > now, cancellationToken);
+    if (share is null) return Results.NotFound(ApiResult.Fail("safety_share_not_available", "رابط مشاركة الرحلة غير متاح أو انتهت صلاحيته."));
+    var ride = await db.Rides.AsNoTracking().Include(x => x.Driver).SingleOrDefaultAsync(x => x.Id == share.RideId, cancellationToken);
+    if (ride is null || ride.Status is RideStatus.Completed or RideStatus.Cancelled) return Results.NotFound(ApiResult.Fail("safety_share_not_available", "رابط مشاركة الرحلة غير متاح أو انتهت صلاحيته."));
+    var location = await db.LocationUpdates.AsNoTracking().Where(x => x.RideId == ride.Id).OrderByDescending(x => x.ObservedAtUtc).FirstOrDefaultAsync(cancellationToken);
+    return Results.Ok(new { success = true, rideId = ride.Id, status = ride.Status, pickup = ride.PickupLabel, destination = ride.DestinationLabel, driverName = ride.Driver?.DisplayName, latitude = location?.Latitude, longitude = location?.Longitude, bearing = location?.Bearing, observedAtUtc = location?.ObservedAtUtc, expiresAtUtc = share.ExpiresAtUtc });
 });
 
 app.MapGet("/api/setup/database", (

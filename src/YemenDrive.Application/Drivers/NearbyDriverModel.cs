@@ -10,4 +10,4 @@ public sealed record NearbyDriverModel(
     double PickupLongitude,
     int? ServiceKindId = null,
     int? ServiceCatalogItemId = null,
-    int RadiusMeters = 10000);
+    int RadiusMeters = 3000);

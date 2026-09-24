@@ -10,6 +10,7 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<DriverProfile> DriverProfiles => Set<DriverProfile>();
     public DbSet<DriverLiveLocation> DriverLiveLocations => Set<DriverLiveLocation>();
     public DbSet<SavedPlace> SavedPlaces => Set<SavedPlace>();
+    public DbSet<ServiceArea> ServiceAreas => Set<ServiceArea>();
     public DbSet<Ride> Rides => Set<Ride>();
     public DbSet<RideOffer> RideOffers => Set<RideOffer>();
     public DbSet<Wallet> Wallets => Set<Wallet>();
@@ -34,6 +35,9 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<DriverSettlementPayment> DriverSettlementPayments => Set<DriverSettlementPayment>();
     public DbSet<CommunicationMessage> CommunicationMessages => Set<CommunicationMessage>();
     public DbSet<EmergencyRecording> EmergencyRecordings => Set<EmergencyRecording>();
+    public DbSet<EmergencyContact> EmergencyContacts => Set<EmergencyContact>();
+    public DbSet<SafetyIncident> SafetyIncidents => Set<SafetyIncident>();
+    public DbSet<RideSafetyShare> RideSafetyShares => Set<RideSafetyShare>();
     public DbSet<RideServiceCatalogItem> ServiceCatalogItems => Set<RideServiceCatalogItem>();
     public DbSet<ServiceKind> ServiceKinds => Set<ServiceKind>();
 
@@ -86,6 +90,12 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<User>().Property(x => x.District).HasMaxLength(100);
         modelBuilder.Entity<SavedPlace>().HasIndex(x => new { x.UserId, x.Label });
         modelBuilder.Entity<SavedPlace>().Property(x => x.Kind).HasMaxLength(32).IsRequired();
+        modelBuilder.Entity<SavedPlace>().Property(x => x.LocationKey).HasMaxLength(48).IsRequired();
+        modelBuilder.Entity<SavedPlace>().HasIndex(x => new { x.UserId, x.LocationKey }).IsUnique();
+        modelBuilder.Entity<ServiceArea>().HasIndex(x => new { x.CountryCode, x.CityNameAr }).IsUnique();
+        modelBuilder.Entity<ServiceArea>().Property(x => x.CountryCode).HasMaxLength(8).IsRequired();
+        modelBuilder.Entity<ServiceArea>().Property(x => x.CountryNameAr).HasMaxLength(100).IsRequired();
+        modelBuilder.Entity<ServiceArea>().Property(x => x.CityNameAr).HasMaxLength(150).IsRequired();
 
         modelBuilder.Entity<DriverProfile>().HasIndex(x => x.UserId).IsUnique();
         modelBuilder.Entity<DriverProfile>().HasIndex(x => new { x.ServiceKindId, x.ServiceCatalogItemId });
@@ -143,6 +153,17 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<RideCancellationRequest>().ToTable(table => table.HasCheckConstraint(
             "CK_RideCancellationRequests_Reason_NotBlank", "LEN(LTRIM(RTRIM([Reason]))) >= 3"));
         modelBuilder.Entity<Notification>().HasIndex(x => new { x.UserId, x.IsRead, x.CreatedAtUtc });
+        modelBuilder.Entity<EmergencyContact>().HasIndex(x => new { x.UserId, x.PhoneNumber }).IsUnique();
+        modelBuilder.Entity<EmergencyContact>().Property(x => x.Name).HasMaxLength(150).IsRequired();
+        modelBuilder.Entity<EmergencyContact>().Property(x => x.PhoneNumber).HasMaxLength(30).IsRequired();
+        modelBuilder.Entity<EmergencyContact>().Property(x => x.Relationship).HasMaxLength(80);
+        modelBuilder.Entity<SafetyIncident>().HasIndex(x => new { x.Status, x.CreatedAtUtc });
+        modelBuilder.Entity<SafetyIncident>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
+        modelBuilder.Entity<SafetyIncident>().Property(x => x.Message).HasMaxLength(1000).IsRequired();
+        modelBuilder.Entity<SafetyIncident>().Property(x => x.AdminNote).HasMaxLength(1000);
+        modelBuilder.Entity<RideSafetyShare>().HasIndex(x => x.TokenHash).IsUnique();
+        modelBuilder.Entity<RideSafetyShare>().HasIndex(x => new { x.RideId, x.ExpiresAtUtc });
+        modelBuilder.Entity<RideSafetyShare>().Property(x => x.TokenHash).HasMaxLength(128).IsRequired();
         modelBuilder.Entity<CommunicationMessage>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
         modelBuilder.Entity<CommunicationMessage>().Property(x => x.MessageType).HasMaxLength(32).IsRequired();
         modelBuilder.Entity<CommunicationMessage>().Property(x => x.Content).HasMaxLength(4000).IsRequired();

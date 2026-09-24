@@ -18,5 +18,6 @@ public sealed record RideModel(
     double DestinationLatitude = 0,
     double DestinationLongitude = 0,
     decimal? CustomerPrice = null,
+    bool? CustomerPaymentEnabled = null,
     string? IdempotencyKey = null,
     CashCancellationRefundMethod? CashCancellationRefundMethod = null);

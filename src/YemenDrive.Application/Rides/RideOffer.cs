@@ -50,6 +50,11 @@ public sealed class RideOffer(
                           activeRide.Status == RideStatus.InProgress)),
                 cancellationToken))
             throw new ServiceException("driver_not_available", "السائق غير متاح لإرسال عرض جديد حالياً.");
+        var locationFreshAfter = DateTime.UtcNow.AddMinutes(-5);
+        var driverLocation = await dbContext.DriverLiveLocations.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.DriverId == driverId && x.IsOnline && x.ObservedAtUtc >= locationFreshAfter, cancellationToken);
+        if (driverLocation is null || !RideDriverProximity.IsWithinRadius(ride, driverLocation.Latitude, driverLocation.Longitude, DateTime.UtcNow))
+            throw new ServiceException("driver_outside_search_radius", "أنت خارج نطاق البحث الحالي لهذه الرحلة.");
 
         var existing = await dbContext.RideOffers.SingleOrDefaultAsync(
             x => x.RideId == model.RideId && x.DriverId == driverId && x.Status == OfferStatus.Pending,
