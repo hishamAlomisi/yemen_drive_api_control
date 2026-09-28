@@ -6,6 +6,7 @@ using YemenDrive.Application.Accounting;
 using DriverSettlementPaymentService = YemenDrive.Application.DriverSettlements.DriverSettlementPayment;
 using YemenDrive.Application.Payments;
 using YemenDrive.Application.Rides;
+using YemenDrive.Api;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
@@ -36,6 +37,9 @@ try
     await db.Database.MigrateAsync();
     var fixture = await SeedAsync(db);
 
+    await TrustedDeviceCredentialsRequireAValidUnexpiredServerTokenAsync(db, fixture);
+    await ServerSessionsRotateAndRevokeCredentialsAsync(db, fixture);
+    OtpChallengesAreConsoleOnlyInDevelopmentAndLimitedToFiveAttempts();
     await FinancialAccountsAreProvisionedForUsersAndServiceKindsAsync(db, configuration, fixture);
     await GeneralLedgerFoundationIsBalancedAndImmutableAsync(db, configuration, fixture);
     await WalletPaymentIsAtomicAndIdempotentAsync(db, configuration, fixture);
@@ -47,12 +51,119 @@ try
 
     Console.WriteLine("PASS: financial integration scenarios completed on an isolated temporary database.");
 }
-
 finally
 {
     await using var cleanup = new YemenDriveDbContext(options);
     await cleanup.Database.EnsureDeletedAsync();
     if (File.Exists(settingsPath)) File.Delete(settingsPath);
+}
+
+static async Task ServerSessionsRotateAndRevokeCredentialsAsync(YemenDriveDbContext db, Fixture fixture)
+{
+    var service = new AuthSessionService();
+    var customer = await db.Users.SingleAsync(item => item.Id == fixture.CustomerId);
+    var issued = await service.CreateAsync(db, customer, "customer-device-123", CancellationToken.None);
+    Assert(issued.AccessToken.Length >= 40 && issued.RefreshToken.Length >= 40, "server sessions issue high-entropy opaque tokens");
+
+    var stored = await db.AuthSessions.SingleAsync(item => item.AccessTokenHash == Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(issued.AccessToken))));
+    Assert(stored.AccessTokenHash != issued.AccessToken && stored.RefreshTokenHash != issued.RefreshToken, "only token hashes are persisted");
+    Assert(stored.AccessTokenHash.Length == 64 && stored.RefreshTokenHash.Length == 64, "token hashes are fixed-size SHA-256 values");
+
+    var initialSession = await service.AuthenticateAsync(db, issued.AccessToken, CancellationToken.None);
+    Assert(initialSession?.UserId == customer.Id, "an active access token resolves to its account");
+    var rotated = await service.RefreshAsync(db, issued.RefreshToken, CancellationToken.None);
+    Assert(rotated is not null, "an unused refresh token rotates successfully");
+    Assert(rotated!.Tokens.AccessToken != issued.AccessToken && rotated.Tokens.RefreshToken != issued.RefreshToken, "refresh rotates both credentials");
+    AssertEqual(issued.SessionExpiresAtUtc, rotated.Tokens.SessionExpiresAtUtc, "rotation does not extend the original absolute session expiry");
+    Assert(await service.AuthenticateAsync(db, issued.AccessToken, CancellationToken.None) is null, "the prior access token is invalid after rotation");
+    Assert((await service.AuthenticateAsync(db, rotated.Tokens.AccessToken, CancellationToken.None))?.UserId == customer.Id, "the replacement access token is active");
+
+    Assert(await service.RefreshAsync(db, issued.RefreshToken, CancellationToken.None) is null, "a used refresh token cannot be replayed");
+    Assert(await service.AuthenticateAsync(db, rotated.Tokens.AccessToken, CancellationToken.None) is null, "refresh-token replay revokes the entire session family");
+
+    var logoutSession = await service.CreateAsync(db, customer, "customer-device-456", CancellationToken.None);
+    await service.RevokeCurrentAsync(db, logoutSession.AccessToken, CancellationToken.None);
+    Assert(await service.AuthenticateAsync(db, logoutSession.AccessToken, CancellationToken.None) is null, "server logout revokes the active session");
+
+    var passwordResetSession = await service.CreateAsync(db, customer, "customer-device-789", CancellationToken.None);
+    await service.RevokeAllForUserAsync(db, customer.Id, CancellationToken.None);
+    Assert(await service.AuthenticateAsync(db, passwordResetSession.AccessToken, CancellationToken.None) is null, "credential changes revoke every account session");
+
+    var expiringSession = await service.CreateAsync(db, customer, "customer-device-exp", CancellationToken.None);
+    var expiringRow = await db.AuthSessions.SingleAsync(item => item.RefreshTokenHash == Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(expiringSession.RefreshToken))));
+    expiringRow.AccessExpiresAtUtc = DateTime.UtcNow.AddMinutes(-1);
+    await db.SaveChangesAsync();
+    Assert(await service.AuthenticateAsync(db, expiringSession.AccessToken, CancellationToken.None) is null, "expired access tokens are rejected");
+
+    var admin = await db.Users.SingleAsync(item => item.Id == fixture.AdminId);
+    var adminSession = await service.CreateAsync(db, admin, deviceId: null, CancellationToken.None);
+    var adminLifetime = adminSession.SessionExpiresAtUtc - DateTime.UtcNow;
+    Assert(adminLifetime > TimeSpan.FromHours(7) && adminLifetime <= TimeSpan.FromHours(8), "administrator sessions have an eight-hour absolute lifetime");
+}
+
+static void OtpChallengesAreConsoleOnlyInDevelopmentAndLimitedToFiveAttempts()
+{
+    var originalOutput = Console.Out;
+    using var capturedOutput = new StringWriter();
+    try
+    {
+        Console.SetOut(capturedOutput);
+        var productionStore = new OtpChallengeStore(isDevelopment: false);
+        Assert(productionStore.TryCreate("700000001", "signIn") is null, "OTP cannot be created outside Development while no SMS provider is configured");
+        Assert(capturedOutput.ToString().Length == 0, "production OTP requests must not print to the console");
+
+        var developmentStore = new OtpChallengeStore(isDevelopment: true);
+        var firstChallenge = developmentStore.TryCreate("700000001", "signIn")!.Value;
+        var firstCode = ExtractLastOtp(capturedOutput.ToString());
+        Assert(firstCode.Length == 6, "development OTP must be printed for local testing");
+        for (var attempt = 0; attempt < 5; attempt++)
+            Assert(developmentStore.Verify(firstChallenge.ChallengeId, "700000001", "000000", "signIn") is null, "incorrect OTP must be rejected");
+        Assert(developmentStore.Verify(firstChallenge.ChallengeId, "700000001", firstCode, "signIn") is null, "a challenge is locked after five failed attempts");
+
+        var secondChallenge = developmentStore.TryCreate("700000002", "signIn")!.Value;
+        var secondCode = ExtractLastOtp(capturedOutput.ToString());
+        var verificationToken = developmentStore.Verify(secondChallenge.ChallengeId, "700000002", secondCode, "signIn");
+        Assert(verificationToken is not null, "a valid development OTP can be verified");
+        Assert(developmentStore.ConsumeVerificationToken(verificationToken!, "700000002", "signIn"), "OTP verification grant can be consumed once");
+        Assert(!developmentStore.ConsumeVerificationToken(verificationToken!, "700000002", "signIn"), "OTP verification grant cannot be replayed");
+    }
+    finally
+    {
+        Console.SetOut(originalOutput);
+    }
+}
+
+static string ExtractLastOtp(string output)
+{
+    var matches = System.Text.RegularExpressions.Regex.Matches(output, @": (\d{6})");
+    return matches.Count == 0 ? string.Empty : matches[matches.Count - 1].Groups[1].Value;
+}
+
+static async Task TrustedDeviceCredentialsRequireAValidUnexpiredServerTokenAsync(
+    YemenDriveDbContext db,
+    Fixture fixture)
+{
+    var credentials = new TrustedDeviceCredentialService();
+    const string deviceId = "auth-test-device-01";
+    var rawToken = await credentials.IssueAsync(db, fixture.CustomerId, deviceId, CancellationToken.None);
+
+    Assert(rawToken.Length == 64, "trusted-device token must be a random 256-bit value");
+    Assert(await credentials.IsTrustedAsync(db, fixture.CustomerId, deviceId, rawToken, CancellationToken.None), "the issued token trusts only its bound device");
+    Assert(!await credentials.IsTrustedAsync(db, fixture.CustomerId, "auth-test-device-02", rawToken, CancellationToken.None), "trusted token cannot be replayed for another device");
+    Assert(!await credentials.IsTrustedAsync(db, fixture.CustomerId, deviceId, rawToken + "x", CancellationToken.None), "a modified trusted token is rejected");
+
+    var stored = await db.TrustedDevices.SingleAsync(item => item.UserId == fixture.CustomerId && item.DeviceId == deviceId);
+    Assert(stored.TokenHash != rawToken, "only a token hash is stored in the database");
+    stored.ExpiresAtUtc = DateTime.UtcNow.AddSeconds(-1);
+    await db.SaveChangesAsync();
+    Assert(!await credentials.IsTrustedAsync(db, fixture.CustomerId, deviceId, rawToken, CancellationToken.None), "expired trust is rejected");
+
+    rawToken = await credentials.IssueAsync(db, fixture.CustomerId, deviceId, CancellationToken.None);
+    await TrustedDeviceCredentialService.RevokeAllAsync(db, fixture.CustomerId, CancellationToken.None);
+    await db.SaveChangesAsync();
+    Assert(!await credentials.IsTrustedAsync(db, fixture.CustomerId, deviceId, rawToken, CancellationToken.None), "revoked trust is rejected");
 }
 
 static async Task GeneralLedgerFoundationIsBalancedAndImmutableAsync(

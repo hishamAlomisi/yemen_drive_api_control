@@ -60,6 +60,34 @@ public sealed class User : Entity
     public Wallet? Wallet { get; set; }
 }
 
+/// <summary>A server-issued credential that lets one app installation skip OTP on later sign-ins.</summary>
+public sealed class TrustedDevice : Entity
+{
+    public int UserId { get; set; }
+    public User User { get; set; } = null!;
+    public required string DeviceId { get; set; }
+    public required string TokenHash { get; set; }
+    public DateTime ExpiresAtUtc { get; set; }
+    public DateTime? LastUsedAtUtc { get; set; }
+    public DateTime? RevokedAtUtc { get; set; }
+}
+
+/// <summary>A server-side session generation. Rotated rows are retained to detect refresh-token replay.</summary>
+public sealed class AuthSession : Entity
+{
+    public Guid FamilyId { get; set; }
+    public int UserId { get; set; }
+    public User User { get; set; } = null!;
+    public required string AccessTokenHash { get; set; }
+    public required string RefreshTokenHash { get; set; }
+    public string? DeviceId { get; set; }
+    public DateTime AccessExpiresAtUtc { get; set; }
+    public DateTime SessionExpiresAtUtc { get; set; }
+    public DateTime? RotatedAtUtc { get; set; }
+    public DateTime? RevokedAtUtc { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}
+
 public sealed class DriverProfile : Entity
 {
     public int UserId { get; set; }

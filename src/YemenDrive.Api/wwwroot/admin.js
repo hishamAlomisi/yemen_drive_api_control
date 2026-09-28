@@ -19,6 +19,8 @@ let safetyMapPendingMarker = '';
 let safetyMapLoaded = false;
 
 const ADMIN_TOKEN_KEY = 'yemendrive_admin_token';
+const ADMIN_REFRESH_TOKEN_KEY = 'yemendrive_admin_refresh_token';
+let adminRefreshInFlight = null;
 
 const titles = {
   overview: ['نظرة عامة', 'متابعة حالة النظام والعمليات الأخيرة'],
@@ -131,17 +133,13 @@ const date = value => value ? new Intl.DateTimeFormat('ar-YE-u-nu-latn', { dateS
 const badge = (text, tone = '') => `<span class="badge ${tone}">${escapeHtml(text)}</span>`;
 
 async function execute(model, operation, data = {}) {
-  const token = localStorage.getItem(ADMIN_TOKEN_KEY);
-  const response = await fetch('/api/admin/execute', {
+  const response = await adminFetch('/api/admin/execute', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, operation, data })
   });
   const result = await response.json().catch(() => ({ success: false, message: 'استجابة غير صالحة من الخادم.' }));
-  if (result.code === 'admin_authentication_required' || result.errorCode === 'admin_authentication_required') {
+  if (response.status === 401 || result.code === 'session_expired' || result.code === 'admin_authentication_required' || result.errorCode === 'admin_authentication_required') {
     showAdminLogin('انتهت جلسة الإدارة. سجل الدخول من جديد.');
   }
   if (!result.success) throw new Error(result.message || 'تعذر تنفيذ العملية.');
@@ -152,12 +150,8 @@ async function seedDevelopmentData() {
   if (!window.confirm('سيتم إضافة بيانات تجريبية فقط دون حذف البيانات الحالية. هل تريد المتابعة؟')) return;
   const button = $('#development-seed-button');
   button.disabled = true;
-  const token = localStorage.getItem(ADMIN_TOKEN_KEY);
   try {
-    const response = await fetch('/api/admin/development/seed', {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {}
-    });
+    const response = await adminFetch('/api/admin/development/seed', { method: 'POST' });
     if (response.status === 404) throw new Error('هذه العملية متاحة في بيئة التطوير فقط.');
     const result = await response.json().catch(() => ({ success: false, message: 'استجابة غير صالحة من الخادم.' }));
     if (!result.success) throw new Error(result.message || 'تعذر تعبئة بيانات التطوير.');
@@ -171,7 +165,7 @@ async function seedDevelopmentData() {
 }
 
 function showAdminLogin(message = '') {
-  localStorage.removeItem(ADMIN_TOKEN_KEY);
+  clearAdminSession();
   $('.admin-login').classList.remove('hidden');
   $('.app-shell').classList.add('hidden');
   const result = $('#admin-login-result');
@@ -192,11 +186,93 @@ async function adminLogin(phoneNumber, password) {
     body: JSON.stringify({ phoneNumber, password })
   });
   const result = await response.json().catch(() => ({ success: false, message: 'استجابة غير صالحة من الخادم.' }));
-  if (!result.success || !result.data?.accessToken) {
+  if (!result.success || !result.data?.accessToken || !result.data?.refreshToken) {
     throw new Error(result.message || 'بيانات حساب الإدارة غير صحيحة.');
   }
-  localStorage.setItem(ADMIN_TOKEN_KEY, result.data.accessToken);
+  sessionStorage.setItem(ADMIN_TOKEN_KEY, result.data.accessToken);
+  sessionStorage.setItem(ADMIN_REFRESH_TOKEN_KEY, result.data.refreshToken);
   return result;
+}
+
+function clearAdminSession() {
+  sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+  sessionStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
+  localStorage.removeItem(ADMIN_TOKEN_KEY);
+  localStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
+}
+
+function refreshAdminSession() {
+  if (adminRefreshInFlight) return adminRefreshInFlight;
+  adminRefreshInFlight = performAdminSessionRefresh().finally(() => {
+    adminRefreshInFlight = null;
+  });
+  return adminRefreshInFlight;
+}
+
+async function performAdminSessionRefresh() {
+  const refreshToken = sessionStorage.getItem(ADMIN_REFRESH_TOKEN_KEY);
+  if (!refreshToken) {
+    clearAdminSession();
+    return 'expired';
+  }
+
+  try {
+    const response = await fetch('/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken })
+    });
+    if (response.status === 401) {
+      clearAdminSession();
+      return 'expired';
+    }
+    if (!response.ok) return 'unavailable';
+    const result = await response.json().catch(() => null);
+    const session = result?.success === true ? result.data : null;
+    if (!session?.accessToken || !session?.refreshToken) {
+      if (result?.success === false) {
+        clearAdminSession();
+        return 'expired';
+      }
+      return 'unavailable';
+    }
+    sessionStorage.setItem(ADMIN_TOKEN_KEY, session.accessToken);
+    sessionStorage.setItem(ADMIN_REFRESH_TOKEN_KEY, session.refreshToken);
+    return 'refreshed';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+async function adminFetch(url, options = {}, retried = false) {
+  const headers = new Headers(options.headers || {});
+  const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const response = await fetch(url, { ...options, headers });
+  if (response.status !== 401 || retried) return response;
+
+  const refresh = await refreshAdminSession();
+  if (refresh === 'refreshed') return adminFetch(url, options, true);
+  if (refresh === 'expired') showAdminLogin('انتهت جلسة الإدارة. سجل الدخول من جديد.');
+  else {
+    const error = new Error('تعذر الاتصال بالخادم لتجديد جلسة الإدارة.');
+    error.code = 'admin_network_error';
+    throw error;
+  }
+  return response;
+}
+
+async function adminLogout() {
+  let revoked = false;
+  try {
+    const response = await adminFetch('/api/auth/logout', { method: 'POST' });
+    revoked = response.ok;
+  } catch {
+    // Remove browser credentials even when the server cannot be reached.
+  }
+  showAdminLogin(revoked
+    ? 'تم تسجيل الخروج.'
+    : 'تم الخروج من هذا المتصفح، لكن تعذر الاتصال بالخادم لإلغاء الجلسة.');
 }
 
 function toast(message, error = false) {
@@ -388,9 +464,7 @@ window.prepareSafetyRecording = async id => {
   if (!audio) return;
   if (button) { button.disabled = true; button.textContent = 'جارٍ تحميل الصوت…'; }
   try {
-    const token = localStorage.getItem(ADMIN_TOKEN_KEY);
-    const response = await fetch(`/api/admin/safety/recordings/${recordingId}/audio`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    const response = await adminFetch(`/api/admin/safety/recordings/${recordingId}/audio`, {
       cache: 'no-store'
     });
     if (response.status === 401 || response.status === 403) throw new Error('انتهت جلسة الإدارة أو لا تملك صلاحية التشغيل.');
@@ -799,7 +873,7 @@ function bindEvents() {
       result.textContent = error.message;
     } finally { submit.disabled = false; }
   });
-  $('#admin-logout-button').addEventListener('click', () => showAdminLogin('تم تسجيل الخروج.'));
+  $('#admin-logout-button').addEventListener('click', () => adminLogout());
   $('#console-form').addEventListener('submit', async event => {
     event.preventDefault();
     try {
@@ -825,7 +899,9 @@ async function start() {
     return;
   }
 
-  const token = localStorage.getItem(ADMIN_TOKEN_KEY);
+  localStorage.removeItem(ADMIN_TOKEN_KEY);
+  localStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
+  const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
   if (!token) {
     showAdminLogin();
     return;
@@ -834,8 +910,13 @@ async function start() {
   showAdminApp();
   try {
     await loadView('overview', true);
-  } catch {
-    showAdminLogin('تعذر التحقق من جلسة الإدارة.');
+  } catch (error) {
+    if (sessionStorage.getItem(ADMIN_TOKEN_KEY)) {
+      showAdminApp();
+      toast(error.message || 'تعذر الاتصال بالخادم للتحقق من الجلسة.', true);
+    } else {
+      showAdminLogin('انتهت جلسة الإدارة. سجل الدخول من جديد.');
+    }
   }
 }
 

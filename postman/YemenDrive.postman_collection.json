@@ -40,7 +40,15 @@
       "value": ""
     },
     {
+      "key": "refreshToken",
+      "value": ""
+    },
+    {
       "key": "adminToken",
+      "value": ""
+    },
+    {
+      "key": "adminRefreshToken",
       "value": ""
     },
     {
@@ -97,6 +105,18 @@
     },
     {
       "key": "driverAuthToken",
+      "value": ""
+    },
+    {
+      "key": "driverRefreshToken",
+      "value": ""
+    },
+    {
+      "key": "driverTrustedDeviceToken",
+      "value": ""
+    },
+    {
+      "key": "driverSignInChallengeId",
       "value": ""
     }
   ],
@@ -215,7 +235,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"phoneNumber\": \"777000010\",\n  \"displayName\": \"Flutter Test Customer\",\n  \"password\": \"Test1234\",\n  \"gender\": \"\",\n  \"street\": \"Hadda\",\n  \"city\": \"Sanaa\",\n  \"district\": \"وسط المدينة\",\n  \"verificationToken\": {{verificationToken}}\n}"
+              "raw": "{\n  \"phoneNumber\": \"777000010\",\n  \"displayName\": \"Flutter Test Customer\",\n  \"password\": \"Test1234\",\n  \"gender\": \"\",\n  \"street\": \"Hadda\",\n  \"city\": \"Sanaa\",\n  \"district\": \"وسط المدينة\",\n  \"verificationToken\": {{verificationToken}},\n  \"deviceId\": \"postman-device\"\n}"
             },
             "url": "{{baseUrl}}/api/auth/register"
           },
@@ -227,6 +247,8 @@
                   "const body = pm.response.json();",
                   "pm.test('Registration completed', () => pm.expect(body.success).to.eql(true));",
                   "if (body.success && body.data?.accessToken) pm.collectionVariables.set('authToken', body.data.accessToken);",
+                  "if (body.success && body.data?.refreshToken) pm.collectionVariables.set('refreshToken', body.data.refreshToken);",
+                  "if (body.success && body.data?.trustedDeviceToken) pm.collectionVariables.set('trustedDeviceToken', body.data.trustedDeviceToken);",
                   "pm.test('Authenticated user id returned', () => pm.expect(body.data?.user?.id).to.exist);"
                 ]
               }
@@ -246,7 +268,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"phoneNumber\": \"777000010\",\n  \"password\": \"Test1234\",\n  \"deviceId\": \"postman-device\",\n  \"isTrustedDevice\": true\n}"
+              "raw": "{\n  \"phoneNumber\": \"777000010\",\n  \"password\": \"Test1234\",\n  \"deviceId\": \"postman-new-device\",\n  \"trustedDeviceToken\": null\n}"
             },
             "url": "{{baseUrl}}/api/auth/login"
           },
@@ -256,9 +278,99 @@
               "script": {
                 "exec": [
                   "const body = pm.response.json();",
-                  "pm.test('Login response received', () => pm.expect(body.success).to.eql(true));",
+                  "pm.test('First sign-in requires OTP', () => pm.expect(body.success && body.data?.requiresOtp).to.eql(true));",
+                  "if (body.success && body.data?.challengeId) pm.collectionVariables.set('signInChallengeId', body.data.challengeId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify First Device OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"777000010\",\n  \"code\": {{otpCode}},\n  \"challengeId\": {{signInChallengeId}},\n  \"deviceId\": \"postman-new-device\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/sign-in/verify-device"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Device OTP verified', () => pm.expect(body.success).to.eql(true));",
                   "if (body.success && body.data?.accessToken) pm.collectionVariables.set('authToken', body.data.accessToken);",
-                  "pm.test('Authenticated user id returned', () => pm.expect(body.data?.user?.id).to.exist);"
+                  "if (body.success && body.data?.refreshToken) pm.collectionVariables.set('refreshToken', body.data.refreshToken);",
+                  "if (body.success && body.data?.trustedDeviceToken) pm.collectionVariables.set('trustedDeviceToken', body.data.trustedDeviceToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login Again With Trusted Device",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"777000010\",\n  \"password\": \"Test1234\",\n  \"deviceId\": \"postman-new-device\",\n  \"trustedDeviceToken\": \"{{trustedDeviceToken}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Trusted device skips OTP after successful verification', () => pm.expect(body.success && body.data?.requiresOtp !== true && body.data?.accessToken).to.be.ok);",
+                  "if (body.success && body.data?.accessToken) pm.collectionVariables.set('authToken', body.data.accessToken);",
+                  "if (body.success && body.data?.refreshToken) pm.collectionVariables.set('refreshToken', body.data.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rotate Customer Session",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/refresh"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "const previousAccessToken = pm.collectionVariables.get('authToken');",
+                  "const previousRefreshToken = pm.collectionVariables.get('refreshToken');",
+                  "pm.test('Refresh rotates the active session', () => pm.expect(body.success && body.data?.accessToken && body.data?.refreshToken).to.be.ok);",
+                  "if (body.success && body.data?.accessToken && body.data?.refreshToken) {",
+                  "  pm.test('Both credentials change during rotation', () => { pm.expect(body.data.accessToken).not.to.eql(previousAccessToken); pm.expect(body.data.refreshToken).not.to.eql(previousRefreshToken); });",
+                  "  pm.collectionVariables.set('authToken', body.data.accessToken);",
+                  "  pm.collectionVariables.set('refreshToken', body.data.refreshToken);",
+                  "}"
                 ]
               }
             }
@@ -310,6 +422,111 @@
                   "const body = pm.response.json();",
                   "pm.test('Driver user created', () => pm.expect(body.success).to.eql(true));",
                   "if (body.success) pm.collectionVariables.set('driverUserId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login Driver From New Device",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"777000002\",\n  \"password\": \"Test1234\",\n  \"deviceId\": \"postman-driver-device\",\n  \"trustedDeviceToken\": null\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('A new driver device requires OTP', () => pm.expect(body.success && body.data?.requiresOtp).to.eql(true));",
+                  "if (body.success && body.data?.challengeId) pm.collectionVariables.set('driverSignInChallengeId', body.data.challengeId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify Driver Device OTP",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"777000002\",\n  \"code\": {{otpCode}},\n  \"challengeId\": {{driverSignInChallengeId}},\n  \"deviceId\": \"postman-driver-device\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/sign-in/verify-device"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Driver OTP verification creates a server session', () => pm.expect(body.success && body.data?.accessToken && body.data?.refreshToken).to.be.ok);",
+                  "if (body.success && body.data?.accessToken) pm.collectionVariables.set('driverAuthToken', body.data.accessToken);",
+                  "if (body.success && body.data?.refreshToken) pm.collectionVariables.set('driverRefreshToken', body.data.refreshToken);",
+                  "if (body.success && body.data?.trustedDeviceToken) pm.collectionVariables.set('driverTrustedDeviceToken', body.data.trustedDeviceToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login Driver Again With Trusted Device",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"777000002\",\n  \"password\": \"Test1234\",\n  \"deviceId\": \"postman-driver-device\",\n  \"trustedDeviceToken\": \"{{driverTrustedDeviceToken}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('Trusted driver device skips OTP', () => pm.expect(body.success && body.data?.requiresOtp !== true && body.data?.accessToken && body.data?.refreshToken).to.be.ok);",
+                  "if (body.success && body.data?.accessToken) pm.collectionVariables.set('driverAuthToken', body.data.accessToken);",
+                  "if (body.success && body.data?.refreshToken) pm.collectionVariables.set('driverRefreshToken', body.data.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rotate Driver Session",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{driverRefreshToken}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/refresh"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "const oldAccess = pm.collectionVariables.get('driverAuthToken');",
+                  "const oldRefresh = pm.collectionVariables.get('driverRefreshToken');",
+                  "pm.test('Driver session refresh succeeds', () => pm.expect(body.success && body.data?.accessToken && body.data?.refreshToken).to.be.ok);",
+                  "if (body.success && body.data?.accessToken && body.data?.refreshToken) {",
+                  "  pm.test('Driver refresh rotates both tokens', () => { pm.expect(body.data.accessToken).not.to.eql(oldAccess); pm.expect(body.data.refreshToken).not.to.eql(oldRefresh); });",
+                  "  pm.collectionVariables.set('driverAuthToken', body.data.accessToken);",
+                  "  pm.collectionVariables.set('driverRefreshToken', body.data.refreshToken);",
+                  "}"
                 ]
               }
             }
@@ -926,7 +1143,38 @@
                 "exec": [
                   "const body = pm.response.json();",
                   "pm.test('Admin login succeeds', () => pm.expect(body.success).to.eql(true));",
-                  "if (body.success && body.data?.accessToken) pm.collectionVariables.set('adminToken', body.data.accessToken);"
+                  "if (body.success && body.data?.accessToken) pm.collectionVariables.set('adminToken', body.data.accessToken);",
+                  "if (body.success && body.data?.refreshToken) pm.collectionVariables.set('adminRefreshToken', body.data.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rotate Admin Session",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{adminRefreshToken}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/refresh"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "const oldAccess = pm.collectionVariables.get('adminToken');",
+                  "const oldRefresh = pm.collectionVariables.get('adminRefreshToken');",
+                  "pm.test('Admin session rotates successfully', () => pm.expect(body.success && body.data?.accessToken && body.data?.refreshToken).to.be.ok);",
+                  "if (body.success && body.data?.accessToken && body.data?.refreshToken) {",
+                  "  pm.test('Admin credentials are replaced', () => { pm.expect(body.data.accessToken).not.to.eql(oldAccess); pm.expect(body.data.refreshToken).not.to.eql(oldRefresh); });",
+                  "  pm.collectionVariables.set('adminToken', body.data.accessToken);",
+                  "  pm.collectionVariables.set('adminRefreshToken', body.data.refreshToken);",
+                  "}"
                 ]
               }
             }

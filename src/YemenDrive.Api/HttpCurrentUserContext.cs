@@ -8,17 +8,10 @@ public sealed class HttpCurrentUserContext(IHttpContextAccessor httpContextAcces
     {
         get
         {
-            var authorization = httpContextAccessor.HttpContext?.Request.Headers.Authorization.ToString();
-            if (string.IsNullOrWhiteSpace(authorization) ||
-                !authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-            {
-                return null;
-            }
-
-            var token = authorization["Bearer ".Length..].Trim();
-            const string developmentTokenPrefix = "demo-access-";
-            return token.StartsWith(developmentTokenPrefix, StringComparison.Ordinal) &&
-                   int.TryParse(token[developmentTokenPrefix.Length..], out var userId)
+            var items = httpContextAccessor.HttpContext?.Items;
+            return items is not null &&
+                   items.TryGetValue(AuthSessionAuthenticationMiddleware.UserIdItem, out var value) &&
+                   value is int userId
                 ? userId
                 : null;
         }

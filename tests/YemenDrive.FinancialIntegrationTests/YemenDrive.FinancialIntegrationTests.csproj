@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\YemenDrive.Api\YemenDrive.Api.csproj" />
     <ProjectReference Include="..\..\src\YemenDrive.Application\YemenDrive.Application.csproj" />
     <ProjectReference Include="..\..\src\YemenDrive.Database\YemenDrive.Database.csproj" />
     <ProjectReference Include="..\..\src\YemenDrive.Shared\YemenDrive.Shared.csproj" />

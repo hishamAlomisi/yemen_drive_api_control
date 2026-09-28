@@ -7,6 +7,8 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     : DbContext(options)
 {
     public DbSet<User> Users => Set<User>();
+    public DbSet<TrustedDevice> TrustedDevices => Set<TrustedDevice>();
+    public DbSet<AuthSession> AuthSessions => Set<AuthSession>();
     public DbSet<DriverProfile> DriverProfiles => Set<DriverProfile>();
     public DbSet<DriverLiveLocation> DriverLiveLocations => Set<DriverLiveLocation>();
     public DbSet<SavedPlace> SavedPlaces => Set<SavedPlace>();
@@ -88,6 +90,28 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<User>().Property(x => x.Street).HasMaxLength(200);
         modelBuilder.Entity<User>().Property(x => x.City).HasMaxLength(100);
         modelBuilder.Entity<User>().Property(x => x.District).HasMaxLength(100);
+        modelBuilder.Entity<TrustedDevice>().Property(x => x.DeviceId).HasMaxLength(128).IsRequired();
+        modelBuilder.Entity<TrustedDevice>().Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
+        modelBuilder.Entity<TrustedDevice>().HasIndex(x => new { x.UserId, x.DeviceId }).IsUnique();
+        modelBuilder.Entity<TrustedDevice>().HasIndex(x => x.TokenHash).IsUnique();
+        modelBuilder.Entity<TrustedDevice>()
+            .HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<AuthSession>().Property(x => x.AccessTokenHash).HasMaxLength(64).IsRequired();
+        modelBuilder.Entity<AuthSession>().Property(x => x.RefreshTokenHash).HasMaxLength(64).IsRequired();
+        modelBuilder.Entity<AuthSession>().Property(x => x.DeviceId).HasMaxLength(128);
+        modelBuilder.Entity<AuthSession>().Property(x => x.RowVersion).IsRowVersion();
+        modelBuilder.Entity<AuthSession>().HasIndex(x => x.AccessTokenHash).IsUnique();
+        modelBuilder.Entity<AuthSession>().HasIndex(x => x.RefreshTokenHash).IsUnique();
+        modelBuilder.Entity<AuthSession>().HasIndex(x => x.FamilyId);
+        modelBuilder.Entity<AuthSession>().HasIndex(x => new { x.UserId, x.SessionExpiresAtUtc });
+        modelBuilder.Entity<AuthSession>()
+            .HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<SavedPlace>().HasIndex(x => new { x.UserId, x.Label });
         modelBuilder.Entity<SavedPlace>().Property(x => x.Kind).HasMaxLength(32).IsRequired();
         modelBuilder.Entity<SavedPlace>().Property(x => x.LocationKey).HasMaxLength(48).IsRequired();

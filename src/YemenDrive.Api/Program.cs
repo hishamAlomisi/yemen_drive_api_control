@@ -24,7 +24,10 @@ var settingsPath = Path.Combine(builder.Environment.ContentRootPath, "data", "da
 builder.Services.AddSingleton(new DatabaseConfigurationStore(settingsPath));
 builder.Services.AddSingleton<IDatabaseProvider, SqlServerDatabaseProvider>();
 builder.Services.AddSingleton<DatabaseConfigurator>();
-builder.Services.AddSingleton<OtpChallengeStore>();
+builder.Services.AddSingleton(serviceProvider =>
+    new OtpChallengeStore(serviceProvider.GetRequiredService<IWebHostEnvironment>().IsDevelopment()));
+builder.Services.AddScoped<TrustedDeviceCredentialService>();
+builder.Services.AddScoped<AuthSessionService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 builder.Services.AddScoped<DevelopmentDataSeeder>();
@@ -103,6 +106,7 @@ app.Use(async (context, next) =>
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
+app.UseMiddleware<AuthSessionAuthenticationMiddleware>();
 
 app.MapGet("/", () => Results.Redirect("/admin"));
 app.MapGet("/admin", () => Results.Redirect("/admin.html"));

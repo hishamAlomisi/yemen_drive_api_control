@@ -71,7 +71,7 @@
               "RelativeDocumentMoniker": "src\\YemenDrive.Application\\buildcheck-final\\YemenDrive.Application.deps.json",
               "ToolTip": "E:\\Eqs\\api\\src\\YemenDrive.Application\\buildcheck-final\\YemenDrive.Application.deps.json",
               "RelativeToolTip": "src\\YemenDrive.Application\\buildcheck-final\\YemenDrive.Application.deps.json",
-              "ViewState": "AgIAABsAAAAAAAAAAAAAACwAAAA2AAAAAAAAAA==",
+              "ViewState": "AgIAABsAAAAAAAAAAAAAACUAAAAZAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
               "WhenOpened": "2026-09-24T14:42:13.778Z",
               "EditorCaption": ""
@@ -86,8 +86,7 @@
               "RelativeToolTip": "src\\YemenDrive.Api\\Program.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAEIAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-09-02T16:11:31.775Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-09-02T16:11:31.775Z"
             },
             {
               "$type": "Document",
@@ -123,8 +122,7 @@
               "RelativeToolTip": "src\\YemenDrive.Application\\Catalog\\ServiceCatalog.cs",
               "ViewState": "AgIAAFAAAAAAAAAAAAAjwFkAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-09-01T17:37:18.818Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-09-01T17:37:18.818Z"
             },
             {
               "$type": "Document",

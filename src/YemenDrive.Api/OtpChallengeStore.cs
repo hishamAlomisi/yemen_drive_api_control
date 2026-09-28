@@ -3,46 +3,78 @@ using System.Security.Cryptography;
 
 namespace YemenDrive.Api;
 
-public sealed class OtpChallengeStore(ILogger<OtpChallengeStore> logger)
+public sealed class OtpChallengeStore(bool isDevelopment)
 {
-    private sealed record Challenge(string Id, string Destination, string Purpose, string Code, string VerificationToken, DateTime ExpiresAtUtc);
+    private sealed record Challenge(string Id, string Destination, string Purpose, string Code, string VerificationToken, DateTime ExpiresAtUtc, int FailedAttempts = 0);
+    private const int MaximumFailedAttempts = 5;
     private readonly ConcurrentDictionary<string, Challenge> _challenges = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, (string Destination, string Purpose, DateTime ExpiresAtUtc)> _verified = new(StringComparer.Ordinal);
 
-    public (string ChallengeId, int ExpiresInSeconds) Create(string destination, string purpose)
+    public (string ChallengeId, int ExpiresInSeconds)? TryCreate(string destination, string purpose)
     {
+        if (!isDevelopment) return null;
+
+        var now = DateTime.UtcNow;
+        foreach (var expired in _challenges.Where(item => item.Value.ExpiresAtUtc < now))
+            _challenges.TryRemove(expired.Key, out _);
+        foreach (var expired in _verified.Where(item => item.Value.ExpiresAtUtc < now))
+            _verified.TryRemove(expired.Key, out _);
+
         var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
         var code = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
-        var challenge = new Challenge(id, destination.Trim(), purpose.Trim(), code, token, DateTime.UtcNow.AddMinutes(5));
+        var challenge = new Challenge(id, destination.Trim(), purpose.Trim(), code, token, now.AddMinutes(5));
         _challenges[id] = challenge;
-        logger.LogInformation("YemenDrive OTP for {Destination} ({Purpose}): {Code}", challenge.Destination, challenge.Purpose, challenge.Code);
         Console.WriteLine($"[YemenDrive OTP] {challenge.Purpose} -> {challenge.Destination}: {challenge.Code}");
         return (id, 300);
     }
 
     public string? Verify(string? challengeId, string destination, string code, string purpose)
     {
-        Challenge? challenge = null;
+        string? selectedChallengeId = challengeId;
         if (!string.IsNullOrWhiteSpace(challengeId))
-            _challenges.TryGetValue(challengeId, out challenge);
+        {
+            if (!_challenges.ContainsKey(challengeId)) return null;
+        }
         else
-            challenge = _challenges.Values
+            selectedChallengeId = _challenges.Values
                 .Where(x => x.Destination == destination.Trim() && x.Purpose == purpose.Trim())
                 .OrderByDescending(x => x.ExpiresAtUtc)
-                .FirstOrDefault();
+                .FirstOrDefault()?.Id;
 
-        if (challenge is null || challenge.ExpiresAtUtc < DateTime.UtcNow ||
-            !string.Equals(challenge.Destination, destination.Trim(), StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(challenge.Purpose, purpose.Trim(), StringComparison.OrdinalIgnoreCase) ||
-            !CryptographicOperations.FixedTimeEquals(
+        if (selectedChallengeId is null) return null;
+        while (_challenges.TryGetValue(selectedChallengeId, out var challenge))
+        {
+            if (challenge.ExpiresAtUtc < DateTime.UtcNow)
+            {
+                _challenges.TryRemove(challenge.Id, out _);
+                return null;
+            }
+            if (!string.Equals(challenge.Destination, destination.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(challenge.Purpose, purpose.Trim(), StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var codeMatches = CryptographicOperations.FixedTimeEquals(
                 System.Text.Encoding.UTF8.GetBytes(challenge.Code),
-                System.Text.Encoding.UTF8.GetBytes(code.Trim())))
-            return null;
+                System.Text.Encoding.UTF8.GetBytes(code.Trim()));
+            if (!codeMatches)
+            {
+                if (challenge.FailedAttempts + 1 >= MaximumFailedAttempts)
+                {
+                    if (_challenges.TryRemove(challenge.Id, out _)) return null;
+                    continue;
+                }
 
-        _challenges.TryRemove(challenge.Id, out _);
-        _verified[challenge.VerificationToken] = (challenge.Destination, challenge.Purpose, DateTime.UtcNow.AddMinutes(10));
-        return challenge.VerificationToken;
+                var updated = challenge with { FailedAttempts = challenge.FailedAttempts + 1 };
+                if (_challenges.TryUpdate(challenge.Id, updated, challenge)) return null;
+                continue;
+            }
+
+            if (!_challenges.TryRemove(challenge.Id, out _)) continue;
+            _verified[challenge.VerificationToken] = (challenge.Destination, challenge.Purpose, DateTime.UtcNow.AddMinutes(10));
+            return challenge.VerificationToken;
+        }
+        return null;
     }
 
     public bool ConsumeVerificationToken(string token, string destination, string purpose)
