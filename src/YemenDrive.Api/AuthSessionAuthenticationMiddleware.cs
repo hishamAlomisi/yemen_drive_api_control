@@ -12,9 +12,9 @@ public sealed class AuthSessionAuthenticationMiddleware(RequestDelegate next)
         HttpContext context,
         DatabaseConfigurationStore databaseConfiguration,
         YemenDriveDbContext db,
-        AuthSessionService sessions,
-        CancellationToken cancellationToken)
+        AuthSessionService sessions)
     {
+        var cancellationToken = context.RequestAborted;
         var path = context.Request.Path.Value;
         if (path?.StartsWith("/api/auth/", StringComparison.OrdinalIgnoreCase) == true ||
             path?.Equals("/api/admin/login", StringComparison.OrdinalIgnoreCase) == true)

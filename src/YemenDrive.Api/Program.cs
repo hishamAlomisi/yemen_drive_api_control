@@ -18,6 +18,7 @@ using DbUser = YemenDrive.Database.Entities.User;
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
+builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.None);
 builder.WebHost.UseUrls(builder.Configuration["ApiUrl"] ?? "http://localhost:5080");
 
 var settingsPath = Path.Combine(builder.Environment.ContentRootPath, "data", "database.settings.json");

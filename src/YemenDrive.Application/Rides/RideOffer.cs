@@ -34,8 +34,17 @@ public sealed class RideOffer(
             requestedDriverId != authenticatedUserId &&
             !authenticatedIsAdmin)
             throw new ServiceException("driver_access_denied", "لا يمكن إرسال عرض باسم سائق آخر.");
+
+        // Serialize offer creation with search cancellation/reopening so an
+        // offer cannot slip in after the customer has closed the request.
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken);
         var ride = await dbContext.Rides.SingleOrDefaultAsync(x => x.Id == model.RideId, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
+        if (ride.Status == RideStatus.Cancelled)
+            throw new ServiceException(
+                "ride_search_cancelled",
+                "ألغى العميل البحث عن هذه الرحلة؛ لا يمكنك إرسال عرض عليها.");
         if (ride.Status is not (RideStatus.Searching or RideStatus.Negotiating))
             throw new ServiceException("ride_not_open_for_offers", "الرحلة لا تستقبل عروضاً في حالتها الحالية.");
         if (!await dbContext.DriverProfiles.AnyAsync(
@@ -74,6 +83,7 @@ public sealed class RideOffer(
                 ride.Status = RideStatus.Negotiating;
                 ride.UpdatedAtUtc = DateTime.UtcNow;
                 await dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
                 return ToResult(existing);
             }
         }
@@ -99,6 +109,7 @@ public sealed class RideOffer(
             DataJson = $"{{\"rideId\":{ride.Id},\"offerId\":{entity.Id}}}"
         });
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return ToResult(entity);
     }
 

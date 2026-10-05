@@ -44,7 +44,16 @@ public sealed class Ride(
             var existing = await dbContext.Rides.AsNoTracking().Include(x => x.ServiceKind)
                 .Include(x => x.ServiceCatalogItem)
                 .SingleOrDefaultAsync(x => x.CustomerId == customerId && x.IdempotencyKey == idempotencyKey, cancellationToken);
-            if (existing is not null) return ToResult(existing);
+            if (existing is not null)
+            {
+                var existingRecipientCount = await dbContext.Notifications.AsNoTracking()
+                    .Where(x => x.Type == NotificationType.RideOffer &&
+                                x.DataJson == RideSearchNotificationDispatcher.RideData(existing.Id))
+                    .Select(x => x.UserId)
+                    .Distinct()
+                    .CountAsync(cancellationToken);
+                return ToResult(existing, existingRecipientCount);
+            }
         }
 
         var selectedService = await dbContext.ServiceCatalogItems.AsNoTracking()
@@ -71,38 +80,10 @@ public sealed class Ride(
         dbContext.Rides.Add(entity);
         await StoreRecentDestinationAsync(entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
-        var initialRadiusMeters = RideDriverProximity.RadiusMeters(entity, DateTime.UtcNow);
-        var locationFreshAfter = DateTime.UtcNow.AddMinutes(-5);
-        var driverIds = (await dbContext.DriverProfiles.AsNoTracking()
-            .Where(x => x.User.IsActive && x.IsAvailable &&
-                        x.ServiceKindId == entity.ServiceKindId &&
-                        x.ServiceCatalogItemId == entity.ServiceCatalogItemId &&
-                        !dbContext.Rides.Any(activeRide =>
-                            activeRide.DriverId == x.UserId &&
-                            (activeRide.Status == RideStatus.DriverAssigned ||
-                             activeRide.Status == RideStatus.DriverEnRoute ||
-                             activeRide.Status == RideStatus.InProgress)))
-            .Join(dbContext.DriverLiveLocations.AsNoTracking().Where(x => x.IsOnline && x.ObservedAtUtc >= locationFreshAfter),
-                profile => profile.UserId, location => location.DriverId,
-                (profile, location) => new { profile.UserId, location.Latitude, location.Longitude })
-            .Take(200)
-            .ToListAsync(cancellationToken))
-            .Where(x => RideDriverProximity.HaversineMeters(entity.PickupLatitude, entity.PickupLongitude, x.Latitude, x.Longitude) <= initialRadiusMeters)
-            .Select(x => x.UserId)
-            .ToList();
-        foreach (var driverId in driverIds)
-        {
-            dbContext.Notifications.Add(new Notification
-            {
-                UserId = driverId,
-                Type = NotificationType.RideOffer,
-                Title = "طلب رحلة جديد",
-                Body = $"يوجد طلب جديد {RideLocationText.RouteSummary(entity.PickupLabel, entity.PickupAddress, entity.DestinationLabel, entity.DestinationAddress)}.",
-                DataJson = $"{{\"rideId\":{entity.Id}}}"
-            });
-        }
+        var notifiedDriverCount = await RideSearchNotificationDispatcher.NotifyAvailableDriversAsync(
+            dbContext, entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
-        return ToResult(entity);
+        return ToResult(entity, notifiedDriverCount);
     }
 
     protected override async Task<object?> UpdateAsync(RideModel model, CancellationToken cancellationToken)
@@ -457,7 +438,7 @@ public sealed class Ride(
         _ => "تم تحديث حالة الرحلة."
     };
 
-    private static object ToResult(RideEntity x) => new
+    private static object ToResult(RideEntity x, int? notifiedDriverCount = null) => new
     {
         x.Id, x.CustomerId, x.DriverId, x.Status, x.ServiceKindId, x.ServiceCatalogItemId,
         serviceKindCode = x.ServiceKind?.Code, serviceKindNameAr = x.ServiceKind?.NameAr,
@@ -469,7 +450,8 @@ public sealed class Ride(
         x.ServerPrice, x.CustomerPrice, x.ServiceFee, x.CancellationFee, x.TotalAmount,
         x.DriverCommissionAmount, x.DriverShare, x.PlatformShare,
         x.CustomerPaymentEnabled,
-        x.StartedAtUtc, x.CompletedAtUtc, x.CreatedAtUtc, x.UpdatedAtUtc
+        x.StartedAtUtc, x.CompletedAtUtc, x.CreatedAtUtc, x.UpdatedAtUtc,
+        notifiedDriverCount
     };
 
     private async Task StoreRecentDestinationAsync(RideEntity ride, CancellationToken token)
