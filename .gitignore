@@ -2,3 +2,12 @@
 **/obj/
 *.user
 src/YemenDrive.Api/data/database.settings.json
+
+# Local build and investigation outputs.
+work/
+artifacts/
+# Local IDE, tooling, and verification output.
+.vs/
+.tools/
+**/buildcheck*/
+**/artifacts/

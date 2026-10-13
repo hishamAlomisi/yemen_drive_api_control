@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Rides;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -12,7 +13,11 @@ namespace YemenDrive.Application.Safety;
 
 public sealed record RideSafetyShareModel(int? Id = null, int? RideId = null, int? ExpiresInMinutes = null);
 
-public sealed class RideSafetyShare(YemenDriveDbContext db, DatabaseConfigurationStore config, ICurrentUserContext currentUser)
+public sealed class RideSafetyShare(
+    YemenDriveDbContext db,
+    DatabaseConfigurationStore config,
+    ICurrentUserContext currentUser,
+    IRideRealtimePublisher realtimePublisher)
     : OperationsService<RideSafetyShareModel>(config)
 {
     public override IReadOnlyCollection<string> Operations { get; } = ["add", "get", "cancel"];
@@ -28,11 +33,13 @@ public sealed class RideSafetyShare(YemenDriveDbContext db, DatabaseConfiguratio
         var rawToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
         var itemNew = new YemenDrive.Database.Entities.RideSafetyShare { RideId = rideId, OwnerUserId = userId, TokenHash = Hash(rawToken), ExpiresAtUtc = now.AddMinutes(minutes) };
         db.RideSafetyShares.Add(itemNew); await db.SaveChangesAsync(token);
-        return new { itemNew.Id, itemNew.RideId, token = rawToken, linkPath = $"/api/safety/shares/{rawToken}", itemNew.ExpiresAtUtc };
+        foreach (var item in prior)
+            await realtimePublisher.PublishRideShareRevokedAsync(item.Id, item.RideId, token);
+        return new { itemNew.Id, itemNew.RideId, token = rawToken, linkPath = $"/share.html?token={Uri.EscapeDataString(rawToken)}", itemNew.ExpiresAtUtc };
     }
     protected override async Task<object?> GetAsync(RideSafetyShareModel model, CancellationToken token)
     { var user = currentUser.RequireUserId(); var now = DateTime.UtcNow; return await db.RideSafetyShares.AsNoTracking().Where(x => x.OwnerUserId == user && x.RevokedAtUtc == null && x.ExpiresAtUtc > now).OrderByDescending(x => x.CreatedAtUtc).Select(x => new { x.Id, x.RideId, x.ExpiresAtUtc }).ToListAsync(token); }
     protected override async Task<object?> CancelAsync(RideSafetyShareModel model, CancellationToken token)
-    { if (model.Id is not int id) throw new ServiceException("share_id_required", "معرف رابط المشاركة مطلوب."); var item = await db.RideSafetyShares.SingleOrDefaultAsync(x => x.Id == id && x.OwnerUserId == currentUser.RequireUserId(), token) ?? throw new ServiceException("share_not_found", "رابط المشاركة غير موجود."); item.RevokedAtUtc ??= DateTime.UtcNow; await db.SaveChangesAsync(token); return new { item.Id, revoked = true }; }
+    { if (model.Id is not int id) throw new ServiceException("share_id_required", "معرف رابط المشاركة مطلوب."); var item = await db.RideSafetyShares.SingleOrDefaultAsync(x => x.Id == id && x.OwnerUserId == currentUser.RequireUserId(), token) ?? throw new ServiceException("share_not_found", "رابط المشاركة غير موجود."); var wasActive = item.RevokedAtUtc is null; item.RevokedAtUtc ??= DateTime.UtcNow; await db.SaveChangesAsync(token); if (wasActive) await realtimePublisher.PublishRideShareRevokedAsync(item.Id, item.RideId, token); return new { item.Id, revoked = true }; }
     private static string Hash(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
 }

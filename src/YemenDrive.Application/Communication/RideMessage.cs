@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Rides;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -12,7 +13,8 @@ namespace YemenDrive.Application.Communication;
 public sealed class RideMessage(
     YemenDriveDbContext db,
     DatabaseConfigurationStore config,
-    ICurrentUserContext currentUser) : OperationsService<RideMessageModel>(config)
+    ICurrentUserContext currentUser,
+    IRideRealtimePublisher? realtimePublisher = null) : OperationsService<RideMessageModel>(config)
 {
     protected override async Task<object?> AddAsync(RideMessageModel model, CancellationToken token)
     {
@@ -39,9 +41,20 @@ public sealed class RideMessage(
         {
             UserId = recipientId, Type = NotificationType.System,
             Title = "رسالة جديدة", Body = "لديك رسالة جديدة من الطرف الآخر في الرحلة.",
-            DataJson = $"{{\"rideId\":{ride.Id}}}"
+            DataJson = $"{{\"action\":\"open_ride_chat\",\"rideId\":{ride.Id},\"messageId\":{entity.Id}}}"
         });
         await db.SaveChangesAsync(token);
+        if (realtimePublisher is not null)
+            await realtimePublisher.PublishRideMessageCreatedAsync(
+                new RideMessageRealtimeEvent(
+                    entity.Id,
+                    entity.RideId,
+                    entity.SenderId,
+                    entity.RecipientId,
+                    entity.MessageType,
+                    entity.Content,
+                    entity.CreatedAtUtc),
+                token);
         return ToResult(entity);
     }
 

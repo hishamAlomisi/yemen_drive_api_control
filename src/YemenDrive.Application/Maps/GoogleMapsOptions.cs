@@ -15,7 +15,14 @@ public sealed class GoogleMapsOptions
 public sealed record MapRouteQuoteResult(
     int DistanceMeters,
     int DurationSeconds,
-    string EncodedPolyline);
+    string EncodedPolyline,
+    IReadOnlyList<MapRouteStep> Steps);
+
+public sealed record MapRouteStep(
+    string Instruction,
+    string Maneuver,
+    int DistanceMeters,
+    int DurationSeconds);
 
 public sealed record MapPlace(
     string Title,

@@ -6,6 +6,7 @@ using YemenDrive.Api;
 using YemenDrive.Application.Users;
 using YemenDrive.Application.Accounting;
 using YemenDrive.Application.Maps;
+using YemenDrive.Application.Rides;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
@@ -18,6 +19,9 @@ using DbUser = YemenDrive.Database.Entities.User;
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
+builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.None);
+// SignalR transports may carry opaque session tokens in the access_token query parameter.
+builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 builder.WebHost.UseUrls(builder.Configuration["ApiUrl"] ?? "http://localhost:5080");
 
 var settingsPath = Path.Combine(builder.Environment.ContentRootPath, "data", "database.settings.json");
@@ -45,11 +49,19 @@ builder.Services.AddHttpClient<GoogleMapsGateway>(client =>
     client.Timeout = TimeSpan.FromSeconds(20);
 });
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<NearbyDriverSubscriptionStore>();
+builder.Services.AddScoped<TrackingHubAccessPolicy>();
+builder.Services.AddScoped<IRideRealtimePublisher, SignalRRideRealtimePublisher>();
+builder.Services.AddScoped<NotificationSaveCaptureInterceptor>();
+builder.Services.AddSingleton<FirebaseAdminPushSender>();
+builder.Services.AddHostedService<NotificationPushWorker>();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.NumberHandling = JsonNumberHandling.AllowReadingFromString);
 
 builder.Services.AddDbContext<YemenDriveDbContext>((serviceProvider, options) =>
 {
+    options.AddInterceptors(serviceProvider.GetRequiredService<NotificationSaveCaptureInterceptor>());
     var settings = serviceProvider.GetRequiredService<DatabaseConfigurationStore>().Current;
     if (settings is not null)
     {
@@ -105,12 +117,25 @@ app.Use(async (context, next) =>
 });
 
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        if (context.Context.Request.Path.Value?.Equals("/share.html", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            context.Context.Response.Headers.CacheControl = "no-store";
+            context.Context.Response.Headers["Referrer-Policy"] = "no-referrer";
+        }
+    }
+});
 app.UseMiddleware<AuthSessionAuthenticationMiddleware>();
 
 app.MapGet("/", () => Results.Redirect("/admin"));
 app.MapGet("/admin", () => Results.Redirect("/admin.html"));
 app.MapGet("/setup", () => Results.Redirect("/setup.html"));
+app.MapHub<TrackingHub>("/hubs/tracking", options =>
+    options.CloseOnAuthenticationExpiration = true);
+app.MapHub<SharedRideHub>("/hubs/shared-rides");
 
 app.MapPost("/api/media/upload", async (HttpRequest request, IWebHostEnvironment environment, IFormFile file, CancellationToken token) =>
 {
@@ -176,6 +201,7 @@ app.MapPost("/api/safety/recordings/{recordingId:int}/complete", async (
     SafetyRecordingCompletion request,
     IWebHostEnvironment environment,
     YemenDriveDbContext db,
+    IRideRealtimePublisher realtimePublisher,
     ICurrentUserContext currentUser,
     CancellationToken token) =>
 {
@@ -184,7 +210,8 @@ app.MapPost("/api/safety/recordings/{recordingId:int}/complete", async (
     var recording = await db.EmergencyRecordings
         .SingleOrDefaultAsync(x => x.Id == recordingId && x.UserId == userId, token);
     if (recording is null) return Results.NotFound(ApiResult.Fail("safety_recording_not_found", "تسجيل السلامة غير موجود."));
-    if (recording.EndedAtUtc is null)
+    var completedNow = recording.EndedAtUtc is null;
+    if (completedNow)
     {
         var root = Path.Combine(environment.ContentRootPath, "data", "safety-recordings", recording.StorageKey);
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -203,6 +230,34 @@ app.MapPost("/api/safety/recordings/{recordingId:int}/complete", async (
         recording.DurationMilliseconds = Math.Max(0, request.DurationMilliseconds);
         recording.EndedAtUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(token);
+    }
+    if (completedNow && recording.UploadedBytes > 0)
+    {
+        var adminIds = await db.Users.AsNoTracking()
+            .Where(user => user.Role == UserRole.Admin && user.IsActive)
+            .Select(user => user.Id)
+            .ToListAsync(token);
+        db.Notifications.AddRange(adminIds.Select(adminId => new Notification
+        {
+            UserId = adminId,
+            Type = NotificationType.Safety,
+            Title = "اكتمل رفع تسجيل سلامة",
+            Body = recording.RideId is int rideId
+                ? $"أصبح تسجيل السلامة للرحلة #{rideId} متاحاً للمراجعة."
+                : "أصبح تسجيل سلامة متاحاً للمراجعة.",
+            DataJson = recording.RideId is int activeRideId
+                ? $"{{\"action\":\"open_safety_recording\",\"safetyRecordingId\":{recording.Id},\"rideId\":{activeRideId}}}"
+                : $"{{\"action\":\"open_safety_recording\",\"safetyRecordingId\":{recording.Id}}}"
+        }));
+        await db.SaveChangesAsync(token);
+        await realtimePublisher.PublishSafetyRecordingAvailableAsync(
+            new SafetyRecordingRealtimeEvent(
+                recording.Id,
+                recording.RideId,
+                recording.DurationMilliseconds,
+                recording.UploadedBytes,
+                recording.EndedAtUtc ?? DateTime.UtcNow),
+            token);
     }
     return Results.Ok(new { success = true, recordingId, recording.UploadedBytes, recording.DurationMilliseconds, recording.EndedAtUtc });
 });
@@ -272,8 +327,14 @@ app.MapGet("/api/admin/safety/recordings/{recordingId:int}/audio", async (
 
 // A live-share URL is an opaque, revocable capability. It exposes only the
 // active ride snapshot and latest location, never account or payment data.
-app.MapGet("/api/safety/shares/{token}", async (string token, YemenDriveDbContext db, CancellationToken cancellationToken) =>
+app.MapGet("/api/safety/shares/{token}", async (
+    string token,
+    HttpContext context,
+    YemenDriveDbContext db,
+    CancellationToken cancellationToken) =>
 {
+    context.Response.Headers.CacheControl = "no-store";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
     if (string.IsNullOrWhiteSpace(token) || token.Length > 128) return Results.NotFound();
     var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token.Trim())));
     var now = DateTime.UtcNow;
@@ -281,8 +342,29 @@ app.MapGet("/api/safety/shares/{token}", async (string token, YemenDriveDbContex
     if (share is null) return Results.NotFound(ApiResult.Fail("safety_share_not_available", "رابط مشاركة الرحلة غير متاح أو انتهت صلاحيته."));
     var ride = await db.Rides.AsNoTracking().Include(x => x.Driver).SingleOrDefaultAsync(x => x.Id == share.RideId, cancellationToken);
     if (ride is null || ride.Status is RideStatus.Completed or RideStatus.Cancelled) return Results.NotFound(ApiResult.Fail("safety_share_not_available", "رابط مشاركة الرحلة غير متاح أو انتهت صلاحيته."));
-    var location = await db.LocationUpdates.AsNoTracking().Where(x => x.RideId == ride.Id).OrderByDescending(x => x.ObservedAtUtc).FirstOrDefaultAsync(cancellationToken);
-    return Results.Ok(new { success = true, rideId = ride.Id, status = ride.Status, pickup = ride.PickupLabel, destination = ride.DestinationLabel, driverName = ride.Driver?.DisplayName, latitude = location?.Latitude, longitude = location?.Longitude, bearing = location?.Bearing, observedAtUtc = location?.ObservedAtUtc, expiresAtUtc = share.ExpiresAtUtc });
+    var location = ride.DriverId is int driverId
+        ? await db.DriverLiveLocations.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.DriverId == driverId && item.IsOnline &&
+                                          item.ObservedAtUtc >= now.AddMinutes(-5), cancellationToken)
+        : null;
+    return Results.Ok(new
+    {
+        success = true,
+        rideId = ride.Id,
+        status = ride.Status,
+        pickup = string.IsNullOrWhiteSpace(ride.PickupLabel) ? ride.PickupAddress : ride.PickupLabel,
+        destination = string.IsNullOrWhiteSpace(ride.DestinationLabel) ? ride.DestinationAddress : ride.DestinationLabel,
+        pickupLatitude = ride.PickupLatitude,
+        pickupLongitude = ride.PickupLongitude,
+        destinationLatitude = ride.DestinationLatitude,
+        destinationLongitude = ride.DestinationLongitude,
+        driverName = ride.Driver?.DisplayName,
+        latitude = location?.Latitude,
+        longitude = location?.Longitude,
+        bearing = location?.Bearing,
+        observedAtUtc = location?.ObservedAtUtc,
+        expiresAtUtc = share.ExpiresAtUtc
+    });
 });
 
 app.MapGet("/api/setup/database", (
@@ -340,28 +422,63 @@ app.MapPost("/api/admin/development/seed", async (
 app.MapPost("/api/execute", async (
     ApiRequest request,
     ModelServiceDispatcher dispatcher,
+    YemenDriveDbContext db,
+    NotificationSaveCaptureInterceptor notificationCapture,
+    IRideRealtimePublisher realtimePublisher,
     CancellationToken cancellationToken) =>
-    Results.Ok(await dispatcher.DispatchAsync(request, cancellationToken)));
+{
+    var result = await dispatcher.DispatchAsync(request, cancellationToken);
+    await PublishCreatedNotificationsAsync(
+        db, notificationCapture, realtimePublisher, app.Logger, cancellationToken);
+    return Results.Ok(result);
+});
 
 app.MapPost("/api/admin/execute", async (
     ApiRequest request,
     ModelServiceDispatcher dispatcher,
     ICurrentUserContext currentUser,
     YemenDriveDbContext db,
+    NotificationSaveCaptureInterceptor notificationCapture,
+    IRideRealtimePublisher realtimePublisher,
     CancellationToken cancellationToken) =>
 {
     if (!await IsAdminAsync(currentUser.UserId, db, cancellationToken))
         return Results.Ok(ApiResult.Fail("admin_authentication_required", "يجب تسجيل الدخول بحساب الإدارة."));
-    return Results.Ok(await dispatcher.DispatchAsync(request, cancellationToken));
+    var result = await dispatcher.DispatchAsync(request, cancellationToken);
+    await PublishCreatedNotificationsAsync(
+        db, notificationCapture, realtimePublisher, app.Logger, cancellationToken);
+    return Results.Ok(result);
 });
 
 app.MapAuthenticationEndpoints();
+app.MapDevicePushInstallationEndpoints();
 
 app.Run();
 
 static async Task<bool> IsAdminAsync(int? userId, YemenDriveDbContext db, CancellationToken cancellationToken) =>
     userId is int id && await db.Users.AsNoTracking()
         .AnyAsync(x => x.Id == id && x.Role == UserRole.Admin && x.IsActive, cancellationToken);
+
+static async Task PublishCreatedNotificationsAsync(
+    YemenDriveDbContext db,
+    NotificationSaveCaptureInterceptor notificationCapture,
+    IRideRealtimePublisher realtimePublisher,
+    ILogger logger,
+    CancellationToken cancellationToken)
+{
+    try
+    {
+        var notifications = await notificationCapture.TakeCommittedAsync(db, cancellationToken);
+        if (notifications.Count > 0)
+            await realtimePublisher.PublishNotificationsCreatedAsync(notifications, cancellationToken);
+    }
+    catch (Exception exception)
+    {
+        // Notification persistence is authoritative; a transient Hub problem must
+        // not turn a successfully completed API operation into a reported failure.
+        logger.LogWarning(exception, "Could not publish newly saved notifications.");
+    }
+}
 
 static async Task SeedAdministratorAsync(IServiceProvider services)
 {

@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YemenDrive | لوحة التحكم</title>
-  <link rel="stylesheet" href="/admin.css?v=20260923-1">
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/admin.css?v=20261008-realtime">
 </head>
 <body>
   <div class="admin-login" id="admin-login">
@@ -64,6 +65,7 @@
         </div>
         <div class="topbar-actions">
           <span class="connection-pill" id="connection-pill"><span></span><b>جارٍ التحقق</b></span>
+          <button class="icon-button notification-button" id="admin-notifications-button" title="الإشعارات" aria-label="الإشعارات">🔔<span class="notification-count hidden" id="admin-notifications-count">0</span></button>
           <button class="icon-button" id="refresh-button" title="تحديث البيانات" aria-label="تحديث البيانات">↻</button>
           <button class="icon-button" id="admin-logout-button" title="تسجيل الخروج" aria-label="تسجيل الخروج">⇥</button>
         </div>
@@ -101,12 +103,16 @@
         </section>
 
         <section class="view" id="view-drivers">
-          <div class="section-toolbar"><div><h2>السائقون</h2><p>المركبات والخدمات وحالة التوفر</p></div><div class="command-row"><button class="button" data-form="driverLocation">تحديث موقع</button><button class="button primary" data-form="driver">إضافة ملف سائق</button></div></div>
+          <div class="section-toolbar"><div><h2>السائقون</h2><p>المركبات والخدمات وحالة التوفر</p></div><div class="command-row"><button class="button primary" data-form="driver">إضافة ملف سائق</button></div></div>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>السائق</th><th>الهاتف</th><th>المركبة</th><th>الخدمة</th><th>اللوحة</th><th>التقييم</th><th>التوفر</th></tr></thead><tbody id="drivers-body"></tbody></table></div><div class="empty-state hidden" id="drivers-empty">لا توجد ملفات سائقين.</div></section>
         </section>
 
         <section class="view" id="view-rides">
           <div class="section-toolbar"><div><h2>الرحلات</h2><p>متابعة الطلبات وحالات التنفيذ</p></div><div class="command-row"><select class="filter-select" id="ride-filter"><option value="">كل الحالات</option><option value="1">جاري البحث</option><option value="3">تم تعيين سائق</option><option value="4">السائق في الطريق</option><option value="5">قيد التنفيذ</option><option value="6">مكتملة</option><option value="7">ملغاة</option></select><button class="button primary" data-form="ride">إنشاء رحلة</button></div></div>
+          <section class="data-section live-operations-section">
+            <div class="section-header"><div><h2>الرحلات النشطة على الخريطة</h2><p>تتحدث الحالة ومواقع السائقين مباشرة أثناء الرحلة.</p></div><span class="live-connection" id="live-rides-connection">جارٍ الاتصال…</span></div>
+            <div class="live-rides-layout"><div id="live-rides-map" role="img" aria-label="خريطة الرحلات النشطة"></div><div class="live-rides-list" id="live-rides-list"><div class="empty-state">لا توجد رحلات نشطة الآن.</div></div></div>
+          </section>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>العميل</th><th>السائق</th><th>المسار</th><th>المركبة</th><th>الحالة</th><th>السعر</th><th>التاريخ</th></tr></thead><tbody id="rides-body"></tbody></table></div><div class="empty-state hidden" id="rides-empty">لا توجد رحلات في هذه الحالة.</div></section>
         </section>
 
@@ -210,7 +216,11 @@
 
   <dialog class="modal safety-map-modal" id="safety-map-modal"><div class="modal-shell"><header><div><h2>متابعة موقع الرحلة</h2><p id="safety-map-summary">—</p></div><button class="icon-button" type="button" data-close="safety-map-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="safety-map-details" id="safety-map-details"></div><div class="safety-map-privacy"><span>تنبيه خصوصية: تحميل الخريطة يرسل إحداثيات الرحلة إلى OpenStreetMap. أثناء المتابعة تُحدّث الإحداثيات الحية كل 12 ثانية. لن تُحمّل قبل الضغط على الزر.</span><button class="button small" id="safety-map-load" type="button">تحميل الخريطة</button></div><iframe class="hidden" id="safety-map-frame" title="خريطة متابعة بلاغ السلامة" loading="lazy" referrerpolicy="no-referrer"></iframe><div class="safety-map-footer"><span id="safety-map-updated">—</span><a class="button small hidden" id="safety-map-route-link" target="_blank" rel="noopener noreferrer">فتح مسار الرحلة</a></div></div></div></dialog>
 
+  <dialog class="modal" id="admin-notifications-modal"><section class="modal-shell"><header><div><h2>إشعارات الإدارة</h2><p>الإشعارات الخاصة بحساب المدير الحالي.</p></div><button class="icon-button" type="button" data-close="admin-notifications-modal" title="إغلاق" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="admin-notification-list" id="admin-notifications-list"></div></div></section></dialog>
+
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
-  <script src="/admin.js" defer></script>
+  <script src="/vendor/signalr/signalr.min.js" defer></script>
+  <script src="/vendor/leaflet/leaflet.js" defer></script>
+  <script src="/admin.js?v=20261008-realtime" defer></script>
 </body>
 </html>

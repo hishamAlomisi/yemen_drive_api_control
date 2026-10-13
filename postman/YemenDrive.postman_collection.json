@@ -582,23 +582,6 @@
               }
             }
           ]
-        },
-        {
-          "name": "Update Driver Location",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"DriverLocationModel\",\n  \"operation\": \"update\",\n  \"data\": {\n    \"driverId\": {{driverUserId}},\n    \"latitude\": 15.3694,\n    \"longitude\": 44.1910,\n    \"bearing\": 90,\n    \"speed\": 20,\n    \"isOnline\": true\n  }\n}"
-            },
-            "url": "{{baseUrl}}/api/execute"
-          }
         }
       ]
     },

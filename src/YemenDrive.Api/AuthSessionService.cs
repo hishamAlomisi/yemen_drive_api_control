@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Entities;
@@ -11,6 +12,12 @@ public sealed class AuthSessionService
     private static readonly TimeSpan AccessTokenLifetime = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan CustomerSessionLifetime = TimeSpan.FromDays(30);
     private static readonly TimeSpan AdminSessionLifetime = TimeSpan.FromHours(8);
+    private readonly IHubContext<TrackingHub>? _trackingHub;
+
+    public AuthSessionService(IHubContext<TrackingHub>? trackingHub = null)
+    {
+        _trackingHub = trackingHub;
+    }
 
     public async Task<SessionTokens> CreateAsync(
         YemenDriveDbContext db,
@@ -60,9 +67,19 @@ public sealed class AuthSessionService
                            item.AccessExpiresAtUtc > now &&
                            item.SessionExpiresAtUtc > now &&
                            item.User.IsActive)
-            .Select(item => new AuthenticatedSession(item.UserId, item.FamilyId))
+            .Select(item => new AuthenticatedSession(
+                item.UserId,
+                item.FamilyId,
+                item.AccessExpiresAtUtc))
             .SingleOrDefaultAsync(cancellationToken);
-        return session;
+        return session is null
+            ? null
+            : session with
+            {
+                AccessExpiresAtUtc = DateTime.SpecifyKind(
+                    session.AccessExpiresAtUtc,
+                    DateTimeKind.Utc)
+            };
     }
 
     public async Task<RefreshedSession?> RefreshAsync(
@@ -108,9 +125,15 @@ public sealed class AuthSessionService
         {
             var current = await db.AuthSessions.AsNoTracking()
                 .SingleOrDefaultAsync(item => item.Id == existing.Id, cancellationToken);
+            var revokedFamily = false;
             if (current?.RotatedAtUtc is not null && current.SessionExpiresAtUtc > now)
-                await RevokeFamilyAsync(db, existing.FamilyId, now, cancellationToken);
+            {
+                await RevokeFamilyAsync(db, existing.FamilyId, now, cancellationToken, notify: false);
+                revokedFamily = true;
+            }
             await transaction.CommitAsync(cancellationToken);
+            if (revokedFamily)
+                await NotifyFamilyRevokedAsync(existing.FamilyId, cancellationToken);
             return null;
         }
 
@@ -141,9 +164,11 @@ public sealed class AuthSessionService
     {
         if (string.IsNullOrWhiteSpace(accessToken)) return;
         var session = await db.AuthSessions.AsNoTracking()
-            .SingleOrDefaultAsync(item => item.AccessTokenHash == Hash(accessToken) &&
-                                          item.RotatedAtUtc == null &&
-                                          item.RevokedAtUtc == null,
+            .Where(item => item.AccessTokenHash == Hash(accessToken) &&
+                           item.RotatedAtUtc == null &&
+                           item.RevokedAtUtc == null)
+            .Select(item => new { item.FamilyId })
+            .SingleOrDefaultAsync(
                 cancellationToken);
         if (session is not null)
             await RevokeFamilyAsync(db, session.FamilyId, DateTime.UtcNow, cancellationToken);
@@ -155,23 +180,41 @@ public sealed class AuthSessionService
         CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
-        await db.AuthSessions
+        var revoked = await db.AuthSessions
             .Where(item => item.UserId == userId && item.RevokedAtUtc == null)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(item => item.RevokedAtUtc, now)
                 .SetProperty(item => item.UpdatedAtUtc, now), cancellationToken);
+        if (revoked > 0)
+            await NotifyUserRevokedAsync(userId, cancellationToken);
     }
 
-    private static Task<int> RevokeFamilyAsync(
+    private async Task<int> RevokeFamilyAsync(
         YemenDriveDbContext db,
         Guid familyId,
         DateTime now,
-        CancellationToken cancellationToken) =>
-        db.AuthSessions
+        CancellationToken cancellationToken,
+        bool notify = true)
+    {
+        var revoked = await db.AuthSessions
             .Where(item => item.FamilyId == familyId && item.RevokedAtUtc == null)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(item => item.RevokedAtUtc, now)
                 .SetProperty(item => item.UpdatedAtUtc, now), cancellationToken);
+        if (notify && revoked > 0)
+            await NotifyFamilyRevokedAsync(familyId, cancellationToken);
+        return revoked;
+    }
+
+    private Task NotifyFamilyRevokedAsync(Guid familyId, CancellationToken cancellationToken) =>
+        _trackingHub?.Clients.Group(TrackingHub.FamilyGroup(familyId))
+            .SendAsync("sessionRevoked", cancellationToken)
+        ?? Task.CompletedTask;
+
+    private Task NotifyUserRevokedAsync(int userId, CancellationToken cancellationToken) =>
+        _trackingHub?.Clients.Group(TrackingHub.UserGroup(userId))
+            .SendAsync("sessionRevoked", cancellationToken)
+        ?? Task.CompletedTask;
 
     private static SessionTokens NewTokens() => new(NewOpaqueToken(), NewOpaqueToken());
 
@@ -191,6 +234,9 @@ public sealed record SessionTokens(
     DateTime AccessExpiresAtUtc = default,
     DateTime SessionExpiresAtUtc = default);
 
-public sealed record AuthenticatedSession(int UserId, Guid FamilyId);
+public sealed record AuthenticatedSession(
+    int UserId,
+    Guid FamilyId,
+    DateTime AccessExpiresAtUtc);
 
 public sealed record RefreshedSession(User User, SessionTokens Tokens);

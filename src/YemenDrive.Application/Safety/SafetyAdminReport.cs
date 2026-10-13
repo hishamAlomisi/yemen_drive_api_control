@@ -65,6 +65,9 @@ public sealed class SafetyAdminReport(
                 row.Incident.Latitude,
                 row.Incident.Longitude,
                 row.Incident.LocationObservedAtUtc,
+                locationSource = row.Incident.LocationObservedAtUtc is not null
+                    ? "reporterGps"
+                    : row.Incident.Latitude is not null ? "pickupFallback" : "unavailable",
                 row.Incident.Status,
                 row.Incident.AdminUserId,
                 row.Incident.AdminNote,

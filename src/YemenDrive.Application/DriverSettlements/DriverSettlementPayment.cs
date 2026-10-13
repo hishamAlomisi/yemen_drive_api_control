@@ -55,6 +55,15 @@ public sealed class DriverSettlementPayment(
         db.DriverSettlementPayments.Add(entity);
         await db.SaveChangesAsync(token);
         var journal = await PostCollectionAsync(entity, adminId, token);
+        db.Notifications.Add(new Notification
+        {
+            UserId = entity.DriverId,
+            Type = NotificationType.Payment,
+            Title = "تم تسجيل تسوية على حسابك",
+            Body = $"سُجل تحصيل {entity.Amount:0.##} {entity.Currency} من مديونيتك لدى المنصة.",
+            DataJson = $"{{\"action\":\"open_driver_account\",\"driverSettlementPaymentId\":{entity.Id}}}"
+        });
+        await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
         return new { entity.Id, entity.DriverSettlementId, entity.DriverId, entity.Amount, entity.Currency, entity.Method, entity.Reference, entity.CreatedAtUtc, journalEntryId = journal.JournalEntryId };
     }

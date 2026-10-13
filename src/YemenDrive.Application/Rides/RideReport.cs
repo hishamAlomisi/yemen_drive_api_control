@@ -49,6 +49,11 @@ public sealed class RideReport(
         }
         if (!isAdmin && currentUserId is null && model.CustomerId is not null)
             query = query.Where(x => x.CustomerId == model.CustomerId);
+        if (model.ActiveOnly)
+            query = query.Where(x => x.Status == RideStatus.DriverAssigned ||
+                                     x.Status == RideStatus.DriverEnRoute ||
+                                     x.Status == RideStatus.InProgress ||
+                                     x.Status == RideStatus.CancellationPending);
         if (model.Status is not null) query = query.Where(x => x.Status == model.Status);
         var rides = await query
             .Include(x => x.Customer)
@@ -75,6 +80,19 @@ public sealed class RideReport(
                 .ToList();
         }
         var rideIds = rides.Select(x => x.Id).ToArray();
+        var activeDriverIds = rides
+            .Where(x => x.DriverId is not null &&
+                        x.Status is RideStatus.DriverAssigned or RideStatus.DriverEnRoute or
+                            RideStatus.InProgress or RideStatus.CancellationPending)
+            .Select(x => x.DriverId!.Value)
+            .Distinct()
+            .ToArray();
+        var adminLiveLocations = driverProfile is null && activeDriverIds.Length > 0
+            ? await dbContext.DriverLiveLocations.AsNoTracking()
+                .Where(item => activeDriverIds.Contains(item.DriverId) && item.IsOnline &&
+                               item.ObservedAtUtc >= DateTime.UtcNow.AddMinutes(-5))
+                .ToDictionaryAsync(item => item.DriverId, cancellationToken)
+            : new Dictionary<int, DriverLiveLocation>();
         var cashRequests = await dbContext.CashPaymentRequests.AsNoTracking()
             .Where(x => rideIds.Contains(x.RideId))
             .OrderByDescending(x => x.CreatedAtUtc)
@@ -102,6 +120,7 @@ public sealed class RideReport(
                 ? (double?)null
                 : HaversineMeters(driverLocation.Latitude, driverLocation.Longitude, x.PickupLatitude, x.PickupLongitude);
             var cashRequest = cashRequests.FirstOrDefault(item => item.RideId == x.Id);
+            adminLiveLocations.TryGetValue(x.DriverId ?? 0, out var adminLocation);
 
             return new
             {
@@ -122,9 +141,11 @@ public sealed class RideReport(
                 destinationLongitude = revealDestination ? x.DestinationLongitude : (double?)null,
                 destinationAvailable = revealDestination,
                 pickupDistanceMeters,
-                driverLatitude = driverProfile is null ? (double?)null : driverLocation?.Latitude,
-                driverLongitude = driverProfile is null ? (double?)null : driverLocation?.Longitude,
-                driverLocationObservedAtUtc = driverProfile is null ? null : driverLocation?.ObservedAtUtc,
+                driverLatitude = driverProfile is null ? adminLocation?.Latitude : driverLocation?.Latitude,
+                driverLongitude = driverProfile is null ? adminLocation?.Longitude : driverLocation?.Longitude,
+                driverBearing = driverProfile is null ? adminLocation?.Bearing : driverLocation?.Bearing,
+                driverSpeed = driverProfile is null ? adminLocation?.Speed : driverLocation?.Speed,
+                driverLocationObservedAtUtc = driverProfile is null ? adminLocation?.ObservedAtUtc : driverLocation?.ObservedAtUtc,
                 x.CustomerPrice, x.ServiceFee, x.TotalAmount, x.DriverCommissionAmount, x.DriverShare, x.PlatformShare, x.CreatedAtUtc,
                 x.CustomerPaymentEnabled, paymentCompleted = paidRideIds.Contains(x.Id),
                 driverOfferAmount = offer?.Amount,

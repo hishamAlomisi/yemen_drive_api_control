@@ -48,7 +48,15 @@ namespace YemenDrive.Database.Migrations
                     b.Property<Guid>("FamilyId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("RefreshTokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
                     b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("RotatedAtUtc")
                         .HasColumnType("datetime2");
 
                     b.Property<byte[]>("RowVersion")
@@ -59,14 +67,6 @@ namespace YemenDrive.Database.Migrations
 
                     b.Property<DateTime>("SessionExpiresAtUtc")
                         .HasColumnType("datetime2");
-
-                    b.Property<DateTime?>("RotatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("RefreshTokenHash")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
                         .HasColumnType("datetime2");
@@ -258,6 +258,57 @@ namespace YemenDrive.Database.Migrations
                     b.HasIndex("RideId", "CreatedAtUtc");
 
                     b.ToTable("CommunicationMessages");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.DevicePushInstallation", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("FcmToken")
+                        .IsRequired()
+                        .HasMaxLength(4096)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("LastRegisteredAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Platform")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("nvarchar(24)");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("UserId", "DeviceId")
+                        .IsUnique();
+
+                    b.ToTable("DevicePushInstallations");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.DriverLiveLocation", b =>
@@ -924,6 +975,99 @@ namespace YemenDrive.Database.Migrations
                     b.HasIndex("UserId", "IsRead", "CreatedAtUtc");
 
                     b.ToTable("Notifications");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.NotificationPushDelivery", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("AbandonedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("DevicePushInstallationId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<Guid?>("LeaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("LeaseUntilUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("NextAttemptAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("OutboxId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("SentAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DevicePushInstallationId");
+
+                    b.HasIndex("OutboxId", "DevicePushInstallationId")
+                        .IsUnique();
+
+                    b.HasIndex("SentAtUtc", "AbandonedAtUtc", "NextAttemptAtUtc", "LeaseUntilUtc");
+
+                    b.ToTable("NotificationPushDeliveries");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.NotificationPushOutbox", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("LeaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("LeaseUntilUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("NotificationId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("RecipientsCapturedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NotificationId")
+                        .IsUnique();
+
+                    b.HasIndex("RecipientsCapturedAtUtc", "CompletedAtUtc");
+
+                    b.ToTable("NotificationPushOutbox");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.PaymentCardToken", b =>
@@ -2091,6 +2235,28 @@ namespace YemenDrive.Database.Migrations
                         });
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.AuthSession", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.DevicePushInstallation", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.DriverLiveLocation", b =>
                 {
                     b.HasOne("YemenDrive.Database.Entities.User", "Driver")
@@ -2202,6 +2368,36 @@ namespace YemenDrive.Database.Migrations
                         .IsRequired();
 
                     b.Navigation("Ride");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.NotificationPushDelivery", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.DevicePushInstallation", "Installation")
+                        .WithMany()
+                        .HasForeignKey("DevicePushInstallationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("YemenDrive.Database.Entities.NotificationPushOutbox", "Outbox")
+                        .WithMany("Deliveries")
+                        .HasForeignKey("OutboxId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Installation");
+
+                    b.Navigation("Outbox");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.NotificationPushOutbox", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.Notification", "Notification")
+                        .WithOne("PushOutbox")
+                        .HasForeignKey("YemenDrive.Database.Entities.NotificationPushOutbox", "NotificationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Notification");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.PricingRule", b =>
@@ -2331,17 +2527,6 @@ namespace YemenDrive.Database.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("YemenDrive.Database.Entities.AuthSession", b =>
-                {
-                    b.HasOne("YemenDrive.Database.Entities.User", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("User");
-                });
-
             modelBuilder.Entity("YemenDrive.Database.Entities.TrustedDevice", b =>
                 {
                     b.HasOne("YemenDrive.Database.Entities.User", "User")
@@ -2390,6 +2575,16 @@ namespace YemenDrive.Database.Migrations
             modelBuilder.Entity("YemenDrive.Database.Entities.LedgerAccount", b =>
                 {
                     b.Navigation("ChildLedgerAccounts");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.Notification", b =>
+                {
+                    b.Navigation("PushOutbox");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.NotificationPushOutbox", b =>
+                {
+                    b.Navigation("Deliveries");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.Ride", b =>

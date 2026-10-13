@@ -19,6 +19,9 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<WalletTransaction> WalletTransactions => Set<WalletTransaction>();
     public DbSet<LocationUpdate> LocationUpdates => Set<LocationUpdate>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<DevicePushInstallation> DevicePushInstallations => Set<DevicePushInstallation>();
+    public DbSet<NotificationPushOutbox> NotificationPushOutbox => Set<NotificationPushOutbox>();
+    public DbSet<NotificationPushDelivery> NotificationPushDeliveries => Set<NotificationPushDelivery>();
     public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
     public DbSet<CashPaymentRequest> CashPaymentRequests => Set<CashPaymentRequest>();
     public DbSet<CashCollectionApproval> CashCollectionApprovals => Set<CashCollectionApproval>();
@@ -177,6 +180,37 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<RideCancellationRequest>().ToTable(table => table.HasCheckConstraint(
             "CK_RideCancellationRequests_Reason_NotBlank", "LEN(LTRIM(RTRIM([Reason]))) >= 3"));
         modelBuilder.Entity<Notification>().HasIndex(x => new { x.UserId, x.IsRead, x.CreatedAtUtc });
+        modelBuilder.Entity<DevicePushInstallation>().Property(x => x.DeviceId).HasMaxLength(128).IsRequired();
+        modelBuilder.Entity<DevicePushInstallation>().Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
+        modelBuilder.Entity<DevicePushInstallation>().Property(x => x.FcmToken).HasMaxLength(4096).IsRequired();
+        modelBuilder.Entity<DevicePushInstallation>().Property(x => x.Platform).HasMaxLength(24).IsRequired();
+        modelBuilder.Entity<DevicePushInstallation>().HasIndex(x => new { x.UserId, x.DeviceId }).IsUnique();
+        modelBuilder.Entity<DevicePushInstallation>().HasIndex(x => x.TokenHash).IsUnique();
+        modelBuilder.Entity<DevicePushInstallation>()
+            .HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<NotificationPushOutbox>().HasIndex(x => x.NotificationId).IsUnique();
+        modelBuilder.Entity<NotificationPushOutbox>().HasIndex(x => new { x.RecipientsCapturedAtUtc, x.CompletedAtUtc });
+        modelBuilder.Entity<NotificationPushOutbox>()
+            .HasOne(x => x.Notification)
+            .WithOne(x => x.PushOutbox)
+            .HasForeignKey<NotificationPushOutbox>(x => x.NotificationId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<NotificationPushDelivery>().HasIndex(x => new { x.OutboxId, x.DevicePushInstallationId }).IsUnique();
+        modelBuilder.Entity<NotificationPushDelivery>().HasIndex(x => new { x.SentAtUtc, x.AbandonedAtUtc, x.NextAttemptAtUtc, x.LeaseUntilUtc });
+        modelBuilder.Entity<NotificationPushDelivery>().Property(x => x.LastErrorCode).HasMaxLength(80);
+        modelBuilder.Entity<NotificationPushDelivery>()
+            .HasOne(x => x.Outbox)
+            .WithMany(x => x.Deliveries)
+            .HasForeignKey(x => x.OutboxId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<NotificationPushDelivery>()
+            .HasOne(x => x.Installation)
+            .WithMany()
+            .HasForeignKey(x => x.DevicePushInstallationId)
+            .OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<EmergencyContact>().HasIndex(x => new { x.UserId, x.PhoneNumber }).IsUnique();
         modelBuilder.Entity<EmergencyContact>().Property(x => x.Name).HasMaxLength(150).IsRequired();
         modelBuilder.Entity<EmergencyContact>().Property(x => x.PhoneNumber).HasMaxLength(30).IsRequired();

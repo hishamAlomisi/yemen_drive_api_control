@@ -16,7 +16,8 @@ public sealed record RideOfferActionModel(int? RideId = null, int? OfferId = nul
 public sealed class RideOfferAction(
     YemenDriveDbContext db,
     DatabaseConfigurationStore config,
-    ICurrentUserContext currentUser) : OperationsService<RideOfferActionModel>(config)
+    ICurrentUserContext currentUser,
+    IRideRealtimePublisher? realtimePublisher = null) : OperationsService<RideOfferActionModel>(config)
 {
     public override IReadOnlyCollection<string> Operations { get; } = ["accept", "reject"];
 
@@ -49,10 +50,19 @@ public sealed class RideOfferAction(
             Type = NotificationType.RideStatus,
             Title = "تم قبول عرضك",
             Body = "تم تعيينك لهذه الرحلة. يمكنك التوجه إلى العميل.",
-            DataJson = $"{{\"rideId\":{ride.Id},\"status\":\"DriverAssigned\"}}"
+            DataJson = $"{{\"action\":\"open_active_ride\",\"rideId\":{ride.Id},\"status\":\"DriverAssigned\"}}"
         });
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
+        if (realtimePublisher is not null)
+        {
+            var updated = await RideRealtimeEventFactory.LoadOffersAsync(
+                db, ride.Offers.Select(item => item.Id), token);
+            await realtimePublisher.PublishOfferUpdatesAsync(
+                ride.CustomerId, updated, token);
+            await realtimePublisher.PublishRideStatusUpdatedAsync(
+                RideRealtimeEventFactory.Status(ride), token);
+        }
         return new { offerId = offer.Id, rideId = ride.Id, driverId = ride.DriverId, agreedPrice = ride.CustomerPrice, rideStatus = ride.Status };
     }
 
@@ -70,6 +80,13 @@ public sealed class RideOfferAction(
         offer.Status = OfferStatus.Rejected;
         offer.UpdatedAtUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(token);
+        if (realtimePublisher is not null)
+        {
+            var updated = await RideRealtimeEventFactory.LoadOffersAsync(
+                db, [offer.Id], token);
+            await realtimePublisher.PublishOfferUpdatesAsync(
+                ride.CustomerId, updated, token);
+        }
         return new { offerId = offer.Id, rideId = ride.Id, status = offer.Status };
     }
 

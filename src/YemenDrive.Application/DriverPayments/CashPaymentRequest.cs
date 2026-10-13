@@ -6,6 +6,7 @@ using YemenDrive.Database.Entities;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
+using YemenDrive.Application.Rides;
 using CashPaymentRequestEntity = YemenDrive.Database.Entities.CashPaymentRequest;
 
 namespace YemenDrive.Application.DriverPayments;
@@ -13,7 +14,8 @@ namespace YemenDrive.Application.DriverPayments;
 public sealed class CashPaymentRequest(
     YemenDriveDbContext db,
     DatabaseConfigurationStore config,
-    ICurrentUserContext currentUser) : OperationsService<CashPaymentRequestModel>(config)
+    ICurrentUserContext currentUser,
+    IRideRealtimePublisher? realtimePublisher = null) : OperationsService<CashPaymentRequestModel>(config)
 {
     public override IReadOnlyCollection<string> Operations { get; } = ["add", "get", "accept", "reject"];
 
@@ -41,9 +43,18 @@ public sealed class CashPaymentRequest(
         if (open is not null) return ToResult(open);
         var request = new CashPaymentRequestEntity { RideId = ride.Id, CustomerId = customerId, DriverId = ride.DriverId.Value, Amount = amount, IdempotencyKey = key };
         db.CashPaymentRequests.Add(request);
-        db.Notifications.Add(new Notification { UserId = request.DriverId, Type = NotificationType.Payment, Title = "تأكيد دفع نقدي مطلوب", Body = $"هل استلمت مبلغ {amount:0.##} YER نقداً من العميل؟", DataJson = $"{{\"cashPaymentRequestId\":{request.Id},\"rideId\":{ride.Id}}}" });
+        db.Notifications.Add(new Notification { UserId = request.DriverId, Type = NotificationType.Payment, Title = "تأكيد دفع نقدي مطلوب", Body = $"هل استلمت مبلغ {amount:0.##} YER نقداً من العميل؟", DataJson = $"{{\"action\":\"review_cash_payment\",\"cashPaymentRequestId\":{request.Id},\"rideId\":{ride.Id}}}" });
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
+        if (realtimePublisher is not null)
+            await realtimePublisher.PublishPaymentUpdatedAsync(
+                [request.CustomerId, request.DriverId],
+                new PaymentRealtimeEvent(
+                    ride.Id,
+                    "cashPaymentRequested",
+                    request.CreatedAtUtc,
+                    CashPaymentRequestId: request.Id),
+                token);
         return ToResult(request);
     }
 
@@ -75,9 +86,18 @@ public sealed class CashPaymentRequest(
         request.Status = accept ? CashPaymentRequestStatus.DriverConfirmed : CashPaymentRequestStatus.DriverRejected;
         request.DecidedAtUtc = DateTime.UtcNow;
         request.DecisionNote = string.IsNullOrWhiteSpace(model.Note) ? null : model.Note.Trim();
-        db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.Payment, Title = accept ? "أكد السائق الدفع النقدي" : "لم يؤكد السائق الدفع النقدي", Body = accept ? "أكد السائق الاستلام. سيُسجل التحصيل الآن لإتمام الدفع." : "أفاد السائق بأنه لم يستلم المبلغ النقدي. اختر وسيلة دفع أخرى.", DataJson = $"{{\"cashPaymentRequestId\":{request.Id},\"rideId\":{request.RideId}}}" });
+        db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.Payment, Title = accept ? "أكد السائق الدفع النقدي" : "لم يؤكد السائق الدفع النقدي", Body = accept ? "أكد السائق الاستلام. سيُسجل التحصيل الآن لإتمام الدفع." : "أفاد السائق بأنه لم يستلم المبلغ النقدي. اختر وسيلة دفع أخرى.", DataJson = $"{{\"action\":\"open_ride_payment\",\"cashPaymentRequestId\":{request.Id},\"rideId\":{request.RideId}}}" });
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
+        if (realtimePublisher is not null)
+            await realtimePublisher.PublishPaymentUpdatedAsync(
+                [request.CustomerId, request.DriverId],
+                new PaymentRealtimeEvent(
+                    request.RideId,
+                    accept ? "cashPaymentConfirmed" : "cashPaymentRejected",
+                    request.DecidedAtUtc ?? DateTime.UtcNow,
+                    CashPaymentRequestId: request.Id),
+                token);
         return ToResult(request);
     }
 

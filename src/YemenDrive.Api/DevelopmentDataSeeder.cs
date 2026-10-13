@@ -188,8 +188,8 @@ public sealed class DevelopmentDataSeeder(
     {
         if (await db.Notifications.AnyAsync(x => x.UserId == customer.Id && x.Title == "بيانات التطوير جاهزة", token)) return;
         db.Notifications.AddRange(
-            new Notification { UserId = customer.Id, Type = NotificationType.System, Title = "بيانات التطوير جاهزة", Body = "أُضيفت رحلات وخدمات تجريبية لتجربة التطبيق.", DataJson = $"{{\"rideId\":{searching.Id}}}" },
-            new Notification { UserId = driver.Id, Type = NotificationType.RideStatus, Title = "رحلة تجريبية نشطة", Body = "يمكنك تجربة تحديث موقع وحالة الرحلة.", DataJson = $"{{\"rideId\":{active.Id}}}" });
+            new Notification { UserId = customer.Id, Type = NotificationType.System, Title = "بيانات التطوير جاهزة", Body = "أُضيفت رحلات وخدمات تجريبية لتجربة التطبيق.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{searching.Id}}}" },
+            new Notification { UserId = driver.Id, Type = NotificationType.RideStatus, Title = "رحلة تجريبية نشطة", Body = "يمكنك تجربة تحديث موقع وحالة الرحلة.", DataJson = $"{{\"action\":\"open_active_ride\",\"rideId\":{active.Id}}}" });
         await db.SaveChangesAsync(token);
     }
 }

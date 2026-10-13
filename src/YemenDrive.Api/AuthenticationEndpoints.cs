@@ -54,14 +54,18 @@ public static class AuthenticationEndpoints
                 return Results.Ok(ApiResult.Fail("invalid_credentials", "رقم الهاتف وكلمة المرور مطلوبان."));
             if (!TrustedDeviceCredentialService.IsValidDeviceId(request.DeviceId))
                 return Results.Ok(ApiResult.Fail("invalid_device", "معرّف الجهاز مطلوب أو غير صالح."));
+            if (!TryResolveClientRole(request.ClientType, out var clientRole))
+                return Results.Ok(ApiResult.Fail("invalid_client_type", "نوع التطبيق غير صالح."));
 
             var user = await db.Users.SingleOrDefaultAsync(x => x.PhoneNumber == request.PhoneNumber.Trim(), token);
             if (user is null || !user.IsActive || !PasswordHash.Verify(request.Password, user.PasswordHash))
                 return Results.Ok(ApiResult.Fail("invalid_credentials", "رقم الهاتف أو كلمة المرور غير صحيحة."));
+            if (user.Role != clientRole)
+                return Results.Ok(AccountTypeMismatch(clientRole));
 
             if (!await trustedDevices.IsTrustedAsync(db, user.Id, request.DeviceId, request.TrustedDeviceToken, token))
             {
-                var challenge = otpStore.TryCreate(user.PhoneNumber, "signIn");
+                var challenge = otpStore.TryCreate(user.PhoneNumber, SignInPurpose(clientRole));
                 return challenge is null
                     ? Results.Ok(ApiResult.Fail("otp_delivery_unavailable", "تسجيل الدخول يتطلب OTP، لكن مزود الرسائل غير مهيأ في هذه البيئة."))
                     : Results.Ok(ApiResult.Ok(new { requiresOtp = true, challengeId = challenge.Value.ChallengeId, expiresInSeconds = challenge.Value.ExpiresInSeconds }, "تم إنشاء رمز التحقق. راجع كونسول التطوير المحلي."));
@@ -99,17 +103,25 @@ public static class AuthenticationEndpoints
         {
             if (!TrustedDeviceCredentialService.IsValidDeviceId(request.DeviceId))
                 return Results.Ok(ApiResult.Fail("invalid_device", "معرّف الجهاز غير صالح."));
+            if (!TryResolveClientRole(request.ClientType, out var clientRole))
+                return Results.Ok(ApiResult.Fail("invalid_client_type", "نوع التطبيق غير صالح."));
             var phone = request.PhoneNumber?.Trim() ?? string.Empty;
-            var verification = otpStore.Verify(request.ChallengeId, phone, request.Code ?? string.Empty, "signIn");
+            var purpose = SignInPurpose(clientRole);
+            var verification = otpStore.Verify(request.ChallengeId, phone, request.Code ?? string.Empty, purpose);
             if (verification is null)
                 return Results.Ok(ApiResult.Fail("invalid_otp", "رمز التحقق غير صحيح أو منتهي."));
             var user = await db.Users.SingleOrDefaultAsync(x => x.PhoneNumber == phone && x.IsActive, token);
             if (user is null)
             {
-                otpStore.ConsumeVerificationToken(verification, phone, "signIn");
+                otpStore.ConsumeVerificationToken(verification, phone, purpose);
                 return Results.Ok(ApiResult.Fail("user_not_found", "الحساب غير موجود أو غير مفعل."));
             }
-            if (!otpStore.ConsumeVerificationToken(verification, phone, "signIn"))
+            if (user.Role != clientRole)
+            {
+                otpStore.ConsumeVerificationToken(verification, phone, purpose);
+                return Results.Ok(AccountTypeMismatch(clientRole));
+            }
+            if (!otpStore.ConsumeVerificationToken(verification, phone, purpose))
                 return Results.Ok(ApiResult.Fail("invalid_otp", "رمز التحقق غير صالح أو منتهي."));
 
             var trustedDeviceToken = await trustedDevices.IssueAsync(db, user.Id, request.DeviceId!, token);
@@ -222,6 +234,26 @@ public static class AuthenticationEndpoints
         return errors;
     }
 
+    private static bool TryResolveClientRole(string? clientType, out UserRole role)
+    {
+        role = clientType?.Trim().ToLowerInvariant() switch
+        {
+            "customer" => UserRole.Customer,
+            "driver" => UserRole.Driver,
+            _ => (UserRole)(-1)
+        };
+        return role is UserRole.Customer or UserRole.Driver;
+    }
+
+    private static string SignInPurpose(UserRole role) => role == UserRole.Driver
+        ? "signIn:driver"
+        : "signIn:customer";
+
+    private static ApiResult AccountTypeMismatch(UserRole requestedRole) =>
+        requestedRole == UserRole.Driver
+            ? ApiResult.Fail("account_type_mismatch", "هذا الحساب غير مسجل كسائق، استخدم تطبيق العميل.")
+            : ApiResult.Fail("account_type_mismatch", "هذا الحساب غير مسجل كعميل، استخدم تطبيق السائق.");
+
     private static object Session(User user, SessionTokens session, string? trustedDeviceToken = null) => new
     {
         accessToken = session.AccessToken,
@@ -233,10 +265,10 @@ public static class AuthenticationEndpoints
     };
 
     public sealed record RegisterRequest(string? PhoneNumber, string? DisplayName, string? Password, string? Email = null, string? Gender = null, string? Street = null, string? City = null, string? District = null, string? VerificationToken = null, string? DeviceId = null);
-    public sealed record LoginRequest(string? PhoneNumber, string? Password, string? DeviceId = null, string? TrustedDeviceToken = null);
+    public sealed record LoginRequest(string? PhoneNumber, string? Password, string? DeviceId = null, string? TrustedDeviceToken = null, string? ClientType = null);
     public sealed record AdminLoginRequest(string? PhoneNumber, string? Password);
     public sealed record SignUpOtpRequest(string? PhoneNumber);
-    public sealed record DeviceOtpRequest(string? PhoneNumber, string? Code, string? ChallengeId, string? DeviceId);
+    public sealed record DeviceOtpRequest(string? PhoneNumber, string? Code, string? ChallengeId, string? DeviceId, string? ClientType = null);
     public sealed record GenericOtpRequest(string? Destination, string? Code, string? Purpose, string? ChallengeId = null);
     public sealed record RefreshRequest(string? RefreshToken);
     public sealed record PasswordResetRequest(string? Identity, string? Channel);

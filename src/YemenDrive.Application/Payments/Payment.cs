@@ -4,6 +4,7 @@ using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
 using YemenDrive.Application.Accounting;
+using YemenDrive.Application.Rides;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -14,7 +15,8 @@ public sealed class Payment(
     YemenDriveDbContext dbContext,
     DatabaseConfigurationStore configurationStore,
     ICurrentUserContext currentUser,
-    RideAccountingPostingService accounting) : OperationsService<PaymentModel>(configurationStore)
+    RideAccountingPostingService accounting,
+    IRideRealtimePublisher? realtimePublisher = null) : OperationsService<PaymentModel>(configurationStore)
 {
     protected override async Task<object?> AddAsync(PaymentModel model, CancellationToken cancellationToken)
     {
@@ -65,20 +67,22 @@ public sealed class Payment(
             throw new ServiceException("currency_mismatch", "عملة محفظة السائق لا تطابق عملة العميل.");
 
         customerWallet.Balance -= totalDue;
-        dbContext.WalletTransactions.Add(new WalletTransaction
+        var customerDebit = new WalletTransaction
         {
             WalletId = customerWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Debit,
             Amount = totalDue, BalanceAfter = customerWallet.Balance,
             Description = "دفع إجمالي الرحلة من محفظة يمن درايف"
-        });
+        };
+        dbContext.WalletTransactions.Add(customerDebit);
         var driverNetAmount = ride.DriverShare ?? fare - ride.DriverCommissionAmount;
         driverWallet.Balance += driverNetAmount;
-        dbContext.WalletTransactions.Add(new WalletTransaction
+        var driverCredit = new WalletTransaction
         {
             WalletId = driverWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Credit,
             Amount = driverNetAmount, BalanceAfter = driverWallet.Balance,
             Description = "إضافة صافي مستحق السائق من الرحلة"
-        });
+        };
+        dbContext.WalletTransactions.Add(driverCredit);
 
         var entity = new PaymentTransaction
         {
@@ -108,6 +112,24 @@ public sealed class Payment(
         try
         {
             await dbContext.SaveChangesAsync(cancellationToken);
+            dbContext.Notifications.AddRange(
+                new Notification
+                {
+                    UserId = ride.CustomerId,
+                    Type = NotificationType.Payment,
+                    Title = "تم خصم أجرة الرحلة من محفظتك",
+                    Body = $"خُصم {totalDue:0.##} {customerWallet.Currency} لتسديد الرحلة.",
+                    DataJson = $"{{\"action\":\"open_wallet_transaction\",\"rideId\":{ride.Id},\"paymentId\":{entity.Id},\"walletTransactionId\":{customerDebit.Id}}}"
+                },
+                new Notification
+                {
+                    UserId = ride.DriverId.Value,
+                    Type = NotificationType.Payment,
+                    Title = "أُضيف مستحق الرحلة إلى محفظتك",
+                    Body = $"أُضيف {driverNetAmount:0.##} {driverWallet.Currency} إلى محفظتك من الرحلة.",
+                    DataJson = $"{{\"action\":\"open_wallet_transaction\",\"rideId\":{ride.Id},\"paymentId\":{entity.Id},\"walletTransactionId\":{driverCredit.Id}}}"
+                });
+            await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
         catch (DbUpdateException) when (idempotencyKey is not null)
@@ -120,6 +142,15 @@ public sealed class Payment(
             if (existing is not null) return ToResult(existing, alreadyProcessed: true);
             throw;
         }
+        if (realtimePublisher is not null)
+            await realtimePublisher.PublishPaymentUpdatedAsync(
+                [ride.CustomerId, ride.DriverId.Value],
+                new PaymentRealtimeEvent(
+                    ride.Id,
+                    "walletPaymentRecorded",
+                    DateTime.UtcNow,
+                    PaymentId: entity.Id),
+                cancellationToken);
         return ToResult(entity, alreadyProcessed: false);
     }
 
@@ -133,6 +164,24 @@ public sealed class Payment(
         if (model.ProviderReference is not null) entity.ProviderReference = model.ProviderReference.Trim();
         entity.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
+        if (entity.RideId is int rideId && realtimePublisher is not null)
+        {
+            var driverId = await dbContext.Rides.AsNoTracking()
+                .Where(ride => ride.Id == rideId)
+                .Select(ride => ride.DriverId)
+                .SingleOrDefaultAsync(cancellationToken);
+            var recipients = driverId is int assignedDriverId
+                ? new[] { entity.UserId, assignedDriverId }
+                : new[] { entity.UserId };
+            await realtimePublisher.PublishPaymentUpdatedAsync(
+                recipients,
+                new PaymentRealtimeEvent(
+                    rideId,
+                    "paymentStatusChanged",
+                    entity.UpdatedAtUtc ?? DateTime.UtcNow,
+                    PaymentId: entity.Id),
+                cancellationToken);
+        }
         return ToResult(entity, alreadyProcessed: false);
     }
 

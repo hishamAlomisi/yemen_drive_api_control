@@ -19,7 +19,8 @@ public sealed class RideCancellationRequest(
     YemenDriveDbContext db,
     DatabaseConfigurationStore config,
     ICurrentUserContext currentUser,
-    RideAccountingPostingService accounting) : OperationsService<RideCancellationRequestModel>(config)
+    RideAccountingPostingService accounting,
+    IRideRealtimePublisher? realtimePublisher = null) : OperationsService<RideCancellationRequestModel>(config)
 {
     public override IReadOnlyCollection<string> Operations { get; } = ["add", "get", "accept", "reject", "refer", "adminApprove", "adminReject"];
 
@@ -93,21 +94,24 @@ public sealed class RideCancellationRequest(
         if (directEnRouteCancellation)
         {
             if (ride.DriverId is int directDriverId)
-                db.Notifications.Add(new Notification { UserId = directDriverId, Type = NotificationType.RideStatus, Title = "تم إلغاء الرحلة", Body = "ألغى العميل الرحلة قبل بدءها. يمكنك إيقاف التوجه إلى نقطة الانطلاق.", DataJson = $"{{\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
-            db.Notifications.Add(new Notification { UserId = customerId, Type = NotificationType.RideStatus, Title = "تم إلغاء الرحلة", Body = "تم إلغاء الرحلة بناءً على السبب الذي اخترته.", DataJson = $"{{\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
+                db.Notifications.Add(new Notification { UserId = directDriverId, Type = NotificationType.RideStatus, Title = "تم إلغاء الرحلة", Body = "ألغى العميل الرحلة قبل بدءها. يمكنك إيقاف التوجه إلى نقطة الانطلاق.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
+            db.Notifications.Add(new Notification { UserId = customerId, Type = NotificationType.RideStatus, Title = "تم إلغاء الرحلة", Body = "تم إلغاء الرحلة بناءً على السبب الذي اخترته.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
         }
         else if (reviewByAdmin)
         {
             await NotifyAdminsAsync(ride, request, isInProgress ? "بدأت الرحلة؛ أُحيل طلب الإلغاء مباشرةً إلى الإدارة." : "طلب الإلغاء يحتاج مراجعة الإدارة.", token);
-            db.Notifications.Add(new Notification { UserId = customerId, Type = NotificationType.RideStatus, Title = "طلب الإلغاء قيد المراجعة", Body = "أُوقفت الرحلة وأُحيل طلبك إلى الإدارة. سيصلك إشعار بالقرار.", DataJson = $"{{\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
+            db.Notifications.Add(new Notification { UserId = customerId, Type = NotificationType.RideStatus, Title = "طلب الإلغاء قيد المراجعة", Body = "أُوقفت الرحلة وأُحيل طلبك إلى الإدارة. سيصلك إشعار بالقرار.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
         }
         else
         {
-            db.Notifications.Add(new Notification { UserId = ride.DriverId!.Value, Type = NotificationType.RideStatus, Title = "طلب إلغاء رحلة", Body = "طلب العميل إلغاء الرحلة. راجع السبب واختر القبول أو الرفض أو الإحالة للإدارة.", DataJson = $"{{\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
-            db.Notifications.Add(new Notification { UserId = customerId, Type = NotificationType.RideStatus, Title = "أُوقفت الرحلة", Body = "أُرسل طلب الإلغاء إلى السائق للمراجعة.", DataJson = $"{{\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
+            db.Notifications.Add(new Notification { UserId = ride.DriverId!.Value, Type = NotificationType.RideStatus, Title = "طلب إلغاء رحلة", Body = "طلب العميل إلغاء الرحلة. راجع السبب واختر القبول أو الرفض أو الإحالة للإدارة.", DataJson = $"{{\"action\":\"review_cancellation_request\",\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
+            db.Notifications.Add(new Notification { UserId = customerId, Type = NotificationType.RideStatus, Title = "أُوقفت الرحلة", Body = "أُرسل طلب الإلغاء إلى السائق للمراجعة.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
         }
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
+        if (realtimePublisher is not null)
+            await realtimePublisher.PublishRideStatusUpdatedAsync(
+                RideRealtimeEventFactory.Status(ride), token);
         return ToResult(request);
     }
 
@@ -141,6 +145,7 @@ public sealed class RideCancellationRequest(
             ?? throw new ServiceException("cancellation_request_not_found", "طلب الإلغاء غير موجود.");
         if (request.DriverId != driverId) throw new ServiceException("cancellation_driver_access_denied", "هذا الطلب ليس موجهاً للسائق الحالي.");
         if (request.Status != RideCancellationStatus.DriverReviewPending) return ToResult(request);
+        var previousRideStatus = request.Ride.Status;
         request.DriverDecision = decision;
         request.DriverDecidedAtUtc = DateTime.UtcNow;
         request.DriverNote = string.IsNullOrWhiteSpace(model.Note) ? null : model.Note.Trim();
@@ -152,12 +157,12 @@ public sealed class RideCancellationRequest(
             {
                 request.Status = RideCancellationStatus.AdminReviewPending;
                 await NotifyAdminsAsync(request.Ride, request, "رفض السائق طلب الإلغاء للمرة الثالثة؛ أُحيل الطلب إلى الإدارة.", token);
-                db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "أُحيل طلب الإلغاء إلى الإدارة", Body = "رفض السائق طلب الإلغاء ثلاث مرات، لذلك أُحيل الطلب إلى الإدارة للمراجعة.", DataJson = $"{{\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
+                db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "أُحيل طلب الإلغاء إلى الإدارة", Body = "رفض السائق طلب الإلغاء ثلاث مرات، لذلك أُحيل الطلب إلى الإدارة للمراجعة.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
             }
             else
             {
                 request.Status = RideCancellationStatus.DriverRejected;
-                db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "رفض السائق طلب الإلغاء", Body = $"رفض السائق طلب الإلغاء. يمكنك إرسال طلب جديد؛ بعد {3 - rejectionCount} رفضاً إضافياً يُحال الطلب إلى الإدارة.", DataJson = $"{{\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
+                db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "رفض السائق طلب الإلغاء", Body = $"رفض السائق طلب الإلغاء. يمكنك إرسال طلب جديد؛ بعد {3 - rejectionCount} رفضاً إضافياً يُحال الطلب إلى الإدارة.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
             }
         }
         else if (decision == RideCancellationDriverDecision.Accepted)
@@ -169,24 +174,27 @@ public sealed class RideCancellationRequest(
                 request.Status = RideCancellationStatus.AdminApproved;
                 request.Ride.Status = RideStatus.Cancelled;
                 request.Ride.UpdatedAtUtc = DateTime.UtcNow;
-                db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "تم إلغاء الرحلة", Body = "وافق السائق على إلغاء الرحلة، وتم إلغاؤها.", DataJson = $"{{\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
-                db.Notifications.Add(new Notification { UserId = request.DriverId!.Value, Type = NotificationType.RideStatus, Title = "تم إلغاء الرحلة", Body = "تم إلغاء الرحلة بناءً على موافقتك.", DataJson = $"{{\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
+                db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "تم إلغاء الرحلة", Body = "وافق السائق على إلغاء الرحلة، وتم إلغاؤها.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
+                db.Notifications.Add(new Notification { UserId = request.DriverId!.Value, Type = NotificationType.RideStatus, Title = "تم إلغاء الرحلة", Body = "تم إلغاء الرحلة بناءً على موافقتك.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
             }
             else
             {
                 request.Status = RideCancellationStatus.AdminReviewPending;
                 await NotifyAdminsAsync(request.Ride, request, "وافق السائق على الإلغاء؛ بانتظار قرار الإدارة المالي.", token);
-                db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "طلب الإلغاء قيد مراجعة الإدارة", Body = "أُحيل طلب الإلغاء إلى الإدارة لمراجعة الاسترداد المالي. سيصلك إشعار بالقرار.", DataJson = $"{{\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
+                db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "طلب الإلغاء قيد مراجعة الإدارة", Body = "أُحيل طلب الإلغاء إلى الإدارة لمراجعة الاسترداد المالي. سيصلك إشعار بالقرار.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
             }
         }
         else
         {
             request.Status = RideCancellationStatus.AdminReviewPending;
             await NotifyAdminsAsync(request.Ride, request, "أحال السائق طلب الإلغاء إلى الإدارة.", token);
-            db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "طلب الإلغاء قيد مراجعة الإدارة", Body = "أُحيل طلب الإلغاء إلى الإدارة. سيصلك إشعار بالقرار.", DataJson = $"{{\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
+            db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "طلب الإلغاء قيد مراجعة الإدارة", Body = "أُحيل طلب الإلغاء إلى الإدارة. سيصلك إشعار بالقرار.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
         }
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
+        if (realtimePublisher is not null && request.Ride.Status != previousRideStatus)
+            await realtimePublisher.PublishRideStatusUpdatedAsync(
+                RideRealtimeEventFactory.Status(request.Ride), token);
         return ToResult(request);
     }
 
@@ -199,6 +207,7 @@ public sealed class RideCancellationRequest(
         var request = await db.RideCancellationRequests.Include(x => x.Ride).SingleOrDefaultAsync(x => x.Id == model.Id, token)
             ?? throw new ServiceException("cancellation_request_not_found", "طلب الإلغاء غير موجود.");
         if (request.Status != RideCancellationStatus.AdminReviewPending) return ToResult(request);
+        var previousRideStatus = request.Ride.Status;
         request.Status = approve ? RideCancellationStatus.AdminApproved : RideCancellationStatus.AdminRejected;
         request.AdminUserId = adminId;
         request.AdminDecidedAtUtc = DateTime.UtcNow;
@@ -222,7 +231,7 @@ public sealed class RideCancellationRequest(
                 : settlement.CreditedToWallet
                     ? $"وافقت الإدارة على الإلغاء وأُضيف {settlement.RefundAmount:0.##} {settlement.Currency} إلى محفظتك."
                     : "وافقت الإدارة على الإلغاء وسُجل الاسترداد النقدي المباشر من السائق.";
-        db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = approve ? "تمت الموافقة على الإلغاء" : "رُفض طلب الإلغاء", Body = customerBody, DataJson = $"{{\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id},\"approved\":{approve.ToString().ToLowerInvariant()},\"settled\":{(settlement is not null).ToString().ToLowerInvariant()}}}" });
+        db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = approve ? "تمت الموافقة على الإلغاء" : "رُفض طلب الإلغاء", Body = customerBody, DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id},\"approved\":{approve.ToString().ToLowerInvariant()},\"settled\":{(settlement is not null).ToString().ToLowerInvariant()}}}" });
         if (request.DriverId is int driverId)
         {
             var driverBody = !approve
@@ -232,10 +241,24 @@ public sealed class RideCancellationRequest(
                     : settlement is not null && settlement.RefundMethod == CashCancellationRefundMethod.ReturnFromDriver
                         ? "وافقت الإدارة على الإلغاء. سجّل العميل استرداد مبلغ الرحلة منك نقداً مباشرة."
                         : "وافقت الإدارة على إلغاء الرحلة.";
-            db.Notifications.Add(new Notification { UserId = driverId, Type = NotificationType.RideStatus, Title = "قرار الإدارة في طلب الإلغاء", Body = driverBody, DataJson = $"{{\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id},\"settled\":{(settlement is not null).ToString().ToLowerInvariant()}}}" });
+            db.Notifications.Add(new Notification { UserId = driverId, Type = NotificationType.RideStatus, Title = "قرار الإدارة في طلب الإلغاء", Body = driverBody, DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id},\"settled\":{(settlement is not null).ToString().ToLowerInvariant()}}}" });
         }
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
+        if (realtimePublisher is not null && request.Ride.Status != previousRideStatus)
+            await realtimePublisher.PublishRideStatusUpdatedAsync(
+                RideRealtimeEventFactory.Status(request.Ride), token);
+        if (settlement is not null && realtimePublisher is not null)
+        {
+            var recipients = request.DriverId is int assignedDriverId
+                ? new[] { request.CustomerId, assignedDriverId }
+                : new[] { request.CustomerId };
+            await realtimePublisher.PublishPaymentUpdatedAsync(
+                recipients,
+                new PaymentRealtimeEvent(
+                    request.RideId, "paymentRefunded", DateTime.UtcNow),
+                token);
+        }
         return ToResult(request);
     }
 
@@ -363,7 +386,7 @@ public sealed class RideCancellationRequest(
     {
         var adminIds = await db.Users.AsNoTracking().Where(x => x.Role == UserRole.Admin && x.IsActive).Select(x => x.Id).ToListAsync(token);
         foreach (var adminId in adminIds)
-            db.Notifications.Add(new Notification { UserId = adminId, Type = NotificationType.RideStatus, Title = "طلب إلغاء يحتاج مراجعة", Body = body, DataJson = $"{{\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
+            db.Notifications.Add(new Notification { UserId = adminId, Type = NotificationType.RideStatus, Title = "طلب إلغاء يحتاج مراجعة", Body = body, DataJson = $"{{\"action\":\"open_cancellation_request\",\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
     }
 
     private Task<bool> IsAdminAsync(int userId, CancellationToken token) => db.Users.AsNoTracking().AnyAsync(x => x.Id == userId && x.Role == UserRole.Admin && x.IsActive, token);

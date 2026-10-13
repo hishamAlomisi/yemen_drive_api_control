@@ -4,6 +4,7 @@ using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
 using YemenDrive.Application.Accounting;
+using YemenDrive.Application.Rides;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -16,7 +17,8 @@ public sealed class DriverCashPayment(
     YemenDriveDbContext db,
     DatabaseConfigurationStore config,
     ICurrentUserContext currentUser,
-    RideAccountingPostingService accounting) : OperationsService<DriverCashPaymentModel>(config)
+    RideAccountingPostingService accounting,
+    IRideRealtimePublisher? realtimePublisher = null) : OperationsService<DriverCashPaymentModel>(config)
 {
     protected override async Task<object?> AddAsync(DriverCashPaymentModel model, CancellationToken token)
     {
@@ -86,9 +88,15 @@ public sealed class DriverCashPayment(
                 }
                 if (wallet.Balance < shortfall)
                 {
-                    db.Notifications.Add(new Notification { UserId = ride.CustomerId, Type = NotificationType.Payment, Title = "تعذر تغطية فرق الرحلة", Body = "رصيد محفظتك لا يكفي لتغطية الفرق المطلوب من الدفع النقدي." });
+                    db.Notifications.Add(new Notification { UserId = ride.CustomerId, Type = NotificationType.Payment, Title = "تعذر تغطية فرق الرحلة", Body = "رصيد محفظتك لا يكفي لتغطية الفرق المطلوب من الدفع النقدي.", DataJson = $"{{\"action\":\"open_wallet\",\"rideId\":{ride.Id}}}" });
                     await db.SaveChangesAsync(token);
                     await transaction.CommitAsync(token);
+                    if (realtimePublisher is not null)
+                        await realtimePublisher.PublishPaymentUpdatedAsync(
+                            [ride.CustomerId, driverId],
+                            new PaymentRealtimeEvent(
+                                ride.Id, "cashCollectionInsufficientBalance", DateTime.UtcNow),
+                            token);
                     return new { rideId = ride.Id, rejected = true, reason = "insufficient_wallet_balance", message = "رصيد محفظة العميل لا يكفي لتغطية الفرق؛ لم تسجل العملية." };
                 }
                 var approval = new CashCollectionApprovalEntity
@@ -99,9 +107,18 @@ public sealed class DriverCashPayment(
                 };
                 db.CashCollectionApprovals.Add(approval);
                 await db.SaveChangesAsync(token);
-                db.Notifications.Add(new Notification { UserId = ride.CustomerId, Type = NotificationType.Payment, Title = "موافقة مطلوبة لتغطية فرق الرحلة", Body = $"استلم السائق مبلغاً أقل من إجمالي الرحلة. وافق على خصم {shortfall:0.##} {currency} من محفظتك لإتمام التحصيل.", DataJson = $"{{\"cashCollectionApprovalId\":{approval.Id},\"rideId\":{ride.Id}}}" });
+                db.Notifications.Add(new Notification { UserId = ride.CustomerId, Type = NotificationType.Payment, Title = "موافقة مطلوبة لتغطية فرق الرحلة", Body = $"استلم السائق مبلغاً أقل من إجمالي الرحلة. وافق على خصم {shortfall:0.##} {currency} من محفظتك لإتمام التحصيل.", DataJson = $"{{\"action\":\"approve_cash_shortfall\",\"cashCollectionApprovalId\":{approval.Id},\"rideId\":{ride.Id}}}" });
                 await db.SaveChangesAsync(token);
                 await transaction.CommitAsync(token);
+                if (realtimePublisher is not null)
+                    await realtimePublisher.PublishCashApprovalUpdatedAsync(
+                        [ride.CustomerId, driverId],
+                        new PaymentRealtimeEvent(
+                            ride.Id,
+                            "cashShortfallRequested",
+                            DateTime.UtcNow,
+                            CashCollectionApprovalId: approval.Id),
+                        token);
                 return new { rideId = ride.Id, requiresCustomerApproval = true, approvalId = approval.Id, walletDebitAmount = shortfall, message = "أُرسل طلب موافقة للعميل؛ لن تكتمل الرحلة قبل قراره." };
             }
         }
@@ -122,7 +139,7 @@ public sealed class DriverCashPayment(
                 Type = NotificationType.Payment,
                 Title = "أُضيف المبلغ الزائد إلى محفظتك",
                 Body = $"أعاد السائق {difference:0.##} {currency} إلى محفظتك من الرحلة #{ride.Id}.",
-                DataJson = $"{{\"rideId\":{ride.Id},\"walletAdjustment\":{difference.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}"
+                DataJson = $"{{\"action\":\"open_wallet\",\"rideId\":{ride.Id}}}"
             });
         }
         else if (difference < 0)
@@ -142,7 +159,7 @@ public sealed class DriverCashPayment(
                 Type = NotificationType.Payment,
                 Title = "خُصم الفرق من محفظتك",
                 Body = $"خُصم {debit:0.##} {currency} لإكمال دفع الرحلة #{ride.Id}.",
-                DataJson = $"{{\"rideId\":{ride.Id},\"walletAdjustment\":-{debit.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}"
+                DataJson = $"{{\"action\":\"open_wallet\",\"rideId\":{ride.Id}}}"
             });
         }
 
@@ -204,6 +221,16 @@ public sealed class DriverCashPayment(
                 return await ToExistingResultAsync(concurrentPayment, token);
             throw;
         }
+
+        if (realtimePublisher is not null)
+            await realtimePublisher.PublishPaymentUpdatedAsync(
+                [ride.CustomerId, driverId],
+                new PaymentRealtimeEvent(
+                    ride.Id,
+                    "cashPaymentRecorded",
+                    DateTime.UtcNow,
+                    PaymentId: payment.Id),
+                token);
 
         return ToResult(ride.Id, payment.Id, totalDue, model.CashReceived, difference, wallet.Balance, ride.Status, false,
             ride.ServiceFee, ride.DriverCommissionAmount, platformReceivable);

@@ -20,6 +20,7 @@ public sealed class MapRouteQuote(
             model.OriginLongitude,
             model.DestinationLatitude,
             model.DestinationLongitude,
+            model.IncludeSteps,
             cancellationToken);
     }
 

@@ -228,6 +228,48 @@ public sealed class Notification : Entity
     public string Body { get; set; } = string.Empty;
     public string? DataJson { get; set; }
     public bool IsRead { get; set; }
+    public NotificationPushOutbox? PushOutbox { get; set; }
+}
+
+/// <summary>A device registration used only for authenticated push delivery.</summary>
+public sealed class DevicePushInstallation : Entity
+{
+    public int UserId { get; set; }
+    public User User { get; set; } = null!;
+    public required string DeviceId { get; set; }
+    public required string TokenHash { get; set; }
+    public required string FcmToken { get; set; }
+    public required string Platform { get; set; }
+    public DateTime LastRegisteredAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>Durable queue row created atomically with a notification.</summary>
+public sealed class NotificationPushOutbox : Entity
+{
+    public int NotificationId { get; set; }
+    public Notification Notification { get; set; } = null!;
+    public DateTime? RecipientsCapturedAtUtc { get; set; }
+    public DateTime? CompletedAtUtc { get; set; }
+    public Guid? LeaseId { get; set; }
+    public DateTime? LeaseUntilUtc { get; set; }
+    public ICollection<NotificationPushDelivery> Deliveries { get; set; } =
+        new List<NotificationPushDelivery>();
+}
+
+/// <summary>Tracks retry and delivery state independently for each app installation.</summary>
+public sealed class NotificationPushDelivery : Entity
+{
+    public int OutboxId { get; set; }
+    public NotificationPushOutbox Outbox { get; set; } = null!;
+    public int DevicePushInstallationId { get; set; }
+    public DevicePushInstallation Installation { get; set; } = null!;
+    public int AttemptCount { get; set; }
+    public DateTime NextAttemptAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? LeaseId { get; set; }
+    public DateTime? LeaseUntilUtc { get; set; }
+    public DateTime? SentAtUtc { get; set; }
+    public DateTime? AbandonedAtUtc { get; set; }
+    public string? LastErrorCode { get; set; }
 }
 
 public sealed class PaymentTransaction : Entity

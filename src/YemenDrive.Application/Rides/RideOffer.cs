@@ -13,7 +13,8 @@ namespace YemenDrive.Application.Rides;
 public sealed class RideOffer(
     YemenDriveDbContext dbContext,
     DatabaseConfigurationStore configurationStore,
-    ICurrentUserContext currentUser) : OperationsService<RideOfferModel>(configurationStore)
+    ICurrentUserContext currentUser,
+    IRideRealtimePublisher? realtimePublisher = null) : OperationsService<RideOfferModel>(configurationStore)
 {
     public override IReadOnlyCollection<string> Operations { get; } =
         ["add", "create", "update", "delete", "get", "accept"];
@@ -34,8 +35,18 @@ public sealed class RideOffer(
             requestedDriverId != authenticatedUserId &&
             !authenticatedIsAdmin)
             throw new ServiceException("driver_access_denied", "لا يمكن إرسال عرض باسم سائق آخر.");
+
+        // Serialize offer creation with search cancellation/reopening so an
+        // offer cannot slip in after the customer has closed the request.
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken);
         var ride = await dbContext.Rides.SingleOrDefaultAsync(x => x.Id == model.RideId, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
+        var statusBeforeOffer = ride.Status;
+        if (ride.Status == RideStatus.Cancelled)
+            throw new ServiceException(
+                "ride_search_cancelled",
+                "ألغى العميل البحث عن هذه الرحلة؛ لا يمكنك إرسال عرض عليها.");
         if (ride.Status is not (RideStatus.Searching or RideStatus.Negotiating))
             throw new ServiceException("ride_not_open_for_offers", "الرحلة لا تستقبل عروضاً في حالتها الحالية.");
         if (!await dbContext.DriverProfiles.AnyAsync(
@@ -74,6 +85,17 @@ public sealed class RideOffer(
                 ride.Status = RideStatus.Negotiating;
                 ride.UpdatedAtUtc = DateTime.UtcNow;
                 await dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                if (realtimePublisher is not null)
+                {
+                    var updated = await RideRealtimeEventFactory.LoadOffersAsync(
+                        dbContext, [existing.Id], cancellationToken);
+                    await realtimePublisher.PublishOfferUpdatesAsync(
+                        ride.CustomerId, updated, cancellationToken);
+                    if (ride.Status != statusBeforeOffer)
+                        await realtimePublisher.PublishRideStatusUpdatedAsync(
+                            RideRealtimeEventFactory.Status(ride), cancellationToken);
+                }
                 return ToResult(existing);
             }
         }
@@ -96,9 +118,21 @@ public sealed class RideOffer(
             Type = NotificationType.RideOffer,
             Title = "عرض جديد من سائق",
             Body = "وصل عرض جديد لرحلتك. يمكنك مراجعته واختيار السائق المناسب.",
-            DataJson = $"{{\"rideId\":{ride.Id},\"offerId\":{entity.Id}}}"
+            DataJson = $"{{\"action\":\"open_active_ride\",\"rideId\":{ride.Id},\"offerId\":{entity.Id}}}"
         });
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        if (realtimePublisher is not null)
+        {
+            var created = await RideRealtimeEventFactory.LoadOffersAsync(
+                dbContext, [entity.Id], cancellationToken);
+            if (created.Count > 0)
+                await realtimePublisher.PublishOfferReceivedAsync(
+                    ride.CustomerId, created[0], cancellationToken);
+            if (ride.Status != statusBeforeOffer)
+                await realtimePublisher.PublishRideStatusUpdatedAsync(
+                    RideRealtimeEventFactory.Status(ride), cancellationToken);
+        }
         return ToResult(entity);
     }
 
@@ -127,6 +161,13 @@ public sealed class RideOffer(
         entity.Status = requestedStatus;
         entity.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
+        if (realtimePublisher is not null)
+        {
+            var updated = await RideRealtimeEventFactory.LoadOffersAsync(
+                dbContext, [entity.Id], cancellationToken);
+            await realtimePublisher.PublishOfferUpdatesAsync(
+                ride.CustomerId, updated, cancellationToken);
+        }
         return new { offer = ToResult(entity), rideId = ride.Id, rideStatus = ride.Status, agreedPrice = ride.CustomerPrice, driverId = ride.DriverId };
     }
 
@@ -200,6 +241,16 @@ public sealed class RideOffer(
         {
             await transaction.RollbackAsync(cancellationToken);
             throw new ServiceException("offer_acceptance_conflict", "تعذر قبول العرض لأن حالة الرحلة تغيرت. حدّث القائمة ثم حاول مجدداً.");
+        }
+
+        if (realtimePublisher is not null)
+        {
+            var updated = await RideRealtimeEventFactory.LoadOffersAsync(
+                dbContext, ride.Offers.Select(offer => offer.Id), cancellationToken);
+            await realtimePublisher.PublishOfferUpdatesAsync(
+                ride.CustomerId, updated, cancellationToken);
+            await realtimePublisher.PublishRideStatusUpdatedAsync(
+                RideRealtimeEventFactory.Status(ride), cancellationToken);
         }
 
         return new

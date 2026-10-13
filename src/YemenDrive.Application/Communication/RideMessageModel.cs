@@ -7,4 +7,7 @@ public sealed record RideMessageModel(
     int? RecipientId = null,
     string MessageType = "Text",
     string? Content = null,
-    bool? MarkRead = null);
+    bool? MarkRead = null,
+    int? PageSize = null,
+    int? BeforeId = null,
+    DateTime? BeforeCreatedAtUtc = null);

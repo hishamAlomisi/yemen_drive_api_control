@@ -6,7 +6,7 @@ const state = {
   rides: [],
   catalog: [],
   kinds: [],
-  pricing: [], places: [], areas: [], history: [], settlements: [], ledgerAccounts: [], paymentMethods: [], cancellations: [], safety: [], safetyRecordings: []
+  pricing: [], places: [], areas: [], history: [], settlements: [], ledgerAccounts: [], paymentMethods: [], cancellations: [], safety: [], safetyRecordings: [], notifications: [], liveRides: new Map()
 };
 
 const busySafetyActions = new Set();
@@ -21,6 +21,11 @@ let safetyMapLoaded = false;
 const ADMIN_TOKEN_KEY = 'yemendrive_admin_token';
 const ADMIN_REFRESH_TOKEN_KEY = 'yemendrive_admin_refresh_token';
 let adminRefreshInFlight = null;
+let adminHubConnection = null;
+let liveRidesMap = null;
+const liveRideMarkers = new Map();
+const liveRideAnimations = new Map();
+const pendingLiveRideSnapshots = new Set();
 
 const titles = {
   overview: ['نظرة عامة', 'متابعة حالة النظام والعمليات الأخيرة'],
@@ -69,14 +74,6 @@ const formConfigs = {
       ['vehicleModel','موديل المركبة','text',true], ['plateNumber','رقم اللوحة','text',true],
       ['commissionRate','نسبة العمولة','number',false,'0.20','0.01'], ['rating','التقييم','number',false,'5','0.1'],
       ['isAvailable','متاح للعمل','checkbox',false,true]
-    ]
-  },
-  driverLocation: {
-    title: 'تحديث موقع السائق', subtitle: 'حفظ آخر إحداثيات وحالة الاتصال', model: 'DriverLocationModel', operation: 'update', refresh: 'drivers',
-    fields: [
-      ['driverId','معرف مستخدم السائق','text',true], ['latitude','خط العرض','number',true,'15.3694','0.000001'],
-      ['longitude','خط الطول','number',true,'44.1910','0.000001'], ['bearing','الاتجاه','number'],
-      ['speed','السرعة','number'], ['isOnline','متصل الآن','checkbox',false,true]
     ]
   },
   ride: {
@@ -165,6 +162,7 @@ async function seedDevelopmentData() {
 }
 
 function showAdminLogin(message = '') {
+  stopAdminRealtime();
   clearAdminSession();
   $('.admin-login').classList.remove('hidden');
   $('.app-shell').classList.add('hidden');
@@ -283,6 +281,62 @@ function toast(message, error = false) {
   setTimeout(() => item.remove(), 4200);
 }
 
+function updateAdminNotificationBadge() {
+  const count = state.notifications.filter(item => item.isRead !== true).length;
+  const badge = $('#admin-notifications-count');
+  badge.textContent = count > 99 ? '99+' : String(count);
+  badge.classList.toggle('hidden', count === 0);
+}
+
+function renderAdminNotifications() {
+  const list = $('#admin-notifications-list');
+  if (!state.notifications.length) {
+    list.innerHTML = '<div class="empty-state">لا توجد إشعارات لحساب الإدارة هذا.</div>';
+    return;
+  }
+  list.replaceChildren(...state.notifications.map(item => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `admin-notification-item${item.isRead === true ? '' : ' unread'}`;
+    button.innerHTML = `<strong>${escapeHtml(item.title || 'إشعار')}</strong><span>${escapeHtml(item.body || '')}</span><small>${escapeHtml(date(item.createdAtUtc))}</small>`;
+    button.addEventListener('click', () => openAdminNotification(item).catch(error => toast(error.message, true)));
+    return button;
+  }));
+}
+
+async function loadAdminNotifications() {
+  const result = await execute('NotificationModel', 'list', {});
+  state.notifications = Array.isArray(result.data) ? result.data : [];
+  updateAdminNotificationBadge();
+  renderAdminNotifications();
+}
+
+function readNotificationRoutingData(notification) {
+  try {
+    const value = typeof notification.dataJson === 'string' ? JSON.parse(notification.dataJson) : {};
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+async function openAdminNotification(notification) {
+  if (notification.isRead !== true) {
+    await execute('NotificationModel', 'update', { id: notification.id, isRead: true });
+    notification.isRead = true;
+    updateAdminNotificationBadge();
+    renderAdminNotifications();
+  }
+  $('#admin-notifications-modal').close();
+  const routing = readNotificationRoutingData(notification);
+  const action = String(routing.action || '').toLowerCase();
+  if (action === 'open_safety_incident') return setView('safety');
+  if (action === 'open_safety_recording') return setView('safety-recordings');
+  if (action === 'open_cancellation_request') return setView('cancellations');
+  if (action === 'open_driver_account') return setView('settlements');
+  if (routing.rideId) return setView('rides');
+}
+
 function toggleEmpty(bodyId, emptyId, rows) {
   $(bodyId).innerHTML = rows.join('');
   $(emptyId).classList.toggle('hidden', rows.length > 0);
@@ -341,6 +395,261 @@ async function loadRides() {
   state.rides = result.data;
   const rows = result.data.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.customerName || item.customerId)}</span></td><td>${escapeHtml(item.driverName || 'لم يحدد')}</td><td><span class="cell-main">${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')}</span><span class="cell-sub">${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td></tr>`);
   toggleEmpty('#rides-body', '#rides-empty', rows);
+}
+
+const LIVE_RIDE_STATUSES = new Set([3, 4, 5, 8]);
+const isLiveRide = ride => LIVE_RIDE_STATUSES.has(Number(ride?.status));
+
+function setLiveConnectionStatus(label, connected = false) {
+  const status = $('#live-rides-connection');
+  if (!status) return;
+  status.textContent = label;
+  status.classList.toggle('connected', connected);
+}
+
+function ensureLiveRidesMap() {
+  if (liveRidesMap || !window.L || !$('#live-rides-map')) return;
+  liveRidesMap = L.map('live-rides-map', { preferCanvas: true }).setView([15.3694, 44.1910], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(liveRidesMap);
+}
+
+function liveRideCoordinates(ride, prefix) {
+  return validMapPoint(ride?.[`${prefix}Latitude`], ride?.[`${prefix}Longitude`]);
+}
+
+function getLiveRideMarkerEntry(rideId) {
+  if (!liveRideMarkers.has(rideId)) {
+    liveRideMarkers.set(rideId, { driver: null, pickup: null, destination: null });
+  }
+  return liveRideMarkers.get(rideId);
+}
+
+function markerIcon(rideId) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="live-ride-pin" id="live-ride-pin-${Number(rideId)}"><span>🚕</span></div>`,
+    iconSize: [34, 34],
+    iconAnchor: [17, 17]
+  });
+}
+
+function ensureDriverMarker(ride) {
+  ensureLiveRidesMap();
+  if (!liveRidesMap) return null;
+  const rideId = Number(ride.id);
+  const point = liveRideCoordinates(ride, 'driver');
+  if (!point) return null;
+  const entry = getLiveRideMarkerEntry(rideId);
+  if (!entry.driver) {
+    entry.driver = L.marker([point.lat, point.lon], { icon: markerIcon(rideId) })
+      .addTo(liveRidesMap)
+      .bindPopup(`الرحلة #${rideId} — ${escapeHtml(ride.driverName || 'السائق')}`);
+  }
+  return entry.driver;
+}
+
+function renderLiveRide(ride) {
+  ensureLiveRidesMap();
+  if (!liveRidesMap || !ride) return;
+  const rideId = Number(ride.id);
+  const entry = getLiveRideMarkerEntry(rideId);
+  const pickup = liveRideCoordinates(ride, 'pickup');
+  const destination = liveRideCoordinates(ride, 'destination');
+  if (pickup && !entry.pickup) {
+    entry.pickup = L.circleMarker([pickup.lat, pickup.lon], {
+      radius: 6, color: '#fff', weight: 2, fillColor: '#08766a', fillOpacity: 1
+    }).addTo(liveRidesMap).bindTooltip(`انطلاق #${rideId}`);
+  }
+  if (destination && !entry.destination) {
+    entry.destination = L.circleMarker([destination.lat, destination.lon], {
+      radius: 6, color: '#fff', weight: 2, fillColor: '#bd7a18', fillOpacity: 1
+    }).addTo(liveRidesMap).bindTooltip(`وجهة #${rideId}`);
+  }
+  const marker = ensureDriverMarker(ride);
+  if (marker && Number.isFinite(Number(ride.driverBearing))) {
+    const pin = marker.getElement()?.querySelector('.live-ride-pin span');
+    if (pin) pin.style.transform = `rotate(${Number(ride.driverBearing)}deg)`;
+  }
+}
+
+function removeLiveRide(rideId) {
+  const entry = liveRideMarkers.get(Number(rideId));
+  if (entry && liveRidesMap) {
+    for (const marker of Object.values(entry)) if (marker) liveRidesMap.removeLayer(marker);
+  }
+  liveRideMarkers.delete(Number(rideId));
+  const animation = liveRideAnimations.get(Number(rideId));
+  if (animation) cancelAnimationFrame(animation);
+  liveRideAnimations.delete(Number(rideId));
+}
+
+function renderLiveRideList() {
+  const container = $('#live-rides-list');
+  if (!container) return;
+  const rides = [...state.liveRides.values()].filter(isLiveRide);
+  container.innerHTML = rides.length ? rides.map(ride => {
+    const id = Number(ride.id);
+    const pickup = ride.pickupDisplayName || ride.pickupAddress || 'نقطة الانطلاق';
+    const destination = ride.destinationDisplayName || ride.destinationAddress || 'الوجهة';
+    const status = rideStatuses[Number(ride.status)] || 'نشطة';
+    return `<button type="button" class="live-ride-card" data-live-ride="${id}"><strong>رحلة #${id} · ${escapeHtml(status)}</strong><span>${escapeHtml(ride.driverName || 'بانتظار السائق')} · ${escapeHtml(ride.customerName || 'عميل')}</span><span>${escapeHtml(pickup)} ← ${escapeHtml(destination)}</span><span>${ride.driverLocationObservedAtUtc ? `آخر موقع ${date(ride.driverLocationObservedAtUtc)}` : 'بانتظار أول موقع من السائق'}</span></button>`;
+  }).join('') : '<div class="empty-state">لا توجد رحلات نشطة الآن.</div>';
+  container.querySelectorAll('[data-live-ride]').forEach(button => button.addEventListener('click', () => {
+    const ride = state.liveRides.get(Number(button.dataset.liveRide));
+    if (!ride || !liveRidesMap) return;
+    const point = liveRideCoordinates(ride, 'driver') || liveRideCoordinates(ride, 'pickup');
+    if (point) liveRidesMap.setView([point.lat, point.lon], 15, { animate: true });
+    container.querySelectorAll('.live-ride-card').forEach(card => card.classList.toggle('selected', card === button));
+  }));
+}
+
+function renderAllLiveRides() {
+  for (const rideId of [...liveRideMarkers.keys()]) {
+    if (!state.liveRides.has(rideId)) removeLiveRide(rideId);
+  }
+  for (const ride of state.liveRides.values()) renderLiveRide(ride);
+  renderLiveRideList();
+  if (liveRidesMap) setTimeout(() => liveRidesMap.invalidateSize(), 0);
+}
+
+async function loadActiveRideSnapshot() {
+  const result = await execute('RideModel', 'list', { activeOnly: true });
+  const rides = (result.data || []).filter(isLiveRide);
+  state.liveRides = new Map(rides.map(ride => [Number(ride.id), ride]));
+  renderAllLiveRides();
+}
+
+function animateLiveDriverLocation(payload) {
+  const rideId = Number(payload?.rideId);
+  const latitude = Number(payload?.latitude);
+  const longitude = Number(payload?.longitude);
+  if (!Number.isInteger(rideId) || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+  const ride = state.liveRides.get(rideId);
+  if (!ride) {
+    if (pendingLiveRideSnapshots.has(rideId)) return;
+    pendingLiveRideSnapshots.add(rideId);
+    loadActiveRideSnapshot()
+      .then(() => {
+        if (state.liveRides.has(rideId)) animateLiveDriverLocation(payload);
+      })
+      .catch(error => toast(error.message, true))
+      .finally(() => pendingLiveRideSnapshots.delete(rideId));
+    return;
+  }
+  const updated = {
+    ...ride,
+    driverLatitude: latitude,
+    driverLongitude: longitude,
+    driverBearing: payload.bearing,
+    driverSpeed: payload.speed,
+    driverLocationObservedAtUtc: payload.observedAtUtc
+  };
+  state.liveRides.set(rideId, updated);
+  const marker = ensureDriverMarker(updated);
+  if (!marker) return;
+  const current = marker.getLatLng();
+  const oldAnimation = liveRideAnimations.get(rideId);
+  if (oldAnimation) cancelAnimationFrame(oldAnimation);
+  const startedAt = performance.now();
+  const duration = 1700;
+  const step = now => {
+    const progress = Math.min(1, (now - startedAt) / duration);
+    marker.setLatLng([
+      current.lat + (latitude - current.lat) * progress,
+      current.lng + (longitude - current.lng) * progress
+    ]);
+    const pin = marker.getElement()?.querySelector('.live-ride-pin span');
+    if (pin && Number.isFinite(Number(payload.bearing))) pin.style.transform = `rotate(${Number(payload.bearing)}deg)`;
+    if (progress < 1) liveRideAnimations.set(rideId, requestAnimationFrame(step));
+    else liveRideAnimations.delete(rideId);
+  };
+  liveRideAnimations.set(rideId, requestAnimationFrame(step));
+  renderLiveRideList();
+}
+
+function applyRideStatusEvent(payload) {
+  const rideId = Number(payload?.rideId);
+  const status = Number(payload?.rideStatus);
+  if (!Number.isInteger(rideId) || !Number.isFinite(status)) return;
+  const ride = state.liveRides.get(rideId);
+  if (!LIVE_RIDE_STATUSES.has(status)) {
+    state.liveRides.delete(rideId);
+    removeLiveRide(rideId);
+    renderLiveRideList();
+    return;
+  }
+  if (!ride) {
+    loadActiveRideSnapshot().catch(error => toast(error.message, true));
+    return;
+  }
+  const updated = { ...ride, status, driverId: payload.driverId, customerPaymentEnabled: payload.customerPaymentEnabled };
+  state.liveRides.set(rideId, updated);
+  renderLiveRide(updated);
+  renderLiveRideList();
+}
+
+async function startAdminRealtime() {
+  if (!sessionStorage.getItem(ADMIN_TOKEN_KEY) || !window.signalR) return;
+  if (adminHubConnection?.state === signalR.HubConnectionState.Connected) return;
+  const connection = new signalR.HubConnectionBuilder()
+    .withUrl('/hubs/tracking', {
+      accessTokenFactory: () => sessionStorage.getItem(ADMIN_TOKEN_KEY) || ''
+    })
+    .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
+    .configureLogging(signalR.LogLevel.Warning)
+    .build();
+  adminHubConnection = connection;
+  connection.on('driverLocationUpdated', animateLiveDriverLocation);
+  connection.on('rideStatusUpdated', applyRideStatusEvent);
+  connection.on('notificationCreated', () => {
+    loadAdminNotifications()
+      .then(() => toast('ورد إشعار جديد للإدارة.'))
+      .catch(error => toast(error.message, true));
+  });
+  const refreshSafetyIncidents = () => {
+    if (state.view === 'safety') loadSafety().catch(error => toast(error.message, true));
+  };
+  connection.on('safetyIncidentCreated', refreshSafetyIncidents);
+  connection.on('safetyIncidentUpdated', refreshSafetyIncidents);
+  connection.on('safetyRecordingAvailable', () => {
+    if (state.view === 'safety-recordings') {
+      loadSafetyRecordings().catch(error => toast(error.message, true));
+    }
+  });
+  connection.on('sessionRevoked', () => showAdminLogin('انتهت جلسة الإدارة. سجل الدخول من جديد.'));
+  connection.onreconnecting(() => setLiveConnectionStatus('إعادة الاتصال…'));
+  connection.onreconnected(async () => {
+    try {
+      await connection.invoke('JoinOperations');
+      setLiveConnectionStatus('متصل مباشرًا', true);
+      await loadActiveRideSnapshot();
+    } catch (error) {
+      setLiveConnectionStatus('تعذر استعادة المتابعة');
+      toast(error.message, true);
+    }
+  });
+  connection.onclose(() => setLiveConnectionStatus('غير متصل'));
+  try {
+    setLiveConnectionStatus('جارٍ الاتصال…');
+    await connection.start();
+    await connection.invoke('JoinOperations');
+    setLiveConnectionStatus('متصل مباشرًا', true);
+    await loadActiveRideSnapshot();
+  } catch (error) {
+    setLiveConnectionStatus('تعذر الاتصال المباشر');
+    if (adminHubConnection === connection) adminHubConnection = null;
+    setTimeout(() => startAdminRealtime().catch(() => {}), 5000);
+  }
+}
+
+function stopAdminRealtime() {
+  const connection = adminHubConnection;
+  adminHubConnection = null;
+  if (connection) connection.stop().catch(() => {});
+  setLiveConnectionStatus('غير متصل');
 }
 
 async function loadCatalog() {
@@ -422,7 +731,12 @@ async function loadSafety() {
   state.safety = result.data || [];
   const rows = state.safety.map(item => {
     const status = Number(item.status);
-    const location = item.latitude == null ? 'لا يوجد موقع حي' : `${number(item.latitude)}, ${number(item.longitude)}`;
+    const locationSource = item.locationSource === 'reporterGps'
+      ? 'GPS مقدم البلاغ'
+      : item.locationSource === 'pickupFallback' ? 'نقطة الالتقاط كبديل' : 'مصدر الموقع غير متاح';
+    const location = item.latitude == null
+      ? 'لا يوجد موقع مسجل'
+      : `${number(item.latitude)}, ${number(item.longitude)} · ${locationSource}${item.locationObservedAtUtc ? ` · رُصد ${date(item.locationObservedAtUtc)}` : ''}`;
     const actions = status === 2 ? '—' : `<div class="action-row">${status === 0 ? `<button class="button small" ${busySafetyActions.has(Number(item.id)) ? 'disabled' : ''} onclick="decideSafety(${Number(item.id)}, false)">استلام</button>` : ''}<button class="button small primary" ${busySafetyActions.has(Number(item.id)) ? 'disabled' : ''} onclick="decideSafety(${Number(item.id)}, true)">إغلاق البلاغ</button></div>`;
     const driver = item.driverId ? `<span class="cell-main">${escapeHtml(item.driverName || 'السائق')}</span><span class="cell-sub">${escapeHtml(item.driverPhone || 'لا يوجد رقم مسجل')}</span>` : 'لم يعيّن سائق';
     const mapAction = item.rideId ? `<button class="button small" onclick="openSafetyMap(${Number(item.id)})">عرض الرحلة على الخريطة</button>` : '—';
@@ -649,7 +963,11 @@ async function loadView(view, quiet = false) {
     if (view === 'overview') await loadDashboard();
     if (view === 'users') await loadUsers($('#user-search').value.trim());
     if (view === 'drivers') await loadDrivers();
-    if (view === 'rides') await loadRides();
+    if (view === 'rides') {
+      await loadRides();
+      await loadActiveRideSnapshot();
+      if (liveRidesMap) setTimeout(() => liveRidesMap.invalidateSize(), 0);
+    }
     if (view === 'cancellations') await loadCancellations();
     if (view === 'safety') await loadSafety();
     if (view === 'safety-recordings') await loadSafetyRecordings();
@@ -825,6 +1143,14 @@ function bindEvents() {
   $$('[data-form]').forEach(button => button.addEventListener('click', () => openForm(button.dataset.form)));
   $$('[data-close]').forEach(button => button.addEventListener('click', () => document.getElementById(button.dataset.close).close()));
   $('#refresh-button').addEventListener('click', async () => { await loadDatabaseStatus(); await loadView(state.view); });
+  $('#admin-notifications-button').addEventListener('click', async () => {
+    try {
+      await loadAdminNotifications();
+      $('#admin-notifications-modal').showModal();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
   $('#database-button').addEventListener('click', () => $('#database-modal').showModal());
   $('#menu-button').addEventListener('click', () => { $('#sidebar').classList.add('open'); $('#sidebar-backdrop').classList.add('open'); });
   $('#sidebar-backdrop').addEventListener('click', closeSidebar);
@@ -867,6 +1193,8 @@ function bindEvents() {
       result.textContent = session.message || 'تم تسجيل الدخول.';
       showAdminApp();
       await loadDatabaseStatus();
+      await startAdminRealtime();
+      await loadAdminNotifications();
       await loadView('overview', true);
     } catch (error) {
       result.className = 'inline-result error';
@@ -909,6 +1237,8 @@ async function start() {
 
   showAdminApp();
   try {
+    await startAdminRealtime();
+    await loadAdminNotifications();
     await loadView('overview', true);
   } catch (error) {
     if (sessionStorage.getItem(ADMIN_TOKEN_KEY)) {

@@ -18,6 +18,7 @@ public sealed class GoogleMapsGateway(
         double originLongitude,
         double destinationLatitude,
         double destinationLongitude,
+        bool includeSteps,
         CancellationToken token)
     {
         var key = RequireKey(options.RoutesApiKey, "routes_not_configured",
@@ -32,12 +33,19 @@ public sealed class GoogleMapsGateway(
                 travelMode = "DRIVE",
                 routingPreference = "TRAFFIC_AWARE",
                 polylineQuality = "HIGH_QUALITY",
-                polylineEncoding = "ENCODED_POLYLINE"
+                polylineEncoding = "ENCODED_POLYLINE",
+                languageCode = "ar"
             }, options: JsonOptions)
         };
         request.Headers.Add("X-Goog-Api-Key", key);
-        request.Headers.Add("X-Goog-FieldMask",
-            "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline");
+        var fieldMask = "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline";
+        if (includeSteps)
+        {
+            fieldMask += ",routes.legs.steps.distanceMeters,routes.legs.steps.staticDuration," +
+                         "routes.legs.steps.navigationInstruction.instructions," +
+                         "routes.legs.steps.navigationInstruction.maneuver";
+        }
+        request.Headers.Add("X-Goog-FieldMask", fieldMask);
         using var response = await httpClient.SendAsync(request, token);
         if (!response.IsSuccessStatusCode)
         {
@@ -65,11 +73,45 @@ public sealed class GoogleMapsGateway(
         var duration = route.TryGetProperty("duration", out var durationValue)
             ? ParseDurationSeconds(durationValue.GetString())
             : 0;
+        var steps = includeSteps ? ParseSteps(route) : Array.Empty<MapRouteStep>();
         logger.LogInformation(
             "Google Routes returned a driving route with {DistanceMeters} meters and {DurationSeconds} seconds.",
             distance,
             duration);
-        return new MapRouteQuoteResult(distance, duration, encoded);
+        return new MapRouteQuoteResult(distance, duration, encoded, steps);
+    }
+
+    private static IReadOnlyList<MapRouteStep> ParseSteps(JsonElement route)
+    {
+        if (!route.TryGetProperty("legs", out var legs) || legs.ValueKind != JsonValueKind.Array)
+            return Array.Empty<MapRouteStep>();
+
+        var result = new List<MapRouteStep>();
+        foreach (var leg in legs.EnumerateArray())
+        {
+            if (!leg.TryGetProperty("steps", out var steps) || steps.ValueKind != JsonValueKind.Array)
+                continue;
+            foreach (var step in steps.EnumerateArray())
+            {
+                var instruction = step.TryGetProperty("navigationInstruction", out var navigation) &&
+                                  navigation.TryGetProperty("instructions", out var instructionValue)
+                    ? instructionValue.GetString()?.Trim()
+                    : null;
+                if (string.IsNullOrWhiteSpace(instruction)) continue;
+                var maneuver = navigation.TryGetProperty("maneuver", out var maneuverValue)
+                    ? maneuverValue.GetString() ?? string.Empty
+                    : string.Empty;
+                var distance = step.TryGetProperty("distanceMeters", out var distanceValue) &&
+                               distanceValue.TryGetInt32(out var parsedDistance)
+                    ? parsedDistance
+                    : 0;
+                var duration = step.TryGetProperty("staticDuration", out var durationValue)
+                    ? ParseDurationSeconds(durationValue.GetString())
+                    : 0;
+                result.Add(new MapRouteStep(instruction, maneuver, distance, duration));
+            }
+        }
+        return result;
     }
 
     public async Task<IReadOnlyList<MapPlace>> SearchAsync(string query, CancellationToken token)

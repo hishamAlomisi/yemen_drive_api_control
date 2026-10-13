@@ -18,7 +18,8 @@ public sealed class Ride(
     YemenDriveDbContext dbContext,
     DatabaseConfigurationStore configurationStore,
     ICurrentUserContext currentUser,
-    RideAccountingPostingService accounting) : OperationsService<RideModel>(configurationStore)
+    RideAccountingPostingService accounting,
+    IRideRealtimePublisher? realtimePublisher = null) : OperationsService<RideModel>(configurationStore)
 {
     public override IReadOnlyCollection<string> Operations { get; } = ["add", "create", "update", "delete", "get", "cancel"];
     protected override async Task<object?> AddAsync(RideModel model, CancellationToken cancellationToken)
@@ -44,7 +45,16 @@ public sealed class Ride(
             var existing = await dbContext.Rides.AsNoTracking().Include(x => x.ServiceKind)
                 .Include(x => x.ServiceCatalogItem)
                 .SingleOrDefaultAsync(x => x.CustomerId == customerId && x.IdempotencyKey == idempotencyKey, cancellationToken);
-            if (existing is not null) return ToResult(existing);
+            if (existing is not null)
+            {
+                var existingRecipientCount = await dbContext.Notifications.AsNoTracking()
+                    .Where(x => x.Type == NotificationType.RideOffer &&
+                                x.DataJson == RideSearchNotificationDispatcher.RideData(existing.Id))
+                    .Select(x => x.UserId)
+                    .Distinct()
+                    .CountAsync(cancellationToken);
+                return ToResult(existing, existingRecipientCount);
+            }
         }
 
         var selectedService = await dbContext.ServiceCatalogItems.AsNoTracking()
@@ -71,43 +81,20 @@ public sealed class Ride(
         dbContext.Rides.Add(entity);
         await StoreRecentDestinationAsync(entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
-        var initialRadiusMeters = RideDriverProximity.RadiusMeters(entity, DateTime.UtcNow);
-        var locationFreshAfter = DateTime.UtcNow.AddMinutes(-5);
-        var driverIds = (await dbContext.DriverProfiles.AsNoTracking()
-            .Where(x => x.User.IsActive && x.IsAvailable &&
-                        x.ServiceKindId == entity.ServiceKindId &&
-                        x.ServiceCatalogItemId == entity.ServiceCatalogItemId &&
-                        !dbContext.Rides.Any(activeRide =>
-                            activeRide.DriverId == x.UserId &&
-                            (activeRide.Status == RideStatus.DriverAssigned ||
-                             activeRide.Status == RideStatus.DriverEnRoute ||
-                             activeRide.Status == RideStatus.InProgress)))
-            .Join(dbContext.DriverLiveLocations.AsNoTracking().Where(x => x.IsOnline && x.ObservedAtUtc >= locationFreshAfter),
-                profile => profile.UserId, location => location.DriverId,
-                (profile, location) => new { profile.UserId, location.Latitude, location.Longitude })
-            .Take(200)
-            .ToListAsync(cancellationToken))
-            .Where(x => RideDriverProximity.HaversineMeters(entity.PickupLatitude, entity.PickupLongitude, x.Latitude, x.Longitude) <= initialRadiusMeters)
-            .Select(x => x.UserId)
-            .ToList();
-        foreach (var driverId in driverIds)
-        {
-            dbContext.Notifications.Add(new Notification
-            {
-                UserId = driverId,
-                Type = NotificationType.RideOffer,
-                Title = "طلب رحلة جديد",
-                Body = $"يوجد طلب جديد {RideLocationText.RouteSummary(entity.PickupLabel, entity.PickupAddress, entity.DestinationLabel, entity.DestinationAddress)}.",
-                DataJson = $"{{\"rideId\":{entity.Id}}}"
-            });
-        }
+        var recipients = await RideSearchNotificationDispatcher.NotifyAvailableDriversAsync(
+            dbContext, entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
-        return ToResult(entity);
+        if (realtimePublisher is not null)
+            await realtimePublisher.PublishRideAvailableAsync(recipients, cancellationToken);
+        return ToResult(entity, recipients.Count);
     }
 
     protected override async Task<object?> UpdateAsync(RideModel model, CancellationToken cancellationToken)
     {
         var entity = await FindAsync(model.Id, cancellationToken);
+        var previousStatus = entity.Status;
+        var previousDriverId = entity.DriverId;
+        var statusChanged = false;
         if (model.DriverId is not null)
         {
             var hasAcceptedOffer = await dbContext.RideOffers.AnyAsync(
@@ -126,6 +113,7 @@ public sealed class Ride(
             if (model.Status.Value == RideStatus.Completed &&
                 !await dbContext.PaymentTransactions.AnyAsync(x => x.RideId == entity.Id && x.Status == PaymentStatus.Paid, cancellationToken))
                 throw new ServiceException("payment_required", "لا يمكن إنهاء الرحلة قبل تسجيل تحصيل المبلغ.");
+            statusChanged = entity.Status != model.Status.Value;
             entity.Status = model.Status.Value;
         }
         if (model.CustomerPaymentEnabled is not null)
@@ -146,7 +134,14 @@ public sealed class Ride(
         if (entity.Status == RideStatus.InProgress && entity.StartedAtUtc is null) entity.StartedAtUtc = DateTime.UtcNow;
         if (entity.Status == RideStatus.Completed && entity.CompletedAtUtc is null) entity.CompletedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
-        await NotifyOtherParticipantAsync(entity, "تحديث حالة الرحلة", StatusMessage(entity.Status), cancellationToken);
+        if (statusChanged)
+            await NotifyRideStatusRecipientsAsync(entity, "تحديث حالة الرحلة", StatusMessage(entity.Status), cancellationToken);
+        if (realtimePublisher is not null &&
+            (entity.Status != previousStatus || entity.DriverId != previousDriverId))
+        {
+            await realtimePublisher.PublishRideStatusUpdatedAsync(
+                RideRealtimeEventFactory.Status(entity), cancellationToken);
+        }
         return ToResult(entity);
     }
 
@@ -158,12 +153,13 @@ public sealed class Ride(
         return new { entity.Id };
     }
 
-    protected override async Task<object?> CancelAsync(RideModel model, CancellationToken cancellationToken)
+    protected override Task<object?> CancelAsync(RideModel model, CancellationToken cancellationToken)
     {
         // Cancellation now has its own auditable workflow.  Keeping the old
         // shortcut disabled prevents a mobile client from bypassing the
         // mandatory reason, driver decision, and administrative review.
-        throw new ServiceException("cancellation_request_required", "استخدم طلب الإلغاء الرسمي مع سبب واضح؛ لا يمكن إلغاء الرحلة مباشرة.");
+        return Task.FromException<object?>(
+            new ServiceException("cancellation_request_required", "استخدم طلب الإلغاء الرسمي مع سبب واضح؛ لا يمكن إلغاء الرحلة مباشرة."));
     }
 
     private async Task<object> RefundPaidRideAndCancelAsync(
@@ -224,6 +220,19 @@ public sealed class Ride(
         ride.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
+        if (realtimePublisher is not null)
+        {
+            await realtimePublisher.PublishRideStatusUpdatedAsync(
+                RideRealtimeEventFactory.Status(ride), token);
+            var recipients = ride.DriverId is int driverId
+                ? new[] { ride.CustomerId, driverId }
+                : new[] { ride.CustomerId };
+            await realtimePublisher.PublishPaymentUpdatedAsync(
+                recipients,
+                new PaymentRealtimeEvent(
+                    ride.Id, "paymentRefunded", DateTime.UtcNow, PaymentId: payment.Id),
+                token);
+        }
         return new { ride.Id, ride.Status, refundAmount, cancellationFee = ride.CancellationFee, refunded = true };
     }
 
@@ -314,7 +323,7 @@ public sealed class Ride(
                 Body = returnedToWallet
                     ? $"أُضيف {refundAmount:0.##} {payment.Currency} إلى محفظتك بعد خصم رسم الإلغاء."
                     : "تم تسجيل أنك استعدت مبلغ الرحلة من السائق مباشرة بعد خصم رسم الإلغاء.",
-                DataJson = $"{{\"rideId\":{ride.Id},\"refundMethod\":\"{refundMethod}\",\"refundAmount\":{refundAmount.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}"
+                DataJson = $"{{\"action\":\"open_wallet\",\"rideId\":{ride.Id},\"paymentId\":{payment.Id}}}"
             },
             new Notification
             {
@@ -324,12 +333,22 @@ public sealed class Ride(
                 Body = returnedToWallet
                     ? $"أُعيد {refundAmount:0.##} {payment.Currency} لمحفظة العميل وسُجل المبلغ كمديونية مستقلة عليك."
                     : "أكد العميل استرداد مبلغ الرحلة منك مباشرة بعد خصم رسم الإلغاء.",
-                DataJson = $"{{\"rideId\":{ride.Id},\"refundMethod\":\"{refundMethod}\",\"refundAmount\":{refundAmount.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}"
+                DataJson = $"{{\"action\":\"open_driver_account\",\"rideId\":{ride.Id},\"paymentId\":{payment.Id}}}"
             });
         ride.Status = RideStatus.Cancelled;
         ride.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
+        if (realtimePublisher is not null)
+        {
+            await realtimePublisher.PublishRideStatusUpdatedAsync(
+                RideRealtimeEventFactory.Status(ride), token);
+            await realtimePublisher.PublishPaymentUpdatedAsync(
+                [ride.CustomerId, ride.DriverId.Value],
+                new PaymentRealtimeEvent(
+                    ride.Id, "paymentRefunded", DateTime.UtcNow, PaymentId: payment.Id),
+                token);
+        }
         return new
         {
             ride.Id,
@@ -427,7 +446,7 @@ public sealed class Ride(
                 x => x.Id == userId && x.Role == UserRole.Admin && x.IsActive,
             cancellationToken);
 
-    private async Task NotifyOtherParticipantAsync(
+    private async Task NotifyRideStatusRecipientsAsync(
         RideEntity ride,
         string title,
         string body,
@@ -435,16 +454,20 @@ public sealed class Ride(
     {
         if (ride.DriverId is null || currentUser.UserId is not int actorId)
             return;
-        var recipientId = actorId == ride.CustomerId ? ride.DriverId.Value : ride.CustomerId;
-        if (recipientId == actorId) return;
-        dbContext.Notifications.Add(new Notification
+        int[] recipientIds = actorId switch
+        {
+            var id when id == ride.CustomerId => [ride.DriverId.Value],
+            var id when id == ride.DriverId.Value => [ride.CustomerId],
+            _ => [ride.CustomerId, ride.DriverId.Value]
+        };
+        dbContext.Notifications.AddRange(recipientIds.Distinct().Select(recipientId => new Notification
         {
             UserId = recipientId,
             Type = NotificationType.RideStatus,
             Title = title,
             Body = body,
-            DataJson = $"{{\"rideId\":{ride.Id},\"status\":\"{ride.Status}\"}}"
-        });
+            DataJson = $"{{\"action\":\"open_active_ride\",\"rideId\":{ride.Id},\"status\":\"{ride.Status}\"}}"
+        }));
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -457,7 +480,7 @@ public sealed class Ride(
         _ => "تم تحديث حالة الرحلة."
     };
 
-    private static object ToResult(RideEntity x) => new
+    private static object ToResult(RideEntity x, int? notifiedDriverCount = null) => new
     {
         x.Id, x.CustomerId, x.DriverId, x.Status, x.ServiceKindId, x.ServiceCatalogItemId,
         serviceKindCode = x.ServiceKind?.Code, serviceKindNameAr = x.ServiceKind?.NameAr,
@@ -469,7 +492,8 @@ public sealed class Ride(
         x.ServerPrice, x.CustomerPrice, x.ServiceFee, x.CancellationFee, x.TotalAmount,
         x.DriverCommissionAmount, x.DriverShare, x.PlatformShare,
         x.CustomerPaymentEnabled,
-        x.StartedAtUtc, x.CompletedAtUtc, x.CreatedAtUtc, x.UpdatedAtUtc
+        x.StartedAtUtc, x.CompletedAtUtc, x.CreatedAtUtc, x.UpdatedAtUtc,
+        notifiedDriverCount
     };
 
     private async Task StoreRecentDestinationAsync(RideEntity ride, CancellationToken token)

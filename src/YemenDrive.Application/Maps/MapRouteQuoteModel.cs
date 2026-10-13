@@ -4,4 +4,5 @@ public sealed record MapRouteQuoteModel(
     double OriginLatitude,
     double OriginLongitude,
     double DestinationLatitude,
-    double DestinationLongitude);
+    double DestinationLongitude,
+    bool IncludeSteps = false);

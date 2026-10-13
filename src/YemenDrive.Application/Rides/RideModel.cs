@@ -20,4 +20,5 @@ public sealed record RideModel(
     decimal? CustomerPrice = null,
     bool? CustomerPaymentEnabled = null,
     string? IdempotencyKey = null,
-    CashCancellationRefundMethod? CashCancellationRefundMethod = null);
+    CashCancellationRefundMethod? CashCancellationRefundMethod = null,
+    bool ActiveOnly = false);
