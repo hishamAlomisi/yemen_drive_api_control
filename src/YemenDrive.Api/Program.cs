@@ -20,8 +20,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.None);
+<<<<<<< HEAD
 // SignalR transports may carry opaque session tokens in the access_token query parameter.
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
+=======
+>>>>>>> origin/main
 builder.WebHost.UseUrls(builder.Configuration["ApiUrl"] ?? "http://localhost:5080");
 
 var settingsPath = Path.Combine(builder.Environment.ContentRootPath, "data", "database.settings.json");

@@ -81,12 +81,19 @@ public sealed class Ride(
         dbContext.Rides.Add(entity);
         await StoreRecentDestinationAsync(entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
+<<<<<<< HEAD
         var recipients = await RideSearchNotificationDispatcher.NotifyAvailableDriversAsync(
             dbContext, entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
         if (realtimePublisher is not null)
             await realtimePublisher.PublishRideAvailableAsync(recipients, cancellationToken);
         return ToResult(entity, recipients.Count);
+=======
+        var notifiedDriverCount = await RideSearchNotificationDispatcher.NotifyAvailableDriversAsync(
+            dbContext, entity, cancellationToken);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return ToResult(entity, notifiedDriverCount);
+>>>>>>> origin/main
     }
 
     protected override async Task<object?> UpdateAsync(RideModel model, CancellationToken cancellationToken)

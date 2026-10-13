@@ -2,22 +2,35 @@ using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Entities;
 using RideEntity = YemenDrive.Database.Entities.Ride;
+<<<<<<< HEAD
 using RideOfferEntity = YemenDrive.Database.Entities.RideOffer;
+=======
+>>>>>>> origin/main
 
 namespace YemenDrive.Application.Rides;
 
 internal static class RideSearchNotificationDispatcher
 {
+<<<<<<< HEAD
     public static string RideData(int rideId) => $"{{\"action\":\"open_ride_offer\",\"rideId\":{rideId}}}";
 
     public static async Task<IReadOnlyCollection<RideAvailableRecipient>> NotifyAvailableDriversAsync(
+=======
+    public static string RideData(int rideId) => $"{{\"rideId\":{rideId}}}";
+
+    public static async Task<int> NotifyAvailableDriversAsync(
+>>>>>>> origin/main
         YemenDriveDbContext db,
         RideEntity ride,
         CancellationToken token)
     {
         var radiusMeters = RideDriverProximity.RadiusMeters(ride, DateTime.UtcNow);
         var locationFreshAfter = DateTime.UtcNow.AddMinutes(-5);
+<<<<<<< HEAD
         var candidates = (await db.DriverProfiles.AsNoTracking()
+=======
+        var driverIds = (await db.DriverProfiles.AsNoTracking()
+>>>>>>> origin/main
             .Where(profile => profile.User.IsActive && profile.IsAvailable &&
                               profile.ServiceKindId == ride.ServiceKindId &&
                               profile.ServiceCatalogItemId == ride.ServiceCatalogItemId &&
@@ -25,8 +38,12 @@ internal static class RideSearchNotificationDispatcher
                                   activeRide.DriverId == profile.UserId &&
                                   (activeRide.Status == RideStatus.DriverAssigned ||
                                    activeRide.Status == RideStatus.DriverEnRoute ||
+<<<<<<< HEAD
                                    activeRide.Status == RideStatus.InProgress ||
                                    activeRide.Status == RideStatus.CancellationPending)))
+=======
+                                   activeRide.Status == RideStatus.InProgress)))
+>>>>>>> origin/main
             .Join(db.DriverLiveLocations.AsNoTracking()
                     .Where(location => location.IsOnline &&
                                        location.ObservedAtUtc >= locationFreshAfter),
@@ -36,6 +53,7 @@ internal static class RideSearchNotificationDispatcher
                 {
                     profile.UserId,
                     location.Latitude,
+<<<<<<< HEAD
                     location.Longitude,
                     location.ObservedAtUtc
                 })
@@ -76,22 +94,46 @@ internal static class RideSearchNotificationDispatcher
                 .GroupBy(offer => offer.DriverId)
                 .ToDictionary(group => group.Key, group => group.First());
 
+=======
+                    location.Longitude
+                })
+            .Take(200)
+            .ToListAsync(token))
+            .Where(candidate => RideDriverProximity.HaversineMeters(
+                ride.PickupLatitude,
+                ride.PickupLongitude,
+                candidate.Latitude,
+                candidate.Longitude) <= radiusMeters)
+            .Select(candidate => candidate.UserId)
+            .Distinct()
+            .ToList();
+
+>>>>>>> origin/main
         var routeSummary = RideLocationText.RouteSummary(
             ride.PickupLabel,
             ride.PickupAddress,
             ride.DestinationLabel,
             ride.DestinationAddress);
+<<<<<<< HEAD
         var recipients = new List<RideAvailableRecipient>(candidates.Count);
         foreach (var candidate in candidates)
         {
             db.Notifications.Add(new Notification
             {
                 UserId = candidate.UserId,
+=======
+        foreach (var driverId in driverIds)
+        {
+            db.Notifications.Add(new Notification
+            {
+                UserId = driverId,
+>>>>>>> origin/main
                 Type = NotificationType.RideOffer,
                 Title = "طلب رحلة جديد",
                 Body = $"يوجد طلب جديد {routeSummary}.",
                 DataJson = RideData(ride.Id)
             });
+<<<<<<< HEAD
 
             latestOffers.TryGetValue(candidate.UserId, out var latestOffer);
             var pickupName = RideLocationText.DisplayName(
@@ -145,5 +187,10 @@ internal static class RideSearchNotificationDispatcher
         }
 
         return recipients;
+=======
+        }
+
+        return driverIds.Count;
+>>>>>>> origin/main
     }
 }
