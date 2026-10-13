@@ -14,12 +14,8 @@ public sealed record RideSearchActionModel(int? RideId = null, bool Exhausted = 
 public sealed class RideSearchAction(
     YemenDriveDbContext db,
     DatabaseConfigurationStore config,
-<<<<<<< HEAD
     ICurrentUserContext currentUser,
     IRideRealtimePublisher? realtimePublisher = null) : OperationsService<RideSearchActionModel>(config)
-=======
-    ICurrentUserContext currentUser) : OperationsService<RideSearchActionModel>(config)
->>>>>>> origin/main
 {
     public override IReadOnlyCollection<string> Operations { get; } = ["update", "cancel"];
 
@@ -38,16 +34,10 @@ public sealed class RideSearchAction(
                 "لا يمكن إعادة البحث لأن الرحلة أُسندت إلى سائق أو أُغلقت نهائياً.");
 
         var now = DateTime.UtcNow;
-<<<<<<< HEAD
         var pendingOffers = await db.RideOffers
             .Where(x => x.RideId == ride.Id && x.Status == OfferStatus.Pending)
             .ToListAsync(token);
         foreach (var offer in pendingOffers)
-=======
-        foreach (var offer in await db.RideOffers
-                     .Where(x => x.RideId == ride.Id && x.Status == OfferStatus.Pending)
-                     .ToListAsync(token))
->>>>>>> origin/main
         {
             offer.Status = OfferStatus.Expired;
             offer.UpdatedAtUtc = now;
@@ -57,7 +47,6 @@ public sealed class RideSearchAction(
         // currently online, available, nearby, and not assigned to a trip.
         ride.Status = RideStatus.Searching;
         ride.UpdatedAtUtc = now;
-<<<<<<< HEAD
         var recipients = await RideSearchNotificationDispatcher
             .NotifyAvailableDriversAsync(db, ride, token);
         await db.SaveChangesAsync(token);
@@ -73,13 +62,6 @@ public sealed class RideSearchAction(
                 RideRealtimeEventFactory.Status(ride), token);
         }
         return new { rideId = ride.Id, ride.Status, notifiedDriverCount = recipients.Count };
-=======
-        var notifiedDriverCount = await RideSearchNotificationDispatcher
-            .NotifyAvailableDriversAsync(db, ride, token);
-        await db.SaveChangesAsync(token);
-        await transaction.CommitAsync(token);
-        return new { rideId = ride.Id, ride.Status, notifiedDriverCount };
->>>>>>> origin/main
     }
 
     protected override async Task<object?> CancelAsync(
@@ -135,16 +117,11 @@ public sealed class RideSearchAction(
             Type = NotificationType.RideStatus,
             Title = noticeTitle,
             Body = noticeBody,
-<<<<<<< HEAD
             DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{ride.Id},\"status\":\"Cancelled\"}}"
-=======
-            DataJson = $"{{\"rideId\":{ride.Id},\"status\":\"Cancelled\"}}"
->>>>>>> origin/main
         }));
 
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
-<<<<<<< HEAD
         if (realtimePublisher is not null)
         {
             await realtimePublisher.PublishRideUnavailableAsync(
@@ -156,8 +133,6 @@ public sealed class RideSearchAction(
             await realtimePublisher.PublishRideStatusUpdatedAsync(
                 RideRealtimeEventFactory.Status(ride), token);
         }
-=======
->>>>>>> origin/main
         return new { rideId = ride.Id, ride.Status };
     }
 

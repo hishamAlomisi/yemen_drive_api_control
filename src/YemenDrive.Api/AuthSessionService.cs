@@ -70,6 +70,7 @@ public sealed class AuthSessionService
             .Select(item => new AuthenticatedSession(
                 item.UserId,
                 item.FamilyId,
+                item.DeviceId,
                 item.AccessExpiresAtUtc))
             .SingleOrDefaultAsync(cancellationToken);
         return session is null
@@ -237,6 +238,7 @@ public sealed record SessionTokens(
 public sealed record AuthenticatedSession(
     int UserId,
     Guid FamilyId,
+    string? DeviceId,
     DateTime AccessExpiresAtUtc);
 
 public sealed record RefreshedSession(User User, SessionTokens Tokens);

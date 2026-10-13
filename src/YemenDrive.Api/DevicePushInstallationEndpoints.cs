@@ -2,7 +2,6 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
-using YemenDrive.Database.Entities;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
 
@@ -22,26 +21,44 @@ public static class DevicePushInstallationEndpoints
         {
             var logger = loggerFactory.CreateLogger("DevicePushInstallation");
             var userId = currentUser.UserId;
-            if (userId is null) return Results.Unauthorized();
+            if (userId is null)
+            {
+                logger.LogWarning("FCM device registration was rejected because the request was unauthenticated.");
+                return Results.Unauthorized();
+            }
 
             var deviceId = request.DeviceId?.Trim();
             var fcmToken = request.FcmToken?.Trim();
             var platform = request.Platform?.Trim().ToLowerInvariant();
-            var authenticatedDeviceId = (context.Items[AuthSessionAuthenticationMiddleware.SessionItem] as AuthSession)?.DeviceId;
-            if (string.IsNullOrWhiteSpace(deviceId) || deviceId.Length > 128 ||
-                string.IsNullOrWhiteSpace(fcmToken) || fcmToken.Length > 4096 ||
-                platform != "android" ||
-                string.IsNullOrWhiteSpace(authenticatedDeviceId) ||
-                !string.Equals(deviceId, authenticatedDeviceId, StringComparison.Ordinal))
+            var authenticatedDeviceId = (context.Items[AuthSessionAuthenticationMiddleware.SessionItem] as AuthenticatedSession)?.DeviceId;
+            var rejectionReason = string.IsNullOrWhiteSpace(deviceId) || deviceId.Length > 128
+                ? "invalid-device-id"
+                : string.IsNullOrWhiteSpace(fcmToken) || fcmToken.Length > 4096
+                    ? "invalid-fcm-token"
+                    : platform != "android"
+                        ? "unsupported-platform"
+                        : string.IsNullOrWhiteSpace(authenticatedDeviceId)
+                            ? "missing-authenticated-device"
+                            : !string.Equals(deviceId, authenticatedDeviceId, StringComparison.Ordinal)
+                                ? "device-does-not-match-session"
+                                : null;
+            if (rejectionReason is not null)
             {
+                logger.LogWarning(
+                    "FCM device registration was rejected for user {UserId}: {Reason}.",
+                    userId.Value,
+                    rejectionReason);
                 return Results.BadRequest(ApiResult.Fail(
                     "invalid_push_installation",
                     "بيانات تسجيل الإشعارات غير صالحة."));
             }
 
-            var tokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fcmToken)));
+            var normalizedDeviceId = deviceId!;
+            var normalizedFcmToken = fcmToken!;
+            var normalizedPlatform = platform!;
+            var tokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalizedFcmToken)));
             var byDevice = await db.DevicePushInstallations.SingleOrDefaultAsync(
-                item => item.UserId == userId && item.DeviceId == deviceId,
+                item => item.UserId == userId && item.DeviceId == normalizedDeviceId,
                 cancellationToken);
             var byToken = await db.DevicePushInstallations.SingleOrDefaultAsync(
                 item => item.TokenHash == tokenHash,
@@ -65,10 +82,10 @@ public static class DevicePushInstallationEndpoints
                 installation = new DevicePushInstallation
                 {
                     UserId = userId.Value,
-                    DeviceId = deviceId,
+                    DeviceId = normalizedDeviceId,
                     TokenHash = tokenHash,
-                    FcmToken = fcmToken,
-                    Platform = platform,
+                    FcmToken = normalizedFcmToken,
+                    Platform = normalizedPlatform,
                     LastRegisteredAtUtc = DateTime.UtcNow
                 };
                 db.DevicePushInstallations.Add(installation);
@@ -76,10 +93,10 @@ public static class DevicePushInstallationEndpoints
             else
             {
                 installation.UserId = userId.Value;
-                installation.DeviceId = deviceId;
+                installation.DeviceId = normalizedDeviceId;
                 installation.TokenHash = tokenHash;
-                installation.FcmToken = fcmToken;
-                installation.Platform = platform;
+                installation.FcmToken = normalizedFcmToken;
+                installation.Platform = normalizedPlatform;
                 installation.LastRegisteredAtUtc = DateTime.UtcNow;
                 installation.UpdatedAtUtc = DateTime.UtcNow;
             }
@@ -88,7 +105,7 @@ public static class DevicePushInstallationEndpoints
             logger.LogInformation(
                 "FCM device registration accepted for user {UserId} on {Platform} ({RegistrationMode}).",
                 userId.Value,
-                platform,
+                normalizedPlatform,
                 isNewInstallation ? "created" : "updated");
             return Results.Ok(ApiResult.Ok(new { registered = true }));
         });
@@ -102,7 +119,7 @@ public static class DevicePushInstallationEndpoints
         {
             var userId = currentUser.UserId;
             if (userId is null) return Results.Unauthorized();
-            var authenticatedDeviceId = (context.Items[AuthSessionAuthenticationMiddleware.SessionItem] as AuthSession)?.DeviceId;
+            var authenticatedDeviceId = (context.Items[AuthSessionAuthenticationMiddleware.SessionItem] as AuthenticatedSession)?.DeviceId;
             if (string.IsNullOrWhiteSpace(authenticatedDeviceId) ||
                 !string.Equals(deviceId, authenticatedDeviceId, StringComparison.Ordinal))
             {

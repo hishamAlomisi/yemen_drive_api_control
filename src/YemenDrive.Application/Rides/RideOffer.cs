@@ -42,10 +42,7 @@ public sealed class RideOffer(
             IsolationLevel.Serializable, cancellationToken);
         var ride = await dbContext.Rides.SingleOrDefaultAsync(x => x.Id == model.RideId, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
-<<<<<<< HEAD
         var statusBeforeOffer = ride.Status;
-=======
->>>>>>> origin/main
         if (ride.Status == RideStatus.Cancelled)
             throw new ServiceException(
                 "ride_search_cancelled",
@@ -89,7 +86,6 @@ public sealed class RideOffer(
                 ride.UpdatedAtUtc = DateTime.UtcNow;
                 await dbContext.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
-<<<<<<< HEAD
                 if (realtimePublisher is not null)
                 {
                     var updated = await RideRealtimeEventFactory.LoadOffersAsync(
@@ -100,8 +96,6 @@ public sealed class RideOffer(
                         await realtimePublisher.PublishRideStatusUpdatedAsync(
                             RideRealtimeEventFactory.Status(ride), cancellationToken);
                 }
-=======
->>>>>>> origin/main
                 return ToResult(existing);
             }
         }
@@ -128,7 +122,6 @@ public sealed class RideOffer(
         });
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-<<<<<<< HEAD
         if (realtimePublisher is not null)
         {
             var created = await RideRealtimeEventFactory.LoadOffersAsync(
@@ -140,8 +133,6 @@ public sealed class RideOffer(
                 await realtimePublisher.PublishRideStatusUpdatedAsync(
                     RideRealtimeEventFactory.Status(ride), cancellationToken);
         }
-=======
->>>>>>> origin/main
         return ToResult(entity);
     }
 
