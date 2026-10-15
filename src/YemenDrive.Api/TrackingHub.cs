@@ -253,10 +253,148 @@ public sealed class TrackingHub(
             });
     }
 
+    /// <summary>
+    /// Accepts a GPS sample from the customer who owns an assigned or active
+    /// ride. The actor is always derived from the authenticated Hub session;
+    /// callers cannot choose a customer, driver, or another ride participant.
+    /// </summary>
+    public async Task PublishPassengerLocation(PassengerLocationHubRequest sample)
+    {
+        if (!TryGetAuthenticatedUserId(out var customerId))
+            throw new HubException("يجب تسجيل الدخول لإرسال موقع العميل.");
+        if (sample.RideId <= 0 ||
+            !double.IsFinite(sample.Latitude) || !double.IsFinite(sample.Longitude) ||
+            sample.Latitude is < -90 or > 90 || sample.Longitude is < -180 or > 180 ||
+            !double.IsFinite(sample.Accuracy) || sample.Accuracy is <= 0 or > 75 ||
+            sample.Bearing is double bearing && (!double.IsFinite(bearing) || bearing is < 0 or >= 360) ||
+            sample.Speed is double speed && (!double.IsFinite(speed) || speed is < 0 or > 75))
+            throw new HubException("بيانات موقع العميل غير صالحة أو دقتها منخفضة.");
+
+        var now = DateTime.UtcNow;
+        var observedAtUtc = sample.ObservedAtUtc?.ToUniversalTime() ?? now;
+        if (observedAtUtc < now.AddSeconds(-30) || observedAtUtc > now.AddSeconds(5))
+            throw new HubException("عينة موقع العميل قديمة أو وقتها غير صالح.");
+
+        // Do not trust any identity or recipient supplied by the client. A
+        // customer can publish only for their own currently trackable ride.
+        var ride = await db.Rides.AsNoTracking()
+            .Where(item => item.Id == sample.RideId &&
+                           item.CustomerId == customerId &&
+                           item.DriverId != null &&
+                           TrackableRideStatuses.Contains(item.Status))
+            .Select(item => new { item.DriverId, item.Status })
+            .SingleOrDefaultAsync(Context.ConnectionAborted);
+        if (ride is null || ride.DriverId is not int driverId)
+            throw new HubException("الرحلة غير مخصصة لك أو لم تعد قابلة للتتبع.");
+
+        // Keep the existing LocationUpdates history used by safety and
+        // cancellation workflows, while rejecting replays, floods, and
+        // physically implausible coordinate jumps.
+        var previous = await db.LocationUpdates.AsNoTracking()
+            .Where(item => item.RideId == sample.RideId && item.ActorId == customerId)
+            .OrderByDescending(item => item.ObservedAtUtc)
+            .Select(item => new { item.Latitude, item.Longitude, item.ObservedAtUtc })
+            .FirstOrDefaultAsync(Context.ConnectionAborted);
+        if (previous is not null)
+        {
+            if (observedAtUtc <= previous.ObservedAtUtc ||
+                observedAtUtc - previous.ObservedAtUtc < TimeSpan.FromMilliseconds(750))
+                return;
+
+            var travelledMeters = HaversineMeters(
+                previous.Latitude,
+                previous.Longitude,
+                sample.Latitude,
+                sample.Longitude);
+            var maximumPlausibleMeters = 75d *
+                (observedAtUtc - previous.ObservedAtUtc).TotalSeconds +
+                Math.Max(50d, sample.Accuracy * 2d);
+            if (!double.IsFinite(travelledMeters) || travelledMeters > maximumPlausibleMeters)
+                throw new HubException("قفزة موقع العميل لا تتوافق مع سرعة حركة ممكنة.");
+        }
+
+        db.LocationUpdates.Add(new LocationUpdate
+        {
+            RideId = sample.RideId,
+            ActorId = customerId,
+            Latitude = sample.Latitude,
+            Longitude = sample.Longitude,
+            Bearing = sample.Bearing,
+            Speed = sample.Speed,
+            ObservedAtUtc = observedAtUtc
+        });
+        await db.SaveChangesAsync(Context.ConnectionAborted);
+
+        var payload = new
+        {
+            rideId = sample.RideId,
+            customerId,
+            latitude = sample.Latitude,
+            longitude = sample.Longitude,
+            bearing = sample.Bearing,
+            speed = sample.Speed,
+            accuracy = sample.Accuracy,
+            observedAtUtc,
+            receivedAtUtc = now,
+            rideStatus = (int)ride.Status
+        };
+
+        // Customer coordinates are intentionally excluded from the public
+        // share-link Hub. They are sent only to the assigned driver and
+        // authorized operations connections.
+        await TrySendToGroupAsync(
+            UserGroup(driverId),
+            "passengerLocationUpdated",
+            payload,
+            "Could not publish passengerLocationUpdated to driver for ride {RideId}.",
+            sample.RideId);
+        await TrySendToGroupAsync(
+            OperationsGroup,
+            "passengerLocationUpdated",
+            payload,
+            "Could not publish passengerLocationUpdated to operations for ride {RideId}.",
+            sample.RideId);
+    }
+
     internal static string UserGroup(int userId) => $"user:{userId}";
     internal static string RideGroup(int rideId) => $"ride:{rideId}";
     internal static string FamilyGroup(Guid familyId) => $"session-family:{familyId:N}";
     internal const string OperationsGroup = "admin:operations";
+
+    private async Task TrySendToGroupAsync(
+        string group,
+        string eventName,
+        object payload,
+        string logMessage,
+        int rideId)
+    {
+        try
+        {
+            await Clients.Group(group).SendCoreAsync(eventName, [payload], CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, logMessage, rideId);
+        }
+    }
+
+    private static double HaversineMeters(
+        double firstLatitude,
+        double firstLongitude,
+        double secondLatitude,
+        double secondLongitude)
+    {
+        const double earthRadiusMeters = 6_371_000d;
+        var latitudeDelta = DegreesToRadians(secondLatitude - firstLatitude);
+        var longitudeDelta = DegreesToRadians(secondLongitude - firstLongitude);
+        var a = Math.Sin(latitudeDelta / 2) * Math.Sin(latitudeDelta / 2) +
+                Math.Cos(DegreesToRadians(firstLatitude)) * Math.Cos(DegreesToRadians(secondLatitude)) *
+                Math.Sin(longitudeDelta / 2) * Math.Sin(longitudeDelta / 2);
+        a = Math.Clamp(a, 0d, 1d);
+        return 2d * earthRadiusMeters * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1d - a));
+    }
+
+    private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180d;
 
     private bool TryGetAuthenticatedUserId(out int userId)
     {
@@ -271,6 +409,15 @@ public sealed class TrackingHub(
 
 public sealed record DriverLocationHubRequest(
     int? RideId,
+    double Latitude,
+    double Longitude,
+    double? Bearing,
+    double? Speed,
+    double Accuracy,
+    DateTime? ObservedAtUtc);
+
+public sealed record PassengerLocationHubRequest(
+    int RideId,
     double Latitude,
     double Longitude,
     double? Bearing,

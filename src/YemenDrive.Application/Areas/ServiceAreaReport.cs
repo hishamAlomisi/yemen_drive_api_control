@@ -12,7 +12,7 @@ public sealed class ServiceAreaReport(
 {
     protected override async Task<object?> ListAsync(ServiceAreaModel model, CancellationToken token) =>
         await db.ServiceAreas.AsNoTracking().OrderBy(x => x.CountryNameAr).ThenBy(x => x.CityNameAr)
-            .Select(x => new { x.Id, x.CountryCode, x.CountryNameAr, x.CityNameAr, x.IsActive })
+            .Select(x => new { x.Id, x.CountryCode, x.CountryNameAr, x.CityNameAr, x.IsActive, x.CreatedAtUtc, x.UpdatedAtUtc })
             .ToListAsync(token);
 
     protected override async Task<object?> ReportAsync(ServiceAreaModel model, CancellationToken token)

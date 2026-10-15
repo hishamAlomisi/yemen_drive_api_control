@@ -3,6 +3,7 @@ using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
 using YemenDrive.Application.Accounting;
+using YemenDrive.Application.Administration;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 
@@ -77,7 +78,8 @@ public sealed class Driver(
         entity.CommissionRate = model.CommissionRate;
         entity.IsAvailable = model.IsAvailable;
         entity.Rating = model.Rating;
-        entity.PhotoUrl = model.PhotoUrl ?? entity.PhotoUrl;
+        if (model.PhotoUrl is not null)
+            entity.PhotoUrl = string.IsNullOrWhiteSpace(model.PhotoUrl) ? null : model.PhotoUrl.Trim();
         entity.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
         return ToResult(entity);
@@ -86,8 +88,32 @@ public sealed class Driver(
     protected override async Task<object?> DeleteAsync(DriverModel model, CancellationToken cancellationToken)
     {
         var entity = await FindAsync(model.Id, cancellationToken);
+        await DeletionGuards.EnsureDriverProfileCanBeDeletedAsync(dbContext, entity.UserId, cancellationToken);
+        var user = await dbContext.Users.SingleOrDefaultAsync(x => x.Id == entity.UserId, cancellationToken)
+            ?? throw new ServiceException("user_not_found", "المستخدم المرتبط بملف السائق غير موجود.");
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         dbContext.DriverProfiles.Remove(entity);
+        if (user.Role == UserRole.Driver)
+        {
+            user.Role = UserRole.Customer;
+            user.UpdatedAtUtc = DateTime.UtcNow;
+            var partyId = await dbContext.FinancialParties
+                .Where(x => x.Type == FinancialPartyType.User && x.EntityId == user.Id)
+                .Select(x => (int?)x.Id)
+                .SingleOrDefaultAsync(cancellationToken);
+            if (partyId is not null)
+            {
+                await dbContext.LedgerAccounts
+                    .Where(x => x.FinancialPartyId == partyId && x.Purpose == LedgerAccountPurpose.DriverCurrentAccount)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(x => x.IsActive, false)
+                            .SetProperty(x => x.IsPosting, false),
+                        cancellationToken);
+            }
+        }
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return new { entity.Id };
     }
 

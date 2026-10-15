@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
+using YemenDrive.Application.Administration;
 using YemenDrive.Application.Accounting;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
@@ -34,6 +35,8 @@ public sealed class ServiceKind(
     {
         var entity = await FindAsync(model.Id, cancellationToken);
         ValidateRequired(model);
+        if (await dbContext.ServiceKinds.AnyAsync(x => x.Id != entity.Id && x.Code == model.Code!.Trim(), cancellationToken))
+            throw new ServiceException("kind_exists", "رمز نوع الخدمة موجود مسبقاً.");
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         if (model.IsDefault && model.IsActive) await ClearDefaultAsync(entity.Id, cancellationToken);
         Apply(entity, model);
@@ -48,6 +51,7 @@ public sealed class ServiceKind(
     protected override async Task<object?> DeleteAsync(ServiceKindModel model, CancellationToken cancellationToken)
     {
         var entity = await FindAsync(model.Id, cancellationToken);
+        await DeletionGuards.EnsureServiceKindCanBeDeletedAsync(dbContext, entity.Id, cancellationToken);
         dbContext.ServiceKinds.Remove(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
         return new { entity.Id };
@@ -75,7 +79,7 @@ public sealed class ServiceKind(
     {
         x.Code = model.Code!.Trim();
         x.NameAr = model.NameAr!.Trim();
-        x.ImageUrl = model.ImageUrl;
+        x.ImageUrl = string.IsNullOrWhiteSpace(model.ImageUrl) ? null : model.ImageUrl.Trim();
         x.IsActive = model.IsActive;
         x.IsDefault = model.IsDefault && model.IsActive;
         x.SortOrder = model.SortOrder;

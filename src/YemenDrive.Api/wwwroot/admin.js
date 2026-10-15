@@ -25,6 +25,7 @@ let adminHubConnection = null;
 let liveRidesMap = null;
 const liveRideMarkers = new Map();
 const liveRideAnimations = new Map();
+const livePassengerAnimations = new Map();
 const pendingLiveRideSnapshots = new Set();
 
 const titles = {
@@ -63,7 +64,8 @@ const formConfigs = {
       ['displayName', 'الاسم', 'text', true], ['phoneNumber', 'رقم الهاتف', 'tel', true],
       ['email', 'البريد الإلكتروني', 'email'], ['password', 'كلمة المرور', 'password', true],
       ['role', 'الدور', 'select', true, [['0','عميل'],['1','سائق'],['2','مدير']]],
-      ['city', 'المدينة', 'text'], ['street', 'الشارع', 'text'], ['district', 'الحي', 'text']
+      ['gender', 'النوع (اختياري)', 'text'], ['city', 'المدينة', 'text'], ['street', 'الشارع', 'text'], ['district', 'الحي', 'text'],
+      ['isActive', 'الحساب نشط', 'checkbox', false, true]
     ]
   },
   driver: {
@@ -73,19 +75,21 @@ const formConfigs = {
       ['serviceKindId','نوع الخدمة','select',true,'serviceKinds'], ['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],
       ['vehicleModel','موديل المركبة','text',true], ['plateNumber','رقم اللوحة','text',true],
       ['commissionRate','نسبة العمولة','number',false,'0.20','0.01'], ['rating','التقييم','number',false,'5','0.1'],
+      ['imageFile','صورة السائق أو المركبة','file'], ['photoUrl','رابط الصورة (اختياري)','url'],
       ['isAvailable','متاح للعمل','checkbox',false,true]
-    ]
+    ], imageField: 'photoUrl'
   },
   ride: {
     title: 'إنشاء رحلة', subtitle: 'تسجيل طلب رحلة جديد للعميل', model: 'RideModel', operation: 'add', refresh: 'rides',
     fields: [
-      ['customerId','معرف العميل','text',true], ['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],
+      ['customerId','معرف العميل','number',true], ['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],
       ['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],
       ['pickupLabel','اسم نقطة الانطلاق','text'], ['pickupAddress','عنوان الانطلاق','text',true],
       ['pickupLatitude','خط عرض الانطلاق','number',true,'15.3694','0.000001'], ['pickupLongitude','خط طول الانطلاق','number',true,'44.1910','0.000001'],
       ['destinationLabel','اسم الوجهة','text'], ['destinationAddress','عنوان الوجهة','text',true],
       ['destinationLatitude','خط عرض الوجهة','number',true,'15.3547','0.000001'], ['destinationLongitude','خط طول الوجهة','number',true,'44.2067','0.000001'],
-      ['customerPrice','سعر العميل','number',false,'0','0.01']
+      ['customerPrice','سعر العميل','number',false,'0','0.01'],
+      ['status','حالة الإنشاء','select',true,[['1','بدء البحث عن سائق'],['0','حفظ كمسودة']]]
     ]
   },
   serviceKind: {
@@ -378,14 +382,14 @@ async function loadDashboard() {
 async function loadUsers(search = '') {
   const result = await execute('UserModel', search ? 'search' : 'list', search ? { displayName: search } : {});
   state.users = result.data;
-  const rows = result.data.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.displayName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.id)}</span></td><td>${escapeHtml(item.phoneNumber)}</td><td>${escapeHtml(item.email || '—')}</td><td>${badge(roles[item.role] ?? item.role, item.role === 2 ? 'warning' : item.role === 1 ? 'info' : '')}</td><td>${escapeHtml(item.city || '—')}</td><td>${badge(item.isActive ? 'نشط' : 'موقوف', item.isActive ? 'success' : 'danger')}</td><td>${date(item.createdAtUtc)}</td></tr>`);
+  const rows = result.data.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.displayName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.id)}</span></td><td>${escapeHtml(item.phoneNumber)}</td><td>${escapeHtml(item.email || '—')}</td><td>${badge(roles[item.role] ?? item.role, item.role === 2 ? 'warning' : item.role === 1 ? 'info' : '')}</td><td>${escapeHtml(item.city || '—')}</td><td>${badge(item.isActive ? 'نشط' : 'موقوف', item.isActive ? 'success' : 'danger')}</td><td>${date(item.createdAtUtc)}</td><td>${recordActions('user', item.id)}</td></tr>`);
   toggleEmpty('#users-body', '#users-empty', rows);
 }
 
 async function loadDrivers() {
   const result = await execute('DriverModel', 'list', {});
   state.drivers = result.data;
-  const rows = result.data.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.displayName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.userId)}</span></td><td>${escapeHtml(item.phoneNumber)}</td><td><span class="cell-main">${escapeHtml(item.vehicleModel)}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${escapeHtml(item.plateNumber)}</td><td>${number(item.rating)}</td><td>${badge(item.isAvailable ? 'متاح' : 'غير متاح', item.isAvailable ? 'success' : '')}</td></tr>`);
+  const rows = result.data.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.displayName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.userId)}</span></td><td>${escapeHtml(item.phoneNumber)}</td><td><span class="cell-main">${escapeHtml(item.vehicleModel)}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${escapeHtml(item.plateNumber)}</td><td>${number(item.rating)}</td><td>${badge(item.isAvailable ? 'متاح' : 'غير متاح', item.isAvailable ? 'success' : '')}</td><td>${recordActions('driver', item.id)}</td></tr>`);
   toggleEmpty('#drivers-body', '#drivers-empty', rows);
 }
 
@@ -393,7 +397,10 @@ async function loadRides() {
   const value = $('#ride-filter').value;
   const result = await execute('RideModel', 'list', value ? { status: Number(value) } : {});
   state.rides = result.data;
-  const rows = result.data.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.customerName || item.customerId)}</span></td><td>${escapeHtml(item.driverName || 'لم يحدد')}</td><td><span class="cell-main">${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')}</span><span class="cell-sub">${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td></tr>`);
+  const rows = result.data.map(item => {
+    const lockedReason = Number(item.status) === 0 ? '' : 'تُدار الرحلات بعد بدء البحث عبر سير العمل التشغيلي والإلغاء الرسمي.';
+    return `<tr><td><span class="cell-main">${escapeHtml(item.customerName || item.customerId)}</span></td><td>${escapeHtml(item.driverName || 'لم يحدد')}</td><td><span class="cell-main">${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')}</span><span class="cell-sub">${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td><td>${recordActions('ride', item.id, lockedReason)}</td></tr>`;
+  });
   toggleEmpty('#rides-body', '#rides-empty', rows);
 }
 
@@ -422,17 +429,26 @@ function liveRideCoordinates(ride, prefix) {
 
 function getLiveRideMarkerEntry(rideId) {
   if (!liveRideMarkers.has(rideId)) {
-    liveRideMarkers.set(rideId, { driver: null, pickup: null, destination: null });
+    liveRideMarkers.set(rideId, { driver: null, passenger: null, pickup: null, destination: null });
   }
   return liveRideMarkers.get(rideId);
 }
 
-function markerIcon(rideId) {
+function driverMarkerIcon(rideId) {
   return L.divIcon({
     className: '',
     html: `<div class="live-ride-pin" id="live-ride-pin-${Number(rideId)}"><span>🚕</span></div>`,
     iconSize: [34, 34],
     iconAnchor: [17, 17]
+  });
+}
+
+function passengerMarkerIcon(rideId) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="live-passenger-pin" id="live-passenger-pin-${Number(rideId)}"><span>👤</span></div>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16]
   });
 }
 
@@ -444,11 +460,26 @@ function ensureDriverMarker(ride) {
   if (!point) return null;
   const entry = getLiveRideMarkerEntry(rideId);
   if (!entry.driver) {
-    entry.driver = L.marker([point.lat, point.lon], { icon: markerIcon(rideId) })
+    entry.driver = L.marker([point.lat, point.lon], { icon: driverMarkerIcon(rideId) })
       .addTo(liveRidesMap)
       .bindPopup(`الرحلة #${rideId} — ${escapeHtml(ride.driverName || 'السائق')}`);
   }
   return entry.driver;
+}
+
+function ensurePassengerMarker(ride) {
+  ensureLiveRidesMap();
+  if (!liveRidesMap) return null;
+  const rideId = Number(ride.id);
+  const point = liveRideCoordinates(ride, 'passenger');
+  if (!point) return null;
+  const entry = getLiveRideMarkerEntry(rideId);
+  if (!entry.passenger) {
+    entry.passenger = L.marker([point.lat, point.lon], { icon: passengerMarkerIcon(rideId) })
+      .addTo(liveRidesMap)
+      .bindPopup(`الرحلة #${rideId} — ${escapeHtml(ride.customerName || 'الراكب')}`);
+  }
+  return entry.passenger;
 }
 
 function renderLiveRide(ride) {
@@ -473,6 +504,11 @@ function renderLiveRide(ride) {
     const pin = marker.getElement()?.querySelector('.live-ride-pin span');
     if (pin) pin.style.transform = `rotate(${Number(ride.driverBearing)}deg)`;
   }
+  const passengerMarker = ensurePassengerMarker(ride);
+  if (passengerMarker && Number.isFinite(Number(ride.passengerBearing))) {
+    const pin = passengerMarker.getElement()?.querySelector('.live-passenger-pin span');
+    if (pin) pin.style.transform = `rotate(${Number(ride.passengerBearing)}deg)`;
+  }
 }
 
 function removeLiveRide(rideId) {
@@ -484,6 +520,9 @@ function removeLiveRide(rideId) {
   const animation = liveRideAnimations.get(Number(rideId));
   if (animation) cancelAnimationFrame(animation);
   liveRideAnimations.delete(Number(rideId));
+  const passengerAnimation = livePassengerAnimations.get(Number(rideId));
+  if (passengerAnimation) cancelAnimationFrame(passengerAnimation);
+  livePassengerAnimations.delete(Number(rideId));
 }
 
 function renderLiveRideList() {
@@ -500,7 +539,7 @@ function renderLiveRideList() {
   container.querySelectorAll('[data-live-ride]').forEach(button => button.addEventListener('click', () => {
     const ride = state.liveRides.get(Number(button.dataset.liveRide));
     if (!ride || !liveRidesMap) return;
-    const point = liveRideCoordinates(ride, 'driver') || liveRideCoordinates(ride, 'pickup');
+    const point = liveRideCoordinates(ride, 'driver') || liveRideCoordinates(ride, 'passenger') || liveRideCoordinates(ride, 'pickup');
     if (point) liveRidesMap.setView([point.lat, point.lon], 15, { animate: true });
     container.querySelectorAll('.live-ride-card').forEach(card => card.classList.toggle('selected', card === button));
   }));
@@ -570,6 +609,55 @@ function animateLiveDriverLocation(payload) {
   renderLiveRideList();
 }
 
+function animateLivePassengerLocation(payload) {
+  const rideId = Number(payload?.rideId);
+  const latitude = Number(payload?.latitude);
+  const longitude = Number(payload?.longitude);
+  if (!Number.isInteger(rideId) || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+  if (payload?.rideStatus != null && !LIVE_RIDE_STATUSES.has(Number(payload.rideStatus))) return;
+  const ride = state.liveRides.get(rideId);
+  if (!ride) {
+    if (pendingLiveRideSnapshots.has(rideId)) return;
+    pendingLiveRideSnapshots.add(rideId);
+    loadActiveRideSnapshot()
+      .then(() => {
+        if (state.liveRides.has(rideId)) animateLivePassengerLocation(payload);
+      })
+      .catch(error => toast(error.message, true))
+      .finally(() => pendingLiveRideSnapshots.delete(rideId));
+    return;
+  }
+  const updated = {
+    ...ride,
+    passengerLatitude: latitude,
+    passengerLongitude: longitude,
+    passengerBearing: payload.bearing,
+    passengerSpeed: payload.speed,
+    passengerLocationObservedAtUtc: payload.observedAtUtc
+  };
+  state.liveRides.set(rideId, updated);
+  const marker = ensurePassengerMarker(updated);
+  if (!marker) return;
+  const current = marker.getLatLng();
+  const oldAnimation = livePassengerAnimations.get(rideId);
+  if (oldAnimation) cancelAnimationFrame(oldAnimation);
+  const startedAt = performance.now();
+  const duration = 1700;
+  const step = now => {
+    const progress = Math.min(1, (now - startedAt) / duration);
+    marker.setLatLng([
+      current.lat + (latitude - current.lat) * progress,
+      current.lng + (longitude - current.lng) * progress
+    ]);
+    const pin = marker.getElement()?.querySelector('.live-passenger-pin span');
+    if (pin && Number.isFinite(Number(payload.bearing))) pin.style.transform = `rotate(${Number(payload.bearing)}deg)`;
+    if (progress < 1) livePassengerAnimations.set(rideId, requestAnimationFrame(step));
+    else livePassengerAnimations.delete(rideId);
+  };
+  livePassengerAnimations.set(rideId, requestAnimationFrame(step));
+  renderLiveRideList();
+}
+
 function applyRideStatusEvent(payload) {
   const rideId = Number(payload?.rideId);
   const status = Number(payload?.rideStatus);
@@ -603,6 +691,7 @@ async function startAdminRealtime() {
     .build();
   adminHubConnection = connection;
   connection.on('driverLocationUpdated', animateLiveDriverLocation);
+  connection.on('passengerLocationUpdated', animateLivePassengerLocation);
   connection.on('rideStatusUpdated', applyRideStatusEvent);
   connection.on('notificationCreated', () => {
     loadAdminNotifications()
@@ -655,8 +744,8 @@ function stopAdminRealtime() {
 async function loadCatalog() {
   const [catalog, kinds] = await Promise.all([execute('ServiceCatalogModel','list',{}), execute('ServiceKindModel','list',{})]);
   state.catalog = catalog.data; state.kinds = kinds.data;
-  toggleEmpty('#catalog-body','#catalog-empty',catalog.data.map(item => `<tr><td>${item.imageUrl ? `<img class="table-icon" src="${escapeHtml(item.imageUrl)}" alt="">` : '—'}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.nameAr)}</td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${number(item.basePrice)}</td><td>${number(item.arrivalMinutes)} د</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td></tr>`));
-  toggleEmpty('#kinds-body','#kinds-empty',kinds.data.map(item => `<tr><td>${item.imageUrl ? `<img class="table-icon" src="${escapeHtml(item.imageUrl)}" alt="">` : '—'}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.nameAr)}</td><td>${number(item.sortOrder)}</td><td>${item.isDefault ? badge('افتراضي','success') : (item.isActive ? `<button class="button small" onclick="setDefaultServiceKind(${Number(item.id)})">تعيين افتراضي</button>` : badge('متوقف','danger'))}</td></tr>`));
+  toggleEmpty('#catalog-body','#catalog-empty',catalog.data.map(item => `<tr><td>${item.imageUrl ? `<img class="table-icon" src="${escapeHtml(item.imageUrl)}" alt="">` : '—'}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.nameAr)}</td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${number(item.basePrice)}</td><td>${number(item.arrivalMinutes)} د</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td><td>${recordActions('serviceCatalog', item.id)}</td></tr>`));
+  toggleEmpty('#kinds-body','#kinds-empty',kinds.data.map(item => `<tr><td>${item.imageUrl ? `<img class="table-icon" src="${escapeHtml(item.imageUrl)}" alt="">` : '—'}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.nameAr)}</td><td>${number(item.sortOrder)}</td><td>${item.isDefault ? badge('افتراضي','success') : (item.isActive ? `<button class="button small" onclick="setDefaultServiceKind(${Number(item.id)})">تعيين افتراضي</button>` : '—')}</td><td>${badge(item.isActive ? 'نشط' : 'متوقف', item.isActive ? 'success' : 'danger')}</td><td>${recordActions('serviceKind', item.id)}</td></tr>`));
 }
 
 window.setDefaultServiceKind = async id => {
@@ -672,7 +761,7 @@ window.setDefaultServiceKind = async id => {
 
 async function loadPricing() {
   const result = await execute('PricingRuleModel','list',{}); state.pricing = result.data;
-  toggleEmpty('#pricing-body','#pricing-empty',result.data.map(item => `<tr><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${number(item.baseFare)}</td><td>${number(item.perKilometer)}</td><td>${number(item.perMinute)}</td><td>${number(item.serviceFee)}</td><td>${number((item.driverCommissionRate || 0) * 100)}%</td><td>${number(item.driverCommissionFixed || 0)}</td><td>${number(item.cancellationFee || 0)}</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td></tr>`));
+  toggleEmpty('#pricing-body','#pricing-empty',result.data.map(item => `<tr><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${number(item.baseFare)}</td><td>${number(item.perKilometer)}</td><td>${number(item.perMinute)}</td><td>${number(item.serviceFee)}</td><td>${number((item.driverCommissionRate || 0) * 100)}%</td><td>${number(item.driverCommissionFixed || 0)}</td><td>${number(item.cancellationFee || 0)}</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td><td>${recordActions('pricingRule', item.id)}</td></tr>`));
 }
 
 async function loadWallet() {
@@ -703,7 +792,7 @@ async function loadPaymentMethods() {
   const rows = state.paymentMethods.map(item => {
     const image = item.imageUrl ? `<img class="payment-method-logo" src="${escapeHtml(item.imageUrl)}" alt="شعار ${escapeHtml(item.nameAr)}">` : '—';
     const visibility = [item.isAvailableForRidePayment ? 'دفع الرحلة' : '', item.isAvailableForWalletTopUp ? 'شحن المحفظة' : ''].filter(Boolean).join(' + ') || '—';
-    return `<tr><td>${image}</td><td><span class="cell-main">${escapeHtml(item.nameAr)}</span><span class="cell-sub">${escapeHtml(item.descriptionAr)}</span></td><td>${escapeHtml(kinds[item.kind] || item.kind)}</td><td>${escapeHtml(item.providerCode)}</td><td>${escapeHtml(visibility)}</td><td>${number(item.sortOrder)}</td><td>${badge(item.isActive ? 'نشطة' : 'موقوفه', item.isActive ? 'success' : 'danger')}</td></tr>`;
+    return `<tr><td>${image}</td><td><span class="cell-main">${escapeHtml(item.nameAr)}</span><span class="cell-sub">${escapeHtml(item.descriptionAr)}</span></td><td>${escapeHtml(kinds[item.kind] || item.kind)}</td><td>${escapeHtml(item.providerCode)}</td><td>${escapeHtml(visibility)}</td><td>${number(item.sortOrder)}</td><td>${badge(item.isActive ? 'نشطة' : 'موقوفه', item.isActive ? 'success' : 'danger')}</td><td>${recordActions('paymentMethod', item.id)}</td></tr>`;
   });
   toggleEmpty('#payment-methods-body', '#payment-methods-empty', rows);
 }
@@ -989,7 +1078,7 @@ async function loadPlaces() {
 
 async function loadAreas() {
   const result = await execute('ServiceAreaModel', 'list', {}); state.areas = result.data || [];
-  toggleEmpty('#areas-body', '#areas-empty', state.areas.map(item => `<tr><td>${escapeHtml(item.countryNameAr)}</td><td>${escapeHtml(item.countryCode)}</td><td>${escapeHtml(item.cityNameAr)}</td><td>${item.isActive ? badge('متاحة','success') : badge('موقوفة','warning')}</td><td>${date(item.updatedAtUtc || item.createdAtUtc)}</td></tr>`));
+  toggleEmpty('#areas-body', '#areas-empty', state.areas.map(item => `<tr><td>${escapeHtml(item.countryNameAr)}</td><td>${escapeHtml(item.countryCode)}</td><td>${escapeHtml(item.cityNameAr)}</td><td>${item.isActive ? badge('متاحة','success') : badge('موقوفة','warning')}</td><td>${date(item.updatedAtUtc || item.createdAtUtc)}</td><td>${recordActions('serviceArea', item.id)}</td></tr>`));
 }
 
 async function loadHistory() {
@@ -1017,8 +1106,74 @@ function buildField(field) {
 }
 
 let activeForm = null;
-async function openForm(name) {
-  const config = formConfigs[name]; activeForm = config;
+const formEntityLabels = {
+  user: 'المستخدم', driver: 'ملف السائق', ride: 'الرحلة', serviceKind: 'نوع الخدمة',
+  serviceCatalog: 'الخدمة', pricingRule: 'قاعدة التسعير', paymentMethod: 'طريقة الدفع', serviceArea: 'منطقة الخدمة'
+};
+const formStateKeys = {
+  user: 'users', driver: 'drivers', ride: 'rides', serviceKind: 'kinds',
+  serviceCatalog: 'catalog', pricingRule: 'pricing', paymentMethod: 'paymentMethods', serviceArea: 'areas'
+};
+const deletingRecords = new Set();
+
+function recordActions(name, id, lockedReason = '') {
+  const numericId = Number(id);
+  if (!Number.isSafeInteger(numericId) || numericId <= 0) return '—';
+  if (lockedReason) {
+    return `<div class="action-row" title="${escapeHtml(lockedReason)}"><button class="button small" disabled>تعديل</button><button class="button small danger" disabled>حذف</button></div>`;
+  }
+  return `<div class="action-row"><button class="button small" onclick="editAdminEntity('${name}', ${numericId})">تعديل</button><button class="button small danger" onclick="deleteAdminEntity('${name}', ${numericId})">حذف</button></div>`;
+}
+
+function findFormEntity(name, id) {
+  const stateKey = formStateKeys[name];
+  return stateKey ? (state[stateKey] || []).find(item => Number(item.id) === Number(id)) : null;
+}
+
+window.editAdminEntity = async (name, id) => {
+  const item = findFormEntity(name, id);
+  if (!item) { toast('تعذر العثور على السجل. حدّث الصفحة ثم حاول مرة أخرى.', true); return; }
+  try { await openForm(name, item); }
+  catch (error) { toast(error.message || 'تعذر فتح نموذج التعديل.', true); }
+};
+
+window.deleteAdminEntity = async (name, id) => {
+  const config = formConfigs[name];
+  if (!config) return;
+  const key = `${name}:${id}`;
+  if (deletingRecords.has(key)) return;
+  const label = formEntityLabels[name] || 'السجل';
+  if (!window.confirm(`هل تريد حذف ${label} نهائياً؟\nسيتحقق النظام من عدم وجود سجلات مرتبطة قبل الحذف.`)) return;
+
+  deletingRecords.add(key);
+  try {
+    const result = await execute(config.model, 'delete', { id: Number(id) });
+    toast(result.message || `تم حذف ${label}.`);
+    await loadView(config.refresh, true);
+  } catch (error) {
+    toast(error.message || `تعذر حذف ${label}.`, true);
+  } finally {
+    deletingRecords.delete(key);
+  }
+};
+
+function populateFormValues(form, entity, fields) {
+  if (!entity) return;
+  for (const [name,,type] of fields) {
+    if (type === 'file') continue;
+    const input = form.elements.namedItem(name);
+    if (!input) continue;
+    const value = entity[name];
+    if (type === 'checkbox') input.checked = Boolean(value);
+    else input.value = value == null ? '' : String(value);
+  }
+}
+
+async function openForm(name, entity = null) {
+  const config = formConfigs[name];
+  if (!config) throw new Error('نموذج الإدارة غير متاح.');
+  const editing = entity !== null;
+  let fields = config.fields.map(field => [...field]);
   if (name === 'driver' && !state.users.length) {
     try { await loadUsers(); } catch { }
   }
@@ -1034,31 +1189,56 @@ async function openForm(name) {
       .filter(x => Number(x.role) !== 2)
       .map(x => [String(x.id), `${x.displayName || 'بدون اسم'} - ${x.phoneNumber || ''}`])
       .filter(option => option[0] && option[0] !== 'undefined');
-    config.fields = config.fields.map(field => {
+    fields = fields.map(field => {
       if (field[0] === 'userId' && field[4] === 'driverUsers') return [field[0], field[1], 'select', field[3], driverUsers];
       if (field[0] === 'serviceKindId') return [field[0], field[1], 'select', field[3], serviceKinds];
       if (field[0] === 'serviceCatalogItemId') return [field[0], field[1], 'select', field[3], serviceCatalogItems];
       return field;
     });
   }
-  $('#modal-title').textContent = config.title; $('#modal-subtitle').textContent = config.subtitle;
-  $('#modal-fields').innerHTML = config.fields.map(buildField).join('');
+  if (editing && name === 'user') {
+    fields = fields.map(field => field[0] === 'password' ? [field[0], 'كلمة المرور الجديدة (اختيارية)', field[2], false, '', field[5]] : field);
+  }
+  activeForm = {
+    ...config,
+    name,
+    fields,
+    operation: editing ? 'update' : config.operation,
+    editId: editing ? Number(entity.id) : null,
+    editing
+  };
+  $('#modal-title').textContent = editing ? `تعديل ${formEntityLabels[name] || config.title}` : config.title;
+  $('#modal-subtitle').textContent = editing
+    ? 'عدّل البيانات ثم احفظ التغييرات. يبقى الحذف محمياً عند وجود سجلات مرتبطة.'
+    : config.subtitle;
+  $('#modal-fields').innerHTML = fields.map(buildField).join('');
   $$('#modal-fields input[type="file"]').forEach(input => input.addEventListener('change', () => {
     const preview = $(`#modal-fields [data-preview-for="${input.name}"]`);
     if (!preview) return;
     const file = input.files?.[0];
     preview.innerHTML = file ? `<small>${escapeHtml(file.name)}</small><img class="form-image-preview" src="${URL.createObjectURL(file)}" alt="">` : '';
   }));
+  const form = $('#entity-form');
+  populateFormValues(form, entity, fields);
+  if (editing && name === 'driver') {
+    const userSelect = $('#modal-fields [name="userId"]');
+    if (userSelect) {
+      userSelect.disabled = true;
+      userSelect.closest('label')?.setAttribute('title', 'لا يمكن تغيير حساب ملف السائق بعد إنشائه.');
+    }
+  }
   const kindSelect = $('#modal-fields [name="serviceKindId"]');
   const catalogSelect = $('#modal-fields [name="serviceCatalogItemId"]');
   if (kindSelect && catalogSelect) {
     const allItems = (state.catalog || []).map(item => ({ id: String(item.id), name: item.nameAr || item.code, kindId: String(item.serviceKindId) }));
+    const preferredCatalogId = entity?.serviceCatalogItemId == null ? '' : String(entity.serviceCatalogItemId);
     const refreshCatalogOptions = () => {
       const selected = String(kindSelect.value || '');
       catalogSelect.replaceChildren(...allItems.filter(item => !selected || item.kindId === selected).map(item => {
         const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; return option;
       }));
       catalogSelect.disabled = catalogSelect.options.length === 0;
+      if (preferredCatalogId && [...catalogSelect.options].some(option => option.value === preferredCatalogId)) catalogSelect.value = preferredCatalogId;
     };
     kindSelect.addEventListener('change', refreshCatalogOptions);
     refreshCatalogOptions();
@@ -1071,12 +1251,16 @@ async function openForm(name) {
 function readForm(form, fields) {
   const data = {};
   for (const [name,,type] of fields) {
-    const input = form.elements[name];
+    const input = form.elements.namedItem(name);
+    if (!input) continue;
     if (type === 'file') continue;
     if (type === 'checkbox') data[name] = input.checked;
     else if (type === 'number') { if (input.value !== '') data[name] = Number(input.value); }
     else if (type === 'select' && /^\d+$/.test(input.value)) data[name] = Number(input.value);
-    else if (input.value.trim() !== '') data[name] = input.value.trim();
+    else {
+      const value = input.value.trim();
+      if (value !== '' || activeForm?.editing) data[name] = value;
+    }
   }
   return data;
 }
@@ -1088,19 +1272,22 @@ async function submitEntityForm(event) {
   try {
     const form = event.currentTarget;
     const data = readForm(form, activeForm.fields);
+    if (activeForm.editing) data.id = activeForm.editId;
     const image = form.elements.imageFile?.files?.[0];
     if (image) {
       const upload = new FormData(); upload.append('file', image);
-      const uploaded = await fetch('/api/media/upload', { method: 'POST', body: upload }).then(response => response.json());
+      const uploadResponse = await adminFetch('/api/media/upload', { method: 'POST', body: upload });
+      const uploaded = await uploadResponse.json().catch(() => ({ success: false }));
       if (!uploaded.success) throw new Error(uploaded.message || 'تعذر رفع الصورة.');
-      data.imageUrl = uploaded.url;
+      data[activeForm.imageField || 'imageUrl'] = uploaded.url;
     }
     const result = await execute(activeForm.model, activeForm.operation, data);
     resultBox.className = 'inline-result success';
-    resultBox.innerHTML = `${escapeHtml(result.message)}${result.data?.imageUrl ? `<br><img class="form-image-preview" src="${escapeHtml(result.data.imageUrl)}" alt=""><br><small>${escapeHtml(result.data.imageUrl)}</small>` : ''}${activeForm === formConfigs.quote ? `<pre>${escapeHtml(JSON.stringify(result.data, null, 2))}</pre>` : ''}`;
+    const imageUrl = result.data?.imageUrl || result.data?.photoUrl;
+    resultBox.innerHTML = `${escapeHtml(result.message)}${imageUrl ? `<br><img class="form-image-preview" src="${escapeHtml(imageUrl)}" alt=""><br><small>${escapeHtml(imageUrl)}</small>` : ''}${activeForm.name === 'quote' ? `<pre>${escapeHtml(JSON.stringify(result.data, null, 2))}</pre>` : ''}`;
     toast(result.message);
     if (activeForm.refresh) await loadView(activeForm.refresh === 'wallet' ? state.view : activeForm.refresh, true);
-    if (activeForm !== formConfigs.quote) setTimeout(() => $('#form-modal').close(), 700);
+    if (activeForm.name !== 'quote') setTimeout(() => $('#form-modal').close(), 700);
   } catch (error) { resultBox.className = 'inline-result error'; resultBox.textContent = error.message; }
   finally { submit.disabled = false; }
 }

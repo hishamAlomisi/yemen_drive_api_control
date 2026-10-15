@@ -17,7 +17,9 @@ public sealed class PricingRuleReport(
                 x.Id, x.ServiceKindId, x.ServiceCatalogItemId,
                 serviceKindCode = x.ServiceKind.Code, serviceKindNameAr = x.ServiceKind.NameAr,
                 serviceCode = x.ServiceCatalogItem.Code, serviceNameAr = x.ServiceCatalogItem.NameAr, x.BaseFare,
-                x.PerKilometer, x.PerMinute, x.DriverShareRate, x.IsActive
+                x.PerKilometer, x.PerMinute, x.ServiceFee, x.DriverCommissionRate,
+                x.DriverCommissionFixed, x.CancellationFee, x.DriverShareRate, x.IsActive,
+                x.CreatedAtUtc, x.UpdatedAtUtc
             })
             .ToListAsync(cancellationToken);
 }

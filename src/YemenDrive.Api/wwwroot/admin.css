@@ -90,7 +90,9 @@ button { letter-spacing: 0; }
 .button:hover { background: var(--surface-soft); }
 .button.primary { border-color: var(--primary); background: var(--primary); color: #fff; }
 .button.primary:hover { background: var(--primary-dark); }
-.button:disabled { opacity: .6; cursor: wait; }
+.button.danger { border-color: var(--danger); color: var(--danger); }
+.button.danger:hover { background: #fff1f1; }
+.button:disabled { opacity: .6; cursor: not-allowed; }
 .button.small { min-height: 31px; padding: 0 10px; font-size: 12px; }
 .action-row { display: flex; flex-wrap: wrap; gap: 6px; min-width: 180px; }
 .text-button { border: 0; background: transparent; color: var(--primary); font-weight: 700; cursor: pointer; }
@@ -240,4 +242,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); outlin
 .live-ride-card span { color: var(--muted); font-size: 12px; line-height: 1.6; }
 .live-ride-pin { width: 30px; height: 30px; display: grid; place-items: center; border: 2px solid #fff; border-radius: 50%; background: var(--primary); color: #fff; font-size: 14px; font-weight: 700; box-shadow: 0 2px 8px #14282f66; }
 .live-ride-pin span { display: inline-block; }
+.live-passenger-pin { width: 28px; height: 28px; display: grid; place-items: center; border: 2px solid #fff; border-radius: 50%; background: #b42318; color: #fff; font-size: 13px; font-weight: 700; box-shadow: 0 2px 8px #14282f66; }
+.live-passenger-pin span { display: inline-block; }
 @media (max-width: 900px) { .live-rides-layout { grid-template-columns: 1fr; } .live-rides-list { max-height: 220px; } #live-rides-map { min-height: 360px; } }

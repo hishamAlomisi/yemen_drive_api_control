@@ -30,7 +30,7 @@ public sealed class UserReport(
         return query.OrderByDescending(x => x.CreatedAtUtc).Select(x => new
         {
             x.Id, x.DisplayName, x.PhoneNumber, x.Email, x.Role, x.IsActive,
-            x.City, x.CreatedAtUtc
+            x.Gender, x.City, x.Street, x.District, x.CreatedAtUtc, x.UpdatedAtUtc
         });
     }
 }

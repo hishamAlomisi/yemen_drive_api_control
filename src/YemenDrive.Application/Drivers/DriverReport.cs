@@ -19,7 +19,7 @@ public sealed class DriverReport(
                 serviceKindCode = x.ServiceKind.Code, serviceKindNameAr = x.ServiceKind.NameAr,
                 serviceCode = x.ServiceCatalogItem.Code, serviceNameAr = x.ServiceCatalogItem.NameAr,
                 x.VehicleModel, x.PlateNumber,
-                x.IsAvailable, x.Rating, x.CreatedAtUtc
+                x.CommissionRate, x.IsAvailable, x.Rating, x.PhotoUrl, x.CreatedAtUtc, x.UpdatedAtUtc
             })
             .ToListAsync(cancellationToken);
 }

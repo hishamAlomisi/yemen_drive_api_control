@@ -26,9 +26,19 @@ public sealed class ServiceArea(
     {
         if (model.Id is null) throw new ServiceException("id_required", "معرف المنطقة مطلوب.");
         var item = await db.ServiceAreas.SingleOrDefaultAsync(x => x.Id == model.Id, token) ?? throw new ServiceException("area_not_found", "منطقة الخدمة غير موجودة.");
-        if (model.CountryNameAr is not null) item.CountryNameAr = model.CountryNameAr.Trim();
-        if (model.IsActive != item.IsActive) item.IsActive = model.IsActive;
-        await db.SaveChangesAsync(token); return new { item.Id, item.CountryCode, item.CountryNameAr, item.CityNameAr, item.IsActive };
+        Validate(model);
+        var countryCode = model.CountryCode!.Trim().ToUpperInvariant();
+        var cityName = model.CityNameAr!.Trim();
+        if (await db.ServiceAreas.AnyAsync(x => x.Id != item.Id && x.CountryCode == countryCode && x.CityNameAr == cityName, token))
+            throw new ServiceException("area_exists", "منطقة الخدمة مسجلة مسبقاً لهذه الدولة والمدينة.");
+
+        item.CountryCode = countryCode;
+        item.CountryNameAr = model.CountryNameAr!.Trim();
+        item.CityNameAr = cityName;
+        item.IsActive = model.IsActive;
+        item.UpdatedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(token);
+        return new { item.Id, item.CountryCode, item.CountryNameAr, item.CityNameAr, item.IsActive, item.CreatedAtUtc, item.UpdatedAtUtc };
     }
     protected override async Task<object?> DeleteAsync(ServiceAreaModel model, CancellationToken token)
     {

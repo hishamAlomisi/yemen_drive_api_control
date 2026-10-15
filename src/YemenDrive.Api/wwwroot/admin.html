@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YemenDrive | لوحة التحكم</title>
   <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/admin.css?v=20261008-realtime">
+  <link rel="stylesheet" href="/admin.css?v=20261015-admin-crud">
 </head>
 <body>
   <div class="admin-login" id="admin-login">
@@ -99,12 +99,12 @@
 
         <section class="view" id="view-users">
           <div class="section-toolbar"><div><h2>المستخدمون</h2><p>العملاء والسائقون ومديرو النظام</p></div><div class="command-row"><input class="search-input" id="user-search" placeholder="بحث بالاسم أو الهاتف"><button class="button primary" data-form="user">إضافة مستخدم</button></div></div>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الاسم</th><th>الهاتف</th><th>البريد</th><th>الدور</th><th>المدينة</th><th>الحالة</th><th>تاريخ الإضافة</th></tr></thead><tbody id="users-body"></tbody></table></div><div class="empty-state hidden" id="users-empty">لا يوجد مستخدمون مطابقون.</div></section>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الاسم</th><th>الهاتف</th><th>البريد</th><th>الدور</th><th>المدينة</th><th>الحالة</th><th>تاريخ الإضافة</th><th>الإجراءات</th></tr></thead><tbody id="users-body"></tbody></table></div><div class="empty-state hidden" id="users-empty">لا يوجد مستخدمون مطابقون.</div></section>
         </section>
 
         <section class="view" id="view-drivers">
           <div class="section-toolbar"><div><h2>السائقون</h2><p>المركبات والخدمات وحالة التوفر</p></div><div class="command-row"><button class="button primary" data-form="driver">إضافة ملف سائق</button></div></div>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>السائق</th><th>الهاتف</th><th>المركبة</th><th>الخدمة</th><th>اللوحة</th><th>التقييم</th><th>التوفر</th></tr></thead><tbody id="drivers-body"></tbody></table></div><div class="empty-state hidden" id="drivers-empty">لا توجد ملفات سائقين.</div></section>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>السائق</th><th>الهاتف</th><th>المركبة</th><th>الخدمة</th><th>اللوحة</th><th>التقييم</th><th>التوفر</th><th>الإجراءات</th></tr></thead><tbody id="drivers-body"></tbody></table></div><div class="empty-state hidden" id="drivers-empty">لا توجد ملفات سائقين.</div></section>
         </section>
 
         <section class="view" id="view-rides">
@@ -113,7 +113,7 @@
             <div class="section-header"><div><h2>الرحلات النشطة على الخريطة</h2><p>تتحدث الحالة ومواقع السائقين مباشرة أثناء الرحلة.</p></div><span class="live-connection" id="live-rides-connection">جارٍ الاتصال…</span></div>
             <div class="live-rides-layout"><div id="live-rides-map" role="img" aria-label="خريطة الرحلات النشطة"></div><div class="live-rides-list" id="live-rides-list"><div class="empty-state">لا توجد رحلات نشطة الآن.</div></div></div>
           </section>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>العميل</th><th>السائق</th><th>المسار</th><th>المركبة</th><th>الحالة</th><th>السعر</th><th>التاريخ</th></tr></thead><tbody id="rides-body"></tbody></table></div><div class="empty-state hidden" id="rides-empty">لا توجد رحلات في هذه الحالة.</div></section>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>العميل</th><th>السائق</th><th>المسار</th><th>المركبة</th><th>الحالة</th><th>السعر</th><th>التاريخ</th><th>الإجراءات</th></tr></thead><tbody id="rides-body"></tbody></table></div><div class="empty-state hidden" id="rides-empty">لا توجد رحلات في هذه الحالة.</div></section>
         </section>
 
         <section class="view" id="view-cancellations">
@@ -133,14 +133,14 @@
         <section class="view" id="view-catalog">
           <div class="section-toolbar"><div><h2>الخدمات</h2><p>أنواع الخدمة والعناصر المتاحة للعملاء</p></div><div class="command-row"><button class="button" data-form="serviceKind">إضافة نوع</button><button class="button primary" data-form="serviceCatalog">إضافة خدمة</button></div></div>
           <div class="split-sections">
-            <section class="data-section"><div class="section-header"><div><h2>كتالوج الخدمات</h2><p>الخدمات والمركبات والأسعار الأساسية</p></div></div><div class="table-wrap"><table><thead><tr><th>الأيقونة</th><th>الرمز</th><th>الاسم</th><th>النوع</th><th>المركبة</th><th>السعر</th><th>الوصول</th><th>الحالة</th></tr></thead><tbody id="catalog-body"></tbody></table></div><div class="empty-state hidden" id="catalog-empty">لم تتم إضافة خدمات.</div></section>
-            <section class="data-section"><div class="section-header"><div><h2>أنواع الخدمات</h2><p>التصنيفات الرئيسية</p></div></div><div class="table-wrap"><table><thead><tr><th>الأيقونة</th><th>الرمز</th><th>الاسم</th><th>نوع الرحلة</th><th>الترتيب</th><th>الحالة</th></tr></thead><tbody id="kinds-body"></tbody></table></div><div class="empty-state hidden" id="kinds-empty">لم تتم إضافة أنواع خدمات.</div></section>
+            <section class="data-section"><div class="section-header"><div><h2>كتالوج الخدمات</h2><p>الخدمات والمركبات والأسعار الأساسية</p></div></div><div class="table-wrap"><table><thead><tr><th>الأيقونة</th><th>الرمز</th><th>الاسم</th><th>النوع</th><th>المركبة</th><th>السعر</th><th>الوصول</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="catalog-body"></tbody></table></div><div class="empty-state hidden" id="catalog-empty">لم تتم إضافة خدمات.</div></section>
+            <section class="data-section"><div class="section-header"><div><h2>أنواع الخدمات</h2><p>التصنيفات الرئيسية</p></div></div><div class="table-wrap"><table><thead><tr><th>الأيقونة</th><th>الرمز</th><th>الاسم</th><th>الترتيب</th><th>الافتراضي</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="kinds-body"></tbody></table></div><div class="empty-state hidden" id="kinds-empty">لم تتم إضافة أنواع خدمات.</div></section>
           </div>
         </section>
 
         <section class="view" id="view-pricing">
           <div class="section-toolbar"><div><h2>قواعد التسعير</h2><p>الأجرة ورسوم الخدمة وعمولة السائق والإلغاء</p></div><div class="command-row"><button class="button" data-form="quote">تجربة تسعير</button><button class="button primary" data-form="pricingRule">إضافة قاعدة</button></div></div>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>نوع الخدمة</th><th>الخدمة</th><th>الأساسي</th><th>لكل كم</th><th>لكل دقيقة</th><th>رسوم الخدمة</th><th>عمولة %</th><th>عمولة ثابتة</th><th>رسم الإلغاء</th><th>الحالة</th></tr></thead><tbody id="pricing-body"></tbody></table></div><div class="empty-state hidden" id="pricing-empty">لا توجد قواعد تسعير.</div></section>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>نوع الخدمة</th><th>الخدمة</th><th>الأساسي</th><th>لكل كم</th><th>لكل دقيقة</th><th>رسوم الخدمة</th><th>عمولة %</th><th>عمولة ثابتة</th><th>رسم الإلغاء</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="pricing-body"></tbody></table></div><div class="empty-state hidden" id="pricing-empty">لا توجد قواعد تسعير.</div></section>
         </section>
 
         <section class="view" id="view-wallet">
@@ -152,11 +152,11 @@
 
         <section class="view" id="view-payment-methods">
           <div class="section-toolbar"><div><h2>طرق الدفع الخارجية</h2><p>الوسائل التي تظهر للعميل أثناء دفع الرحلة أو شحن المحفظة. لا تحفظ هذه الشاشة مفاتيح مزودي الدفع.</p></div><button class="button primary" data-form="paymentMethod">إضافة طريقة دفع</button></div>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الصورة</th><th>الاسم والوصف</th><th>النوع</th><th>رمز المزود</th><th>تظهر في</th><th>الترتيب</th><th>الحالة</th></tr></thead><tbody id="payment-methods-body"></tbody></table></div><div class="empty-state hidden" id="payment-methods-empty">لم تتم إضافة طرق دفع خارجية بعد.</div></section>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الصورة</th><th>الاسم والوصف</th><th>النوع</th><th>رمز المزود</th><th>تظهر في</th><th>الترتيب</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="payment-methods-body"></tbody></table></div><div class="empty-state hidden" id="payment-methods-empty">لم تتم إضافة طرق دفع خارجية بعد.</div></section>
         </section>
 
         <section class="view" id="view-settlements">
-          <div class="section-toolbar"><div><h2>مديونيات السائقين</h2><p>تحصيل عمولة المنصة من الرحلات النقدية دون تغيير السجل المالي الأصلي.</p></div></div>
+          <div class="section-toolbar"><div><h2>مديونيات السائقين</h2><p>تحصيل عمولة المنصة من الرحلات النقدية دون تغيير السجل المالي الأصلي. كل تحصيل ينشئ قيداً مستقلاً ولا يمكن تعديله أو حذفه.</p></div></div>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>السائق</th><th>معرف المديونية</th><th>العمولة المستحقة</th><th>المحصل</th><th>المتبقي</th><th>مرجع الرحلة</th><th>التاريخ</th><th>الإجراء</th></tr></thead><tbody id="settlements-body"></tbody></table></div><div class="empty-state hidden" id="settlements-empty">لا توجد مديونيات نقدية مستحقة على السائقين.</div></section>
         </section>
 
@@ -188,7 +188,7 @@
         </section>
         <section class="view" id="view-areas">
           <div class="section-toolbar"><div><h2>مناطق الخدمة</h2><p>حدد الدول والمدن التي تعمل فيها الخدمة.</p></div><button class="button primary" data-form="serviceArea">إضافة مدينة</button></div>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الدولة</th><th>رمز الدولة</th><th>المدينة</th><th>الحالة</th><th>التاريخ</th></tr></thead><tbody id="areas-body"></tbody></table></div><div class="empty-state hidden" id="areas-empty">لم تتم إضافة مناطق خدمة.</div></section>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الدولة</th><th>رمز الدولة</th><th>المدينة</th><th>الحالة</th><th>التاريخ</th><th>الإجراءات</th></tr></thead><tbody id="areas-body"></tbody></table></div><div class="empty-state hidden" id="areas-empty">لم تتم إضافة مناطق خدمة.</div></section>
         </section>
 
         <section class="view" id="view-history">
@@ -221,6 +221,6 @@
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
   <script src="/vendor/signalr/signalr.min.js" defer></script>
   <script src="/vendor/leaflet/leaflet.js" defer></script>
-  <script src="/admin.js?v=20261008-realtime" defer></script>
+  <script src="/admin.js?v=20261015-admin-crud" defer></script>
 </body>
 </html>

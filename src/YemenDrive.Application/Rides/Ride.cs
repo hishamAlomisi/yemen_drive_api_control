@@ -5,6 +5,7 @@ using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
 using YemenDrive.Application.Accounting;
+using YemenDrive.Application.Administration;
 using YemenDrive.Application.Places;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
@@ -81,10 +82,13 @@ public sealed class Ride(
         dbContext.Rides.Add(entity);
         await StoreRecentDestinationAsync(entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
-        var recipients = await RideSearchNotificationDispatcher.NotifyAvailableDriversAsync(
-            dbContext, entity, cancellationToken);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        if (realtimePublisher is not null)
+        var recipients = entity.Status is RideStatus.Searching or RideStatus.Negotiating
+            ? await RideSearchNotificationDispatcher.NotifyAvailableDriversAsync(
+                dbContext, entity, cancellationToken)
+            : [];
+        if (recipients.Count > 0)
+            await dbContext.SaveChangesAsync(cancellationToken);
+        if (realtimePublisher is not null && recipients.Count > 0)
             await realtimePublisher.PublishRideAvailableAsync(recipients, cancellationToken);
         return ToResult(entity, recipients.Count);
     }
@@ -92,6 +96,16 @@ public sealed class Ride(
     protected override async Task<object?> UpdateAsync(RideModel model, CancellationToken cancellationToken)
     {
         var entity = await FindAsync(model.Id, cancellationToken);
+        var isAdmin = await IsAdminAsync(cancellationToken);
+        if (HasDraftDetails(model))
+        {
+            if (!isAdmin)
+                throw new ServiceException("admin_required", "تعديل بيانات إنشاء الرحلة متاح للإدارة فقط.");
+            if (entity.Status != RideStatus.Draft)
+                throw new ServiceException("ride_details_locked", "لا يمكن تعديل بيانات الرحلة بعد خروجها من المسودة.");
+            await ApplyDraftDetailsAsync(entity, model, cancellationToken);
+        }
+
         var previousStatus = entity.Status;
         var previousDriverId = entity.DriverId;
         var statusChanged = false;
@@ -108,7 +122,7 @@ public sealed class Ride(
         {
             ValidateStatusTransition(entity.Status, model.Status.Value);
             if (model.Status.Value is RideStatus.DriverEnRoute or RideStatus.InProgress or RideStatus.Completed &&
-                (currentUser.UserId != entity.DriverId && !await IsAdminAsync(cancellationToken)))
+                (currentUser.UserId != entity.DriverId && !isAdmin))
                 throw new ServiceException("driver_action_required", "تغيير حالة الرحلة التشغيلية متاح للسائق المسند فقط.");
             if (model.Status.Value == RideStatus.Completed &&
                 !await dbContext.PaymentTransactions.AnyAsync(x => x.RideId == entity.Id && x.Status == PaymentStatus.Paid, cancellationToken))
@@ -118,7 +132,7 @@ public sealed class Ride(
         }
         if (model.CustomerPaymentEnabled is not null)
         {
-            if (entity.DriverId != currentUser.UserId && !await IsAdminAsync(cancellationToken))
+            if (entity.DriverId != currentUser.UserId && !isAdmin)
                 throw new ServiceException("driver_action_required", "تمكين الدفع متاح للسائق المسند فقط.");
             if (entity.Status is not (RideStatus.InProgress or RideStatus.Completed))
                 throw new ServiceException("invalid_payment_stage", "لا يمكن تمكين الدفع في هذه المرحلة.");
@@ -126,9 +140,16 @@ public sealed class Ride(
         }
         if (model.CustomerPrice is not null)
         {
-            if (entity.Status is not (RideStatus.Searching or RideStatus.Negotiating))
+            if (entity.Status == RideStatus.Draft && isAdmin)
+            {
+                entity.CustomerPrice = model.CustomerPrice;
+            }
+            else if (entity.Status is not (RideStatus.Searching or RideStatus.Negotiating))
                 throw new ServiceException("price_already_agreed", "لا يمكن تغيير السعر بعد قبول عرض السائق.");
-            entity.CustomerPrice = model.CustomerPrice;
+            else
+            {
+                entity.CustomerPrice = model.CustomerPrice;
+            }
         }
         entity.UpdatedAtUtc = DateTime.UtcNow;
         if (entity.Status == RideStatus.InProgress && entity.StartedAtUtc is null) entity.StartedAtUtc = DateTime.UtcNow;
@@ -148,6 +169,11 @@ public sealed class Ride(
     protected override async Task<object?> DeleteAsync(RideModel model, CancellationToken cancellationToken)
     {
         var entity = await FindAsync(model.Id, cancellationToken);
+        if (!await IsAdminAsync(cancellationToken))
+            throw new ServiceException("admin_required", "حذف الرحلات متاح للإدارة فقط.");
+        if (entity.Status != RideStatus.Draft)
+            throw new ServiceException("ride_not_deletable", "لا يمكن حذف الرحلة بعد خروجها من المسودة. استخدم سير عمل الإلغاء الرسمي عند الحاجة.");
+        await DeletionGuards.EnsureRideCanBeDeletedAsync(dbContext, entity.Id, cancellationToken);
         dbContext.Rides.Remove(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
         return new { entity.Id };
@@ -371,7 +397,7 @@ public sealed class Ride(
             .Include(x => x.ServiceKind).Include(x => x.ServiceCatalogItem)
             .SingleOrDefaultAsync(x => x.Id == model.Id, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
-        EnsureRideAccess(entity);
+        await EnsureRideAccessAsync(entity, cancellationToken);
         var payments = await dbContext.PaymentTransactions.AsNoTracking()
             .Where(x => x.RideId == entity.Id)
             .OrderByDescending(x => x.CreatedAtUtc)
@@ -429,14 +455,70 @@ public sealed class Ride(
         var entity = await dbContext.Rides.Include(x => x.ServiceKind).Include(x => x.ServiceCatalogItem)
             .SingleOrDefaultAsync(x => x.Id == id, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
-        EnsureRideAccess(entity);
+        await EnsureRideAccessAsync(entity, cancellationToken);
         return entity;
     }
 
-    private void EnsureRideAccess(RideEntity ride)
+    private async Task EnsureRideAccessAsync(RideEntity ride, CancellationToken cancellationToken)
     {
-        if (currentUser.UserId is int userId && ride.CustomerId != userId && ride.DriverId != userId)
+        if (currentUser.UserId is not int userId)
+            throw new ServiceException("authentication_required", "يجب تسجيل الدخول للوصول إلى هذه الرحلة.");
+        if (ride.CustomerId != userId && ride.DriverId != userId && !await IsAdminAsync(cancellationToken))
             throw new ServiceException("ride_access_denied", "لا تملك صلاحية الوصول إلى هذه الرحلة.");
+    }
+
+    private static bool HasDraftDetails(RideModel model) =>
+        model.CustomerId is not null ||
+        model.ServiceKindId is not null ||
+        model.ServiceCatalogItemId is not null ||
+        model.PickupLabel is not null ||
+        model.PickupAddress is not null ||
+        model.DestinationLabel is not null ||
+        model.DestinationAddress is not null;
+
+    private async Task ApplyDraftDetailsAsync(
+        RideEntity entity,
+        RideModel model,
+        CancellationToken cancellationToken)
+    {
+        if (model.CustomerId is int customerId && customerId != entity.CustomerId)
+        {
+            if (!await dbContext.Users.AnyAsync(x => x.Id == customerId && x.IsActive, cancellationToken))
+                throw new ServiceException("customer_not_found", "العميل الجديد غير موجود أو حسابه موقوف.");
+            entity.CustomerId = customerId;
+        }
+
+        if (model.ServiceKindId is not null || model.ServiceCatalogItemId is not null)
+        {
+            if (model.ServiceKindId is null || model.ServiceCatalogItemId is null)
+                throw new ServiceException("invalid_service_selection", "يجب تحديد نوع الخدمة والخدمة معاً.");
+            var selectedService = await dbContext.ServiceCatalogItems.AsNoTracking().AnyAsync(
+                x => x.Id == model.ServiceCatalogItemId && x.ServiceKindId == model.ServiceKindId && x.IsActive,
+                cancellationToken);
+            if (!selectedService)
+                throw new ServiceException("service_not_found", "الخدمة المختارة غير موجودة أو غير متاحة لهذا النوع.");
+            entity.ServiceKindId = model.ServiceKindId.Value;
+            entity.ServiceCatalogItemId = model.ServiceCatalogItemId.Value;
+        }
+
+        if (model.PickupLabel is not null) entity.PickupLabel = model.PickupLabel.Trim();
+        if (model.DestinationLabel is not null) entity.DestinationLabel = model.DestinationLabel.Trim();
+        if (model.PickupAddress is not null)
+        {
+            if (string.IsNullOrWhiteSpace(model.PickupAddress))
+                throw new ServiceException("invalid_ride", "عنوان الانطلاق مطلوب.");
+            entity.PickupAddress = model.PickupAddress.Trim();
+            entity.PickupLatitude = model.PickupLatitude;
+            entity.PickupLongitude = model.PickupLongitude;
+        }
+        if (model.DestinationAddress is not null)
+        {
+            if (string.IsNullOrWhiteSpace(model.DestinationAddress))
+                throw new ServiceException("invalid_ride", "عنوان الوجهة مطلوب.");
+            entity.DestinationAddress = model.DestinationAddress.Trim();
+            entity.DestinationLatitude = model.DestinationLatitude;
+            entity.DestinationLongitude = model.DestinationLongitude;
+        }
     }
 
     private Task<bool> IsAdminAsync(CancellationToken cancellationToken) =>
