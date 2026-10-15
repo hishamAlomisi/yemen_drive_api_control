@@ -16,7 +16,24 @@ using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
 using DbUser = YemenDrive.Database.Entities.User;
 
-var builder = WebApplication.CreateBuilder(args);
+var deploymentSettingsPath = Path.Combine(AppContext.BaseDirectory, "security", "settings.json");
+var isDeploymentPackage = Directory.Exists(Path.Combine(AppContext.BaseDirectory, "security"));
+var builder = isDeploymentPackage
+    ? WebApplication.CreateBuilder(new WebApplicationOptions
+    {
+        Args = args,
+        // Keep static files and deployment settings relative to the published
+        // executable, even when a service starts it with another working folder.
+        ContentRootPath = AppContext.BaseDirectory
+    })
+    : WebApplication.CreateBuilder(args);
+if (isDeploymentPackage)
+{
+    builder.Configuration.AddJsonFile(deploymentSettingsPath, optional: true, reloadOnChange: true);
+    // The deployment JSON is the authoritative source for runtime settings,
+    // including credentials, so an inherited machine environment cannot
+    // silently replace the values packaged for this API instance.
+}
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.None);
@@ -24,7 +41,10 @@ builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogL
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 builder.WebHost.UseUrls(builder.Configuration["ApiUrl"] ?? "http://localhost:5080");
 
-var settingsPath = Path.Combine(builder.Environment.ContentRootPath, "data", "database.settings.json");
+var legacyDatabaseSettingsPath = Path.Combine(builder.Environment.ContentRootPath, "data", "database.settings.json");
+var settingsPath = Directory.Exists(Path.Combine(AppContext.BaseDirectory, "security"))
+    ? deploymentSettingsPath
+    : legacyDatabaseSettingsPath;
 builder.Services.AddSingleton(new DatabaseConfigurationStore(settingsPath));
 builder.Services.AddSingleton<IDatabaseProvider, SqlServerDatabaseProvider>();
 builder.Services.AddSingleton<DatabaseConfigurator>();
@@ -162,7 +182,8 @@ app.MapPost("/api/safety/recordings/{recordingId:int}/chunks/{sequence:int}", as
     ICurrentUserContext currentUser,
     CancellationToken token) =>
 {
-    const long maxChunkBytes = 256 * 1024;
+    // A 20-second mono PCM16 segment at 16 kHz is about 625 KiB.
+    const long maxChunkBytes = 1024 * 1024;
     var userId = currentUser.UserId;
     if (userId is null)
         return Results.Unauthorized();

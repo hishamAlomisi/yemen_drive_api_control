@@ -173,9 +173,12 @@ public sealed class Ride(
             throw new ServiceException("admin_required", "حذف الرحلات متاح للإدارة فقط.");
         if (entity.Status != RideStatus.Draft)
             throw new ServiceException("ride_not_deletable", "لا يمكن حذف الرحلة بعد خروجها من المسودة. استخدم سير عمل الإلغاء الرسمي عند الحاجة.");
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         await DeletionGuards.EnsureRideCanBeDeletedAsync(dbContext, entity.Id, cancellationToken);
+        await DeletionGuards.DeleteAutomaticallyCreatedRideChildrenAsync(dbContext, entity.Id, cancellationToken);
         dbContext.Rides.Remove(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return new { entity.Id };
     }
 
@@ -415,6 +418,10 @@ public sealed class Ride(
                 .Where(x => x.DriverId == entity.DriverId)
                 .Select(x => new { x.DriverId, x.Latitude, x.Longitude, x.Bearing, x.Speed, x.IsOnline, x.ObservedAtUtc })
                 .SingleOrDefaultAsync(cancellationToken);
+        var driverRating = entity.DriverId is int ratedDriverId
+            ? await dbContext.DriverRatings.AsNoTracking().Where(x => x.DriverUserId == ratedDriverId)
+                .Select(x => (decimal?)x.Score).AverageAsync(cancellationToken)
+            : null;
         return new
         {
             ride = ToResult(entity),
@@ -425,7 +432,7 @@ public sealed class Ride(
                 phoneNumber = entity.Driver.PhoneNumber,
                 vehicleModel = entity.Driver.DriverProfile == null ? null : entity.Driver.DriverProfile.VehicleModel,
                 plateNumber = entity.Driver.DriverProfile == null ? null : entity.Driver.DriverProfile.PlateNumber,
-                rating = entity.Driver.DriverProfile == null ? null : (decimal?)entity.Driver.DriverProfile.Rating,
+                rating = entity.Driver.DriverProfile == null ? null : driverRating,
                 photoUrl = entity.Driver.DriverProfile == null ? null : entity.Driver.DriverProfile.PhotoUrl
             },
             driverLocation,

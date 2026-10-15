@@ -1,6 +1,8 @@
 namespace YemenDrive.Database.Entities;
 
 public enum UserRole { Customer, Driver, Admin }
+public enum DriverRatingSource { Customer, Administrator }
+public enum NotificationCampaignTarget { Customers, Drivers, Everyone }
 public enum RideStatus { Draft, Searching, Negotiating, DriverAssigned, DriverEnRoute, InProgress, Completed, Cancelled, CancellationPending }
 public enum OfferStatus { Pending, Accepted, Rejected, Expired }
 public enum WalletTransactionType { Credit, Debit, Hold, Release, Refund, Commission }
@@ -20,7 +22,8 @@ public enum LedgerAccountPurpose
 public enum JournalEntryType
 {
     OpeningBalance, RideCashCollection, RideWalletPayment, WalletTopUp,
-    RideCancellation, DriverSettlementCollection, ManualAdjustment, Reversal
+    RideCancellation, DriverSettlementCollection, ManualAdjustment, Reversal,
+    AdminCashReceipt = 8, AdminCashDisbursement = 9, AdminAccountTransfer = 10
 }
 public enum JournalEntryStatus { Draft, Posted }
 public enum CashCollectionApprovalStatus { Pending, Approved, Rejected, InsufficientBalance }
@@ -102,6 +105,22 @@ public sealed class DriverProfile : Entity
     public bool IsAvailable { get; set; }
     public decimal Rating { get; set; }
     public string? PhotoUrl { get; set; }
+}
+
+/// <summary>A rating submitted by a customer after a completed ride or by an administrator.</summary>
+public sealed class DriverRating : Entity
+{
+    public int DriverUserId { get; set; }
+    public User Driver { get; set; } = null!;
+    public int? CustomerUserId { get; set; }
+    public User? Customer { get; set; }
+    public int? AdminUserId { get; set; }
+    public User? Admin { get; set; }
+    public int? RideId { get; set; }
+    public Ride? Ride { get; set; }
+    public decimal Score { get; set; }
+    public string? Comment { get; set; }
+    public DriverRatingSource Source { get; set; }
 }
 
 public sealed class DriverLiveLocation : Entity
@@ -229,6 +248,17 @@ public sealed class Notification : Entity
     public string? DataJson { get; set; }
     public bool IsRead { get; set; }
     public NotificationPushOutbox? PushOutbox { get; set; }
+}
+
+/// <summary>A retained administrator-authored push/in-app notification campaign.</summary>
+public sealed class AdminNotificationCampaign : Entity
+{
+    public string Body { get; set; } = string.Empty;
+    public NotificationCampaignTarget Target { get; set; }
+    public int RecipientCount { get; set; }
+    public int CreatedByUserId { get; set; }
+    public User CreatedBy { get; set; } = null!;
+    public int? SourceCampaignId { get; set; }
 }
 
 /// <summary>A device registration used only for authenticated push delivery.</summary>

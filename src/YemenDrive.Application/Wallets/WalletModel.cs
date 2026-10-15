@@ -8,4 +8,5 @@ public sealed record WalletModel(
     WalletTransactionType Type = WalletTransactionType.Credit,
     string Description = "",
     int? RideId = null,
-    string? ExternalReference = null);
+    string? ExternalReference = null,
+    string? PhoneNumber = null);

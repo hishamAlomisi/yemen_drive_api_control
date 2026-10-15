@@ -10,15 +10,6 @@ public sealed class DatabaseConfigurator(
     DatabaseConfigurationStore store,
     IEnumerable<IDatabaseProvider> providers)
 {
-    private static readonly string[] RequiredTables =
-    [
-        "Users", "DriverProfiles", "DriverLiveLocations", "SavedPlaces", "Rides",
-        "RideOffers", "Wallets", "WalletTransactions", "LocationUpdates", "Notifications",
-        "PaymentTransactions", "PaymentCardTokens", "Promotions", "SupportTickets", "ReferralRedemptions", "PricingRules",
-        "LedgerAccounts", "JournalEntries", "JournalLines", "DriverSettlements",
-        "CommunicationMessages", "EmergencyRecordings", "RideServiceCatalogItems", "ServiceKinds"
-    ];
-
     private readonly IReadOnlyDictionary<string, IDatabaseProvider> _providers = providers
         .ToDictionary(provider => provider.Name, StringComparer.OrdinalIgnoreCase);
 
@@ -73,7 +64,13 @@ public sealed class DatabaseConfigurator(
             var existingTables = await context.Database.SqlQueryRaw<string>(
                     "SELECT [name] AS [Value] FROM sys.tables")
                 .ToListAsync(cancellationToken);
-            var missingTables = RequiredTables
+            var requiredTables = context.Model.GetEntityTypes()
+                .Select(entity => entity.GetTableName())
+                .OfType<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var missingTables = requiredTables
                 .Except(existingTables, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
@@ -87,7 +84,7 @@ public sealed class DatabaseConfigurator(
             await store.SaveAsync(settings, cancellationToken);
             return new(
                 true,
-                $"تم إنشاء وتجهيز قاعدة '{settings.Database}' على الخادم '{settings.Server}' وبداخلها {RequiredTables.Length} جدولاً.");
+                $"تم إنشاء وتجهيز قاعدة '{settings.Database}' على الخادم '{settings.Server}' والتحقق من جداول وكيانات النظام ({requiredTables.Length} جدولاً).");
         }
         catch (Exception exception)
         {

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
+using YemenDrive.Database.Entities;
 using YemenDrive.Services.Reports;
 using YemenDrive.Shared.Security;
 
@@ -20,7 +21,16 @@ public sealed class LedgerAccountReport(
             {
                 x.Id, x.Code, x.Name, x.Type, x.Purpose, x.Currency, x.IsActive,
                 x.IsSystem, x.IsPosting, x.ParentLedgerAccountId, x.FinancialPartyId,
-                financialPartyName = x.FinancialParty == null ? null : x.FinancialParty.Name
+                financialPartyName = x.FinancialParty == null ? null : x.FinancialParty.Name,
+                financialPartyPhoneNumber = x.FinancialParty == null || x.FinancialParty.EntityId == null
+                    ? null
+                    : x.FinancialParty.Type == FinancialPartyType.User
+                        ? db.Users.Where(user => user.Id == x.FinancialParty.EntityId.Value)
+                            .Select(user => user.PhoneNumber).FirstOrDefault()
+                        : x.FinancialParty.Type == FinancialPartyType.Wallet
+                            ? db.Wallets.Where(wallet => wallet.Id == x.FinancialParty.EntityId.Value)
+                                .Select(wallet => wallet.User.PhoneNumber).FirstOrDefault()
+                            : null
             })
             .ToListAsync(token);
         return accounts;

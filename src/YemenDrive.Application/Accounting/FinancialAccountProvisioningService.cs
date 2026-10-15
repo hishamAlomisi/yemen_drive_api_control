@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Entities;
+using YemenDrive.Shared.Api;
 using LedgerAccountEntity = YemenDrive.Database.Entities.LedgerAccount;
 
 namespace YemenDrive.Application.Accounting;
@@ -73,11 +74,68 @@ public sealed class FinancialAccountProvisioningService(YemenDriveDbContext db)
         foreach (var user in users) await ProvisionUserAsync(user, token);
         var serviceKinds = await db.ServiceKinds.ToListAsync(token);
         foreach (var serviceKind in serviceKinds) await ProvisionServiceKindAsync(serviceKind, token);
+        var paymentMethods = await db.PaymentMethods.ToListAsync(token);
+        foreach (var paymentMethod in paymentMethods) await ProvisionPaymentMethodAsync(paymentMethod, token);
         await db.SaveChangesAsync(token);
         return new FinancialProvisioningResult(
             users.Count, serviceKinds.Count,
             await db.FinancialParties.CountAsync(token) - beforeParties,
             await db.LedgerAccounts.CountAsync(token) - beforeAccounts);
+    }
+
+    public async Task ProvisionPaymentMethodAsync(PaymentMethod paymentMethod, CancellationToken token)
+    {
+        await EnsureSystemAccountsAsync(token);
+        var party = await EnsurePartyAsync(
+            FinancialPartyType.ExternalProvider,
+            paymentMethod.Id,
+            $"EXT-PM-{paymentMethod.Id}",
+            $"طريقة دفع خارجية: {paymentMethod.NameAr}",
+            token);
+        party.IsActive = paymentMethod.IsActive;
+        await EnsureAccountAsync(
+            code: $"1200-PM-{paymentMethod.Id}",
+            name: $"تسوية طريقة الدفع: {paymentMethod.NameAr}",
+            type: LedgerAccountType.Asset,
+            purpose: LedgerAccountPurpose.ExternalWallet,
+            party: party,
+            parentCode: "1200",
+            token,
+            isActive: paymentMethod.IsActive);
+    }
+
+    public async Task RemovePaymentMethodAccountsAsync(PaymentMethod paymentMethod, CancellationToken token)
+    {
+        var party = await db.FinancialParties.SingleOrDefaultAsync(
+            x => x.Type == FinancialPartyType.ExternalProvider && x.EntityId == paymentMethod.Id, token);
+        if (party is null) return;
+
+        var account = await db.LedgerAccounts.SingleOrDefaultAsync(
+            x => x.FinancialPartyId == party.Id &&
+                 x.Purpose == LedgerAccountPurpose.ExternalWallet &&
+                 x.Currency == Currency,
+            token);
+        if (account is not null)
+        {
+            var hasJournalEntries = await db.JournalLines.AnyAsync(
+                x => x.LedgerAccountId == account.Id || x.FinancialPartyId == party.Id, token);
+            if (hasJournalEntries)
+                throw new ServiceException(
+                    "payment_method_account_in_use",
+                    "لا يمكن حذف طريقة الدفع لارتباط حساب تسويتها بقيود محاسبية. أوقف طريقة الدفع بدلًا من حذفها.");
+
+            if (await db.LedgerAccounts.AnyAsync(x => x.ParentLedgerAccountId == account.Id, token))
+                throw new ServiceException(
+                    "payment_method_account_has_children",
+                    "لا يمكن حذف طريقة الدفع قبل معالجة الحسابات التابعة لحساب تسويتها.");
+
+            db.LedgerAccounts.Remove(account);
+        }
+
+        var hasOtherAccounts = await db.LedgerAccounts.AnyAsync(x => x.FinancialPartyId == party.Id, token);
+        var hasPartyJournalEntries = await db.JournalLines.AnyAsync(x => x.FinancialPartyId == party.Id, token);
+        if (!hasOtherAccounts && !hasPartyJournalEntries)
+            db.FinancialParties.Remove(party);
     }
 
     public async Task EnsureSystemAccountsAsync(CancellationToken token)
@@ -131,7 +189,7 @@ public sealed class FinancialAccountProvisioningService(YemenDriveDbContext db)
 
     private async Task EnsureAccountAsync(
         string code, string name, LedgerAccountType type, LedgerAccountPurpose purpose,
-        FinancialParty party, string parentCode, CancellationToken token)
+        FinancialParty party, string parentCode, CancellationToken token, bool isActive = true)
     {
         var account = await db.LedgerAccounts.SingleOrDefaultAsync(x =>
             x.FinancialPartyId == party.Id && x.Purpose == purpose && x.Currency == Currency, token);
@@ -139,7 +197,7 @@ public sealed class FinancialAccountProvisioningService(YemenDriveDbContext db)
         if (account is not null)
         {
             account.Name = name;
-            account.IsActive = true;
+            account.IsActive = isActive;
             account.IsPosting = true;
             account.ParentLedgerAccountId = parentId;
             return;
@@ -147,7 +205,7 @@ public sealed class FinancialAccountProvisioningService(YemenDriveDbContext db)
         db.LedgerAccounts.Add(new LedgerAccountEntity
         {
             Code = code, Name = name, Type = type, Purpose = purpose, Currency = Currency,
-            IsActive = true, IsSystem = false, IsPosting = true,
+            IsActive = isActive, IsSystem = false, IsPosting = true,
             FinancialPartyId = party.Id, ParentLedgerAccountId = parentId
         });
     }

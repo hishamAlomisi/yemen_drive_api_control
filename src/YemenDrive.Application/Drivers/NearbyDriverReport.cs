@@ -44,7 +44,8 @@ public sealed class NearbyDriverReport(
             query = query.Where(item => item.profile.ServiceCatalogItemId == serviceCatalogItemId);
 
         var candidates = await query
-            .OrderByDescending(item => item.profile.Rating)
+            .OrderByDescending(item => dbContext.DriverRatings.Where(r => r.DriverUserId == item.profile.UserId)
+                .Select(r => (decimal?)r.Score).Average() ?? 0m)
             .Take(200)
             .Select(item => new
             {
@@ -53,7 +54,8 @@ public sealed class NearbyDriverReport(
                 item.profile.PhotoUrl,
                 item.profile.VehicleModel,
                 item.profile.PlateNumber,
-                item.profile.Rating,
+                Rating = dbContext.DriverRatings.Where(r => r.DriverUserId == item.profile.UserId)
+                    .Select(r => (decimal?)r.Score).Average() ?? 0m,
                 item.profile.ServiceCatalogItem.Code,
                 Latitude = item.location.Latitude,
                 Longitude = item.location.Longitude,

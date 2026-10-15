@@ -10,6 +10,7 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<TrustedDevice> TrustedDevices => Set<TrustedDevice>();
     public DbSet<AuthSession> AuthSessions => Set<AuthSession>();
     public DbSet<DriverProfile> DriverProfiles => Set<DriverProfile>();
+    public DbSet<DriverRating> DriverRatings => Set<DriverRating>();
     public DbSet<DriverLiveLocation> DriverLiveLocations => Set<DriverLiveLocation>();
     public DbSet<SavedPlace> SavedPlaces => Set<SavedPlace>();
     public DbSet<ServiceArea> ServiceAreas => Set<ServiceArea>();
@@ -19,6 +20,7 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<WalletTransaction> WalletTransactions => Set<WalletTransaction>();
     public DbSet<LocationUpdate> LocationUpdates => Set<LocationUpdate>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<AdminNotificationCampaign> AdminNotificationCampaigns => Set<AdminNotificationCampaign>();
     public DbSet<DevicePushInstallation> DevicePushInstallations => Set<DevicePushInstallation>();
     public DbSet<NotificationPushOutbox> NotificationPushOutbox => Set<NotificationPushOutbox>();
     public DbSet<NotificationPushDelivery> NotificationPushDeliveries => Set<NotificationPushDelivery>();
@@ -126,6 +128,21 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
 
         modelBuilder.Entity<DriverProfile>().HasIndex(x => x.UserId).IsUnique();
         modelBuilder.Entity<DriverProfile>().HasIndex(x => new { x.ServiceKindId, x.ServiceCatalogItemId });
+        modelBuilder.Entity<DriverRating>().HasIndex(x => new { x.DriverUserId, x.CreatedAtUtc });
+        modelBuilder.Entity<DriverRating>().HasIndex(x => new { x.RideId, x.Source })
+            .IsUnique().HasFilter("[RideId] IS NOT NULL AND [Source] = 0");
+        modelBuilder.Entity<DriverRating>().Property(x => x.Score).HasPrecision(3, 2);
+        modelBuilder.Entity<DriverRating>().Property(x => x.Comment).HasMaxLength(2000);
+        modelBuilder.Entity<DriverRating>().ToTable(table => table.HasCheckConstraint(
+            "CK_DriverRatings_Score_Range", "[Score] >= 1 AND [Score] <= 5"));
+        modelBuilder.Entity<DriverRating>()
+            .HasOne(x => x.Driver).WithMany().HasForeignKey(x => x.DriverUserId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<DriverRating>()
+            .HasOne(x => x.Customer).WithMany().HasForeignKey(x => x.CustomerUserId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<DriverRating>()
+            .HasOne(x => x.Admin).WithMany().HasForeignKey(x => x.AdminUserId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<DriverRating>()
+            .HasOne(x => x.Ride).WithMany().HasForeignKey(x => x.RideId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<DriverLiveLocation>().HasIndex(x => x.DriverId).IsUnique();
         modelBuilder.Entity<Wallet>().HasIndex(x => x.UserId).IsUnique();
         modelBuilder.Entity<Wallet>().Property(x => x.RowVersion).IsRowVersion();
@@ -180,6 +197,15 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<RideCancellationRequest>().ToTable(table => table.HasCheckConstraint(
             "CK_RideCancellationRequests_Reason_NotBlank", "LEN(LTRIM(RTRIM([Reason]))) >= 3"));
         modelBuilder.Entity<Notification>().HasIndex(x => new { x.UserId, x.IsRead, x.CreatedAtUtc });
+        modelBuilder.Entity<AdminNotificationCampaign>().HasIndex(x => x.CreatedAtUtc);
+        modelBuilder.Entity<AdminNotificationCampaign>().Property(x => x.Body).HasMaxLength(700).IsRequired();
+        modelBuilder.Entity<AdminNotificationCampaign>().ToTable(table =>
+        {
+            table.HasCheckConstraint("CK_AdminNotificationCampaigns_Target", "[Target] >= 0 AND [Target] <= 2");
+            table.HasCheckConstraint("CK_AdminNotificationCampaigns_RecipientCount", "[RecipientCount] >= 0");
+        });
+        modelBuilder.Entity<AdminNotificationCampaign>()
+            .HasOne(x => x.CreatedBy).WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<DevicePushInstallation>().Property(x => x.DeviceId).HasMaxLength(128).IsRequired();
         modelBuilder.Entity<DevicePushInstallation>().Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
         modelBuilder.Entity<DevicePushInstallation>().Property(x => x.FcmToken).HasMaxLength(4096).IsRequired();

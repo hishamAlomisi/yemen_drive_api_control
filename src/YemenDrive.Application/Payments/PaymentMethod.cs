@@ -1,7 +1,9 @@
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Accounting;
 using YemenDrive.Application.Administration;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
@@ -9,16 +11,27 @@ using YemenDrive.Shared.Security;
 
 namespace YemenDrive.Application.Payments;
 
-public sealed class PaymentMethod(YemenDriveDbContext db, DatabaseConfigurationStore config, ICurrentUserContext currentUser)
+public sealed class PaymentMethod(
+    YemenDriveDbContext db,
+    DatabaseConfigurationStore config,
+    ICurrentUserContext currentUser,
+    FinancialAccountProvisioningService financialAccounts)
     : OperationsService<PaymentMethodModel>(config)
 {
     protected override async Task<object?> AddAsync(PaymentMethodModel model, CancellationToken token)
     {
         await RequireAdminAsync(token); Validate(model);
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         if (await db.PaymentMethods.AnyAsync(x => x.Code == model.Code!.Trim(), token))
             throw new ServiceException("payment_method_exists", "رمز طريقة الدفع مستخدم مسبقاً.");
-        var entity = new YemenDrive.Database.Entities.PaymentMethod(); Apply(entity, model);
-        db.PaymentMethods.Add(entity); await db.SaveChangesAsync(token); return Result(entity);
+        var entity = new YemenDrive.Database.Entities.PaymentMethod();
+        Apply(entity, model);
+        db.PaymentMethods.Add(entity);
+        await db.SaveChangesAsync(token);
+        await financialAccounts.ProvisionPaymentMethodAsync(entity, token);
+        await db.SaveChangesAsync(token);
+        await transaction.CommitAsync(token);
+        return Result(entity);
     }
     protected override async Task<object?> UpdateAsync(PaymentMethodModel model, CancellationToken token)
     {
@@ -39,7 +52,14 @@ public sealed class PaymentMethod(YemenDriveDbContext db, DatabaseConfigurationS
             throw new ServiceException(
                 "payment_method_identifier_locked",
                 "لا يمكن تغيير رمز طريقة الدفع أو رمز مزودها بعد تسجيل حركات دفع مرتبطة بها.");
-        Apply(entity, model); entity.UpdatedAtUtc = DateTime.UtcNow; await db.SaveChangesAsync(token); return Result(entity);
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        Apply(entity, model);
+        entity.UpdatedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(token);
+        await financialAccounts.ProvisionPaymentMethodAsync(entity, token);
+        await db.SaveChangesAsync(token);
+        await transaction.CommitAsync(token);
+        return Result(entity);
     }
     protected override async Task<object?> DeleteAsync(PaymentMethodModel model, CancellationToken token)
     {
@@ -47,9 +67,12 @@ public sealed class PaymentMethod(YemenDriveDbContext db, DatabaseConfigurationS
         if (model.Id is null) throw new ServiceException("id_required", "معرف طريقة الدفع مطلوب.");
         var entity = await db.PaymentMethods.SingleOrDefaultAsync(x => x.Id == model.Id, token)
             ?? throw new ServiceException("payment_method_not_found", "طريقة الدفع غير موجودة.");
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         await DeletionGuards.EnsurePaymentMethodCanBeDeletedAsync(db, entity.Code, entity.ProviderCode, token);
+        await financialAccounts.RemovePaymentMethodAccountsAsync(entity, token);
         db.PaymentMethods.Remove(entity);
         await db.SaveChangesAsync(token);
+        await transaction.CommitAsync(token);
         return new { entity.Id };
     }
     private async Task RequireAdminAsync(CancellationToken token) { var id=currentUser.RequireUserId(); if (!await db.Users.AnyAsync(x=>x.Id==id&&x.Role==UserRole.Admin&&x.IsActive,token)) throw new ServiceException("admin_required","هذه العملية للإدارة فقط."); }

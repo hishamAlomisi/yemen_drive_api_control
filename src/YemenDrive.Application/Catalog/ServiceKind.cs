@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
@@ -51,9 +52,12 @@ public sealed class ServiceKind(
     protected override async Task<object?> DeleteAsync(ServiceKindModel model, CancellationToken cancellationToken)
     {
         var entity = await FindAsync(model.Id, cancellationToken);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         await DeletionGuards.EnsureServiceKindCanBeDeletedAsync(dbContext, entity.Id, cancellationToken);
+        await DeletionGuards.DeleteAutomaticallyCreatedServiceKindChildrenAsync(dbContext, entity.Id, cancellationToken);
         dbContext.ServiceKinds.Remove(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return new { entity.Id };
     }
 

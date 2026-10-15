@@ -19,7 +19,13 @@ public sealed class DriverReport(
                 serviceKindCode = x.ServiceKind.Code, serviceKindNameAr = x.ServiceKind.NameAr,
                 serviceCode = x.ServiceCatalogItem.Code, serviceNameAr = x.ServiceCatalogItem.NameAr,
                 x.VehicleModel, x.PlateNumber,
-                x.CommissionRate, x.IsAvailable, x.Rating, x.PhotoUrl, x.CreatedAtUtc, x.UpdatedAtUtc
+                isActive = x.User.IsActive,
+                walletId = dbContext.Wallets.Where(wallet => wallet.UserId == x.UserId)
+                    .Select(wallet => (int?)wallet.Id).FirstOrDefault(),
+                x.CommissionRate, x.IsAvailable,
+                rating = dbContext.DriverRatings.Where(r => r.DriverUserId == x.UserId)
+                    .Select(r => (decimal?)r.Score).Average() ?? 0m,
+                x.PhotoUrl, x.CreatedAtUtc, x.UpdatedAtUtc
             })
             .ToListAsync(cancellationToken);
 }

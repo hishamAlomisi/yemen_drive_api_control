@@ -148,7 +148,8 @@ public sealed class TrackingHub(
                 photoUrl = item.PhotoUrl,
                 vehicleModel = item.VehicleModel,
                 plateNumber = item.PlateNumber,
-                rating = item.Rating,
+                rating = db.DriverRatings.Where(rating => rating.DriverUserId == item.UserId)
+                    .Select(rating => (decimal?)rating.Score).Average() ?? 0m,
                 serviceCode = item.ServiceCatalogItem.Code
             })
             .SingleOrDefaultAsync(Context.ConnectionAborted);

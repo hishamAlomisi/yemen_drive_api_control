@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using YemenDrive.Shared.Configuration;
 
 namespace YemenDrive.Database.Configuration;
@@ -34,10 +35,28 @@ public sealed class DatabaseConfigurationStore : IDatabaseConfiguration
                 Directory.CreateDirectory(directory);
             }
 
-            await File.WriteAllTextAsync(
-                _filePath,
-                JsonSerializer.Serialize(settings, JsonOptions),
-                cancellationToken);
+            JsonObject document;
+            try
+            {
+                document = File.Exists(_filePath)
+                    ? JsonNode.Parse(await File.ReadAllTextAsync(_filePath, cancellationToken)) as JsonObject
+                        ?? new JsonObject()
+                    : new JsonObject();
+            }
+            catch (JsonException)
+            {
+                document = new JsonObject();
+            }
+
+            foreach (var key in document.Select(item => item.Key)
+                         .Where(key => string.Equals(key, "Database", StringComparison.OrdinalIgnoreCase))
+                         .ToArray())
+            {
+                document.Remove(key);
+            }
+
+            document["Database"] = JsonSerializer.SerializeToNode(settings, JsonOptions);
+            await File.WriteAllTextAsync(_filePath, document.ToJsonString(JsonOptions), cancellationToken);
             _current = settings;
         }
         finally
@@ -55,7 +74,24 @@ public sealed class DatabaseConfigurationStore : IDatabaseConfiguration
 
         try
         {
-            return JsonSerializer.Deserialize<DatabaseSettings>(File.ReadAllText(_filePath), JsonOptions);
+            using var document = JsonDocument.Parse(File.ReadAllText(_filePath));
+            var root = document.RootElement;
+            foreach (var property in root.EnumerateObject())
+            {
+                if (string.Equals(property.Name, "Database", StringComparison.OrdinalIgnoreCase) &&
+                    property.Value.ValueKind == JsonValueKind.Object)
+                {
+                    return JsonSerializer.Deserialize<DatabaseSettings>(property.Value.GetRawText(), JsonOptions);
+                }
+            }
+
+            // Continue to support the original database.settings.json format
+            // during development and upgrades from older deployments.
+            var hasServer = root.EnumerateObject().Any(property =>
+                string.Equals(property.Name, "Server", StringComparison.OrdinalIgnoreCase));
+            return hasServer
+                ? JsonSerializer.Deserialize<DatabaseSettings>(root.GetRawText(), JsonOptions)
+                : null;
         }
         catch (JsonException)
         {

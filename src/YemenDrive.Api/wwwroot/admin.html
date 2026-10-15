@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YemenDrive | لوحة التحكم</title>
+  <link rel="icon" type="image/png" href="/yemen-drive-page-icon.png?v=20261015">
   <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/admin.css?v=20261015-admin-crud">
+  <link rel="stylesheet" href="/admin.css?v=20261015-topbar-theme">
 </head>
 <body>
   <div class="admin-login" id="admin-login">
     <form class="admin-login-card" id="admin-login-form">
-      <div class="login-brand"><div class="brand-mark">YD</div><div><strong>YemenDrive</strong><span>لوحة الإدارة</span></div></div>
+      <div class="login-brand"><div class="brand-mark"><img src="/yemen-drive-page-icon.png" alt="YemenDrive"></div><div><strong>YemenDrive</strong><span>لوحة الإدارة</span></div></div>
       <h1>تسجيل دخول الإدارة</h1>
       <p>استخدم حساب المدير للدخول إلى لوحة التحكم.</p>
       <p class="login-hint">الحساب التجريبي: 700000001<br>كلمة المرور: Admin1234!</p>
@@ -23,28 +24,79 @@
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand-block">
-        <div class="brand-mark">YD</div>
+        <div class="brand-mark"><img src="/yemen-drive-page-icon.png" alt="YemenDrive"></div>
         <div><strong>YemenDrive</strong><span>لوحة الإدارة</span></div>
       </div>
 
       <nav class="main-nav" aria-label="التنقل الرئيسي">
         <button class="nav-item active" data-view="overview"><span class="nav-icon">⌂</span><span>نظرة عامة</span></button>
-        <button class="nav-item" data-view="users"><span class="nav-icon">◎</span><span>المستخدمون</span></button>
-        <button class="nav-item" data-view="drivers"><span class="nav-icon">◇</span><span>السائقون</span></button>
-        <button class="nav-item" data-view="rides"><span class="nav-icon">↗</span><span>الرحلات</span></button>
-        <button class="nav-item" data-view="cancellations"><span class="nav-icon">!</span><span>طلبات الإلغاء</span></button>
-        <button class="nav-item" data-view="safety"><span class="nav-icon">⌁</span><span>بلاغات السلامة</span></button>
-        <button class="nav-item" data-view="safety-recordings"><span class="nav-icon">♫</span><span>تسجيلات السلامة</span></button>
-        <button class="nav-item" data-view="catalog"><span class="nav-icon">▦</span><span>الخدمات</span></button>
-        <button class="nav-item" data-view="pricing"><span class="nav-icon">¤</span><span>التسعير</span></button>
-        <button class="nav-item" data-view="wallet"><span class="nav-icon">□</span><span>المحفظة</span></button>
-        <button class="nav-item" data-view="payment-methods"><span class="nav-icon">▣</span><span>طرق الدفع</span></button>
-        <button class="nav-item" data-view="settlements"><span class="nav-icon">⇄</span><span>مديونيات السائقين</span></button>
-        <button class="nav-item" data-view="ledger"><span class="nav-icon">≡</span><span>كشف الحساب</span></button>
-      <button class="nav-item" data-view="places"><span class="nav-icon">☆</span><span>المفضلة</span></button>
-      <button class="nav-item" data-view="areas"><span class="nav-icon">⌖</span><span>مناطق الخدمة</span></button>
-        <button class="nav-item" data-view="history"><span class="nav-icon">◷</span><span>سجل الرحلات</span></button>
-        <button class="nav-item" data-view="console"><span class="nav-icon">›_</span><span>محطة API</span></button>
+        <details class="nav-group" data-nav-group="system">
+          <summary class="nav-group-heading"><span class="nav-icon">⚙</span><span>إدارة النظام</span><span class="nav-group-chevron">⌄</span></summary>
+          <div class="nav-submenu">
+            <button class="nav-item nav-sub-item" data-view="users"><span class="nav-icon">◎</span><span>المستخدمون</span></button>
+            <button class="nav-item nav-sub-item" data-view="areas"><span class="nav-icon">⌖</span><span>مناطق الخدمة</span></button>
+            <button class="nav-item nav-sub-item" data-view="catalog"><span class="nav-icon">▦</span><span>الخدمات وأنواعها</span></button>
+            <button class="nav-item nav-sub-item" data-view="pricing"><span class="nav-icon">¤</span><span>التسعير</span></button>
+            <button class="nav-item nav-sub-item" data-view="payment-methods"><span class="nav-icon">▣</span><span>طرق الدفع</span></button>
+            <button class="nav-item nav-sub-item" data-view="console"><span class="nav-icon">›_</span><span>محطة API</span></button>
+          </div>
+        </details>
+        <details class="nav-group" data-nav-group="drivers">
+          <summary class="nav-group-heading"><span class="nav-icon">◇</span><span>إدارة السائقين</span><span class="nav-group-chevron">⌄</span></summary>
+          <div class="nav-submenu">
+            <button class="nav-item nav-sub-item" data-view="drivers"><span class="nav-icon">◇</span><span>السائقون وإضافة سائق</span></button>
+            <button class="nav-item nav-sub-item" data-view="driver-ratings"><span class="nav-icon">★</span><span>تقييمات السائقين</span></button>
+            <button class="nav-item nav-sub-item" data-view="settlements"><span class="nav-icon">⇄</span><span>مديونيات السائقين</span></button>
+          </div>
+        </details>
+        <details class="nav-group" data-nav-group="customers">
+          <summary class="nav-group-heading"><span class="nav-icon">♙</span><span>العملاء والرحلات</span><span class="nav-group-chevron">⌄</span></summary>
+          <div class="nav-submenu">
+            <button class="nav-item nav-sub-item" data-view="customers"><span class="nav-icon">♙</span><span>العملاء</span></button>
+            <button class="nav-item nav-sub-item" data-view="rides"><span class="nav-icon">↗</span><span>الرحلات</span></button>
+            <button class="nav-item nav-sub-item" data-view="cancellations"><span class="nav-icon">!</span><span>طلبات الإلغاء</span></button>
+            <button class="nav-item nav-sub-item" data-view="wallet"><span class="nav-icon">□</span><span>المحافظ</span></button>
+            <button class="nav-item nav-sub-item" data-view="places"><span class="nav-icon">☆</span><span>الأماكن المحفوظة</span></button>
+            <details class="nav-subgroup" data-nav-subgroup="safety">
+              <summary class="nav-subgroup-heading"><span class="nav-icon">⌁</span><span>السلامة</span><span class="nav-group-chevron">⌄</span></summary>
+              <div class="nav-submenu nav-submenu-nested">
+                <button class="nav-item nav-sub-item" data-view="safety"><span class="nav-icon">⌁</span><span>بلاغات السلامة</span></button>
+                <button class="nav-item nav-sub-item" data-view="safety-recordings"><span class="nav-icon">♫</span><span>تسجيلات السلامة</span></button>
+              </div>
+            </details>
+          </div>
+        </details>
+        <details class="nav-group" data-nav-group="reports">
+          <summary class="nav-group-heading"><span class="nav-icon">▤</span><span>الحسابات والتقارير</span><span class="nav-group-chevron">⌄</span></summary>
+          <div class="nav-submenu">
+            <button class="nav-item nav-sub-item" data-view="ledger"><span class="nav-icon">≡</span><span>كشف الحساب</span></button>
+            <button class="nav-item nav-sub-item" data-view="history"><span class="nav-icon">◷</span><span>سجل الرحلات</span></button>
+          </div>
+        </details>
+        <details class="nav-group" data-nav-group="financial-reports">
+          <summary class="nav-group-heading"><span class="nav-icon">▥</span><span>التقارير المالية</span><span class="nav-group-chevron">⌄</span></summary>
+          <div class="nav-submenu">
+            <button class="nav-item nav-sub-item" data-view="financial-reports" data-financial-report="position"><span class="nav-icon">▣</span><span>قائمة المركز المالي</span></button>
+            <button class="nav-item nav-sub-item" data-view="financial-reports" data-financial-report="trialBalance"><span class="nav-icon">≡</span><span>ميزان المراجعة</span></button>
+            <button class="nav-item nav-sub-item" data-view="financial-reports" data-financial-report="income"><span class="nav-icon">↗</span><span>قائمة الدخل والأرباح والخسائر</span></button>
+            <button class="nav-item nav-sub-item" data-view="financial-reports" data-financial-report="cashFlow"><span class="nav-icon">⇄</span><span>قائمة التدفقات النقدية</span></button>
+            <button class="nav-item nav-sub-item" data-view="financial-reports" data-financial-report="equity"><span class="nav-icon">◉</span><span>التغيرات في حقوق الملكية</span></button>
+          </div>
+        </details>
+        <details class="nav-group" data-nav-group="financial-operations">
+          <summary class="nav-group-heading"><span class="nav-icon">⇄</span><span>العمليات المالية</span><span class="nav-group-chevron">⌄</span></summary>
+          <div class="nav-submenu">
+            <button class="nav-item nav-sub-item" data-view="financial-operations" data-financial-operation="cashReceipt"><span class="nav-icon">↓</span><span>قبض نقدي</span></button>
+            <button class="nav-item nav-sub-item" data-view="financial-operations" data-financial-operation="cashDisbursement"><span class="nav-icon">↑</span><span>صرف نقدي</span></button>
+            <button class="nav-item nav-sub-item" data-view="financial-operations" data-financial-operation="accountTransfer"><span class="nav-icon">⇄</span><span>قيد مالي</span></button>
+          </div>
+        </details>
+        <details class="nav-group" data-nav-group="communications">
+          <summary class="nav-group-heading"><span class="nav-icon">🔔</span><span>التواصل والإشعارات</span><span class="nav-group-chevron">⌄</span></summary>
+          <div class="nav-submenu">
+            <button class="nav-item nav-sub-item" data-view="notification-campaigns"><span class="nav-icon">✉</span><span>إشعارات المستخدمين</span></button>
+          </div>
+        </details>
       </nav>
 
       <div class="sidebar-footer">
@@ -66,6 +118,7 @@
         <div class="topbar-actions">
           <span class="connection-pill" id="connection-pill"><span></span><b>جارٍ التحقق</b></span>
           <button class="icon-button notification-button" id="admin-notifications-button" title="الإشعارات" aria-label="الإشعارات">🔔<span class="notification-count hidden" id="admin-notifications-count">0</span></button>
+          <button class="icon-button topbar-theme-toggle" id="topbar-theme-toggle" type="button" title="تغيير الشريط إلى الوضع الفاتح" aria-label="الشريط العلوي داكن، انقر للتبديل إلى الفاتح" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"></path></svg></button>
           <button class="icon-button" id="refresh-button" title="تحديث البيانات" aria-label="تحديث البيانات">↻</button>
           <button class="icon-button" id="admin-logout-button" title="تسجيل الخروج" aria-label="تسجيل الخروج">⇥</button>
         </div>
@@ -102,9 +155,27 @@
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الاسم</th><th>الهاتف</th><th>البريد</th><th>الدور</th><th>المدينة</th><th>الحالة</th><th>تاريخ الإضافة</th><th>الإجراءات</th></tr></thead><tbody id="users-body"></tbody></table></div><div class="empty-state hidden" id="users-empty">لا يوجد مستخدمون مطابقون.</div></section>
         </section>
 
+        <section class="view" id="view-customers">
+          <div class="section-toolbar"><div><h2>العملاء</h2><p>حسابات العملاء فقط، مع مؤشرات الرحلات والتحصيل والمحفظة والبلاغات.</p></div><div class="command-row"><input class="search-input" id="customer-search" placeholder="بحث بالاسم أو الهاتف أو البريد"><button class="button" id="customer-search-button">بحث</button><button class="icon-action tone-neutral customer-sort-trigger" id="customer-sort-button" type="button" aria-label="فرز وترتيب العملاء" data-tooltip="خيارات الفرز والترتيب"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M4 12h7M4 17h4M17 7l3 3 3-3M20 10V4M17 17l3-3 3 3M20 14v6"/></svg></button></div></div>
+          <div class="hint-card">تقييم العميل مؤشر آلي قابل للمراجعة، ويعرض عدد الرحلات والإيراد المحصل ورصيد المحفظة والإلغاءات والبلاغات. ارتفاع الإلغاء وصف للسلوك المسجل ولا يثبت نية العميل.</div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>العميل</th><th>الهاتف والبريد</th><th>المدينة</th><th>الرحلات: طلب / مكتمل</th><th>الإلغاء</th><th>الإيراد المحصل</th><th>رصيد المحفظة</th><th>البلاغات</th><th>المؤشر</th><th>آخر طلب</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="customers-body"></tbody></table></div><div class="empty-state hidden" id="customers-empty">لا يوجد عملاء مطابقون.</div></section>
+        </section>
+
         <section class="view" id="view-drivers">
           <div class="section-toolbar"><div><h2>السائقون</h2><p>المركبات والخدمات وحالة التوفر</p></div><div class="command-row"><button class="button primary" data-form="driver">إضافة ملف سائق</button></div></div>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>السائق</th><th>الهاتف</th><th>المركبة</th><th>الخدمة</th><th>اللوحة</th><th>التقييم</th><th>التوفر</th><th>الإجراءات</th></tr></thead><tbody id="drivers-body"></tbody></table></div><div class="empty-state hidden" id="drivers-empty">لا توجد ملفات سائقين.</div></section>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>السائق</th><th>الهاتف</th><th>المركبة</th><th>الخدمة</th><th>اللوحة</th><th>التقييم</th><th>الحساب والتوفر</th><th>الإجراءات</th></tr></thead><tbody id="drivers-body"></tbody></table></div><div class="empty-state hidden" id="drivers-empty">لا توجد ملفات سائقين.</div></section>
+        </section>
+
+        <section class="view" id="view-driver-ratings">
+          <div class="section-toolbar"><div><h2>تقييمات السائقين</h2><p>تقييمات العملاء بعد الرحلات المكتملة وتقييمات الإدارة، مع عرض المتوسط وعدد كل نوع.</p></div><div class="command-row"><select class="filter-select" id="driver-rating-filter"><option value="">كل السائقين</option></select><button class="button" id="driver-ratings-refresh">تحديث</button><button class="button primary" data-form="driverRating">إضافة تقييم الإدارة</button></div></div>
+          <div class="stats-grid" id="driver-rating-stats"><article class="stat"><span>متوسط تقييم العملاء</span><strong id="driver-customer-average">—</strong><small id="driver-customer-count">—</small></article><article class="stat"><span>متوسط تقييم الإدارة</span><strong id="driver-admin-average">—</strong><small id="driver-admin-count">—</small></article><article class="stat"><span>المتوسط الإجمالي</span><strong id="driver-combined-average">—</strong><small>يُحدّث ترتيب السائق تلقائيًا</small></article></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>السائق</th><th>المصدر</th><th>التقييم</th><th>الرحلة</th><th>صاحب التقييم</th><th>التعليق</th></tr></thead><tbody id="driver-ratings-body"></tbody></table></div><div class="empty-state hidden" id="driver-ratings-empty">لا توجد تقييمات مسجلة للسائق المحدد.</div></section>
+        </section>
+
+        <section class="view" id="view-notification-campaigns">
+          <div class="section-toolbar"><div><h2>إشعارات المستخدمين</h2><p>أرسل إشعارًا للعملاء أو السائقين أو كليهما، وراجع سجل الحملات السابقة.</p></div><div class="command-row"><button class="button primary" data-form="notificationCampaign">إضافة إشعار وإرساله</button></div></div>
+          <div class="hint-card">تُنشأ نسخة داخل صندوق إشعارات كل حساب نشط ضمن الفئة المختارة، وتُجدول للأجهزة المسجلة عبر خدمة الإشعارات. حذف السجل هنا لا يسحب الإشعار الذي وصل أو أُرسل للمستخدمين.</div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>التاريخ والوقت</th><th>نص الإشعار</th><th>المستهدفون</th><th>عدد الحسابات</th><th>أُنشئ بواسطة</th><th>المصدر</th><th>الإجراءات</th></tr></thead><tbody id="notification-campaigns-body"></tbody></table></div><div class="empty-state hidden" id="notification-campaigns-empty">لا توجد حملات إشعار محفوظة.</div></section>
         </section>
 
         <section class="view" id="view-rides">
@@ -145,9 +216,9 @@
 
         <section class="view" id="view-wallet">
           <div class="section-toolbar"><div><h2>المحفظة</h2><p>عرض الرصيد والحركات المالية المنشورة. لا يمكن إضافة حركة مباشرة.</p></div></div>
-          <section class="wallet-query"><label for="wallet-user-id">معرف المستخدم الرقمي</label><div><input id="wallet-user-id" type="number" min="1" step="1" placeholder="مثال: 12"><button class="button" id="wallet-load">عرض المحفظة</button></div></section>
-          <div class="wallet-summary hidden" id="wallet-summary"><div><span>الرصيد الحالي</span><strong id="wallet-balance">0</strong><small id="wallet-currency">YER</small></div><div><span>عدد الحركات</span><strong id="wallet-transactions-count">0</strong><small>حركة مالية</small></div></div>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>النوع</th><th>المبلغ</th><th>الرصيد بعد الحركة</th><th>الوصف</th><th>المرجع</th><th>التاريخ</th></tr></thead><tbody id="wallet-body"></tbody></table></div><div class="empty-state" id="wallet-empty">أدخل معرف المستخدم لعرض محفظته.</div></section>
+          <section class="wallet-query"><div class="wallet-phone-field"><label class="field-label-segment" for="wallet-phone-number">رقم هاتف المستخدم</label><div class="field-control-segment"><input id="wallet-phone-number" type="tel" inputmode="tel" autocomplete="tel" dir="ltr" placeholder="مثال: 777123456"><button class="button" id="wallet-load">عرض المحفظة</button></div></div></section>
+          <div class="wallet-summary hidden" id="wallet-summary"><div><span>الرصيد الحالي</span><strong id="wallet-balance">0</strong><small id="wallet-currency">YER</small></div><div><span>عدد الحركات</span><strong id="wallet-transactions-count">0</strong><small>حركة مالية</small></div><div class="wallet-owner-card"><span class="wallet-owner-title">صاحب المحفظة</span><strong class="wallet-owner-name" id="wallet-owner-name">—</strong><small id="wallet-owner-id">معرف المستخدم: —</small><div class="wallet-owner-details"><div><span>رقم الهاتف</span><strong id="wallet-owner-phone">—</strong></div><div><span>البريد الإلكتروني</span><strong id="wallet-owner-email">—</strong></div><div><span>نوع الحساب</span><strong id="wallet-owner-role">—</strong></div><div><span>حالة الحساب</span><strong id="wallet-owner-status">—</strong></div><div><span>الجنس</span><strong id="wallet-owner-gender">—</strong></div><div><span>العنوان</span><strong id="wallet-owner-address">—</strong></div><div><span>تاريخ إنشاء الحساب</span><strong id="wallet-owner-created">—</strong></div><div><span>آخر تحديث للحساب</span><strong id="wallet-owner-updated">—</strong></div></div></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>النوع</th><th>المبلغ</th><th>الرصيد بعد الحركة</th><th>الوصف</th><th>المرجع</th><th>التاريخ</th></tr></thead><tbody id="wallet-body"></tbody></table></div><div class="empty-state" id="wallet-empty">أدخل رقم هاتف المستخدم لعرض محفظته.</div></section>
         </section>
 
         <section class="view" id="view-payment-methods">
@@ -162,24 +233,74 @@
 
         <section class="view" id="view-ledger">
           <div class="section-toolbar"><div><h2>كشف الحساب</h2><p>عرض القيود المنشورة فقط؛ لا يمكن تعديلها أو حذفها من هذه الشاشة.</p></div><button class="button" id="accounting-setup-button" type="button">تهيئة وربط الحسابات المالية</button></div>
-          <section class="data-section">
-            <div class="section-header"><div><h2>مرشحات الكشف</h2><p>اختر حساباً أو اتركه على كافة الحسابات، ثم حدد الفترة ونوع العملية.</p></div><button class="button primary" id="statement-load" type="button">عرض الكشف</button></div>
-            <div class="form-grid">
-              <label>الحساب<select id="statement-account"><option value="">كافة الحسابات</option></select></label>
-              <label>نوع العملية<select id="statement-type"><option value="">كافة العمليات</option><option value="0">رصيد افتتاحي</option><option value="1">تحصيل نقدي لرحلة</option><option value="2">دفع رحلة من المحفظة</option><option value="3">تغذية محفظة</option><option value="4">إلغاء رحلة</option><option value="5">تحصيل تسوية سائق</option><option value="6">تسوية يدوية</option><option value="7">قيد عكسي</option></select></label>
-              <label>أسلوب الفترة<select id="statement-period"><option value="range">من تاريخ إلى تاريخ</option><option value="day">يوم محدد</option><option value="month">شهر محدد</option><option value="year">سنة محددة</option></select></label>
-              <label class="statement-period-field" data-period-field="range">من تاريخ<input id="statement-from" type="date"></label>
-              <label class="statement-period-field" data-period-field="range">إلى تاريخ<input id="statement-to" type="date"></label>
-              <label class="statement-period-field hidden" data-period-field="day">اليوم<input id="statement-day" type="date"></label>
-              <label class="statement-period-field hidden" data-period-field="month">الشهر<input id="statement-month" type="month"></label>
-              <label class="statement-period-field hidden" data-period-field="year">السنة<input id="statement-year" type="number" min="2000" max="9999" step="1"></label>
+          <details class="data-section statement-filter-card" id="statement-filter-card" open>
+            <summary class="section-header statement-filter-summary"><div><h2>مرشحات الكشف</h2><p>اختر الحساب ونمط العرض والفترة، ثم اعرض الكشف.</p></div><span class="statement-chevron" aria-hidden="true">⌄</span></summary><button class="button primary statement-load-button" id="statement-load" type="button">عرض الكشف</button>
+            <div class="statement-filter-content">
+              <div class="statement-filter-layout">
+                <div class="statement-filter-grid">
+                  <div class="statement-filter-field statement-account-field"><label class="statement-field-label" for="statement-account-search">الحساب</label><div class="statement-account-picker"><input id="statement-account-search" type="search" placeholder="ابحث بالحساب أو اتركه فارغًا لكافة الحسابات" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="statement-account-options" aria-expanded="false"><div id="statement-account-options" class="statement-account-options" role="listbox" hidden></div></div><input id="statement-account" type="hidden"></div>
+                  <div class="statement-filter-field"><label class="statement-field-label" for="statement-type">نوع العملية</label><select id="statement-type"><option value="">كافة العمليات</option><option value="0">رصيد افتتاحي</option><option value="1">تحصيل نقدي لرحلة</option><option value="2">دفع رحلة من المحفظة</option><option value="3">تغذية محفظة</option><option value="4">إلغاء رحلة</option><option value="5">تحصيل تسوية سائق</option><option value="6">تسوية يدوية</option><option value="7">قيد عكسي</option><option value="8">قبض نقدي إداري</option><option value="9">صرف نقدي إداري</option><option value="10">تحويل بين حسابات</option></select></div>
+                  <div class="statement-filter-field"><label class="statement-field-label" for="statement-mode">أسلوب العرض</label><select id="statement-mode"><option value="detailed">تفصيلي</option><option value="summary">إجمالي</option></select></div>
+                  <div class="statement-filter-field statement-zero-filter hidden" id="statement-zero-filter"><span class="statement-field-label">تصفية الأرصدة</span><span class="statement-checkbox-control"><input id="statement-hide-zero-accounts" type="checkbox" checked><label for="statement-hide-zero-accounts">إخفاء الحسابات ذات الرصيد الصفري</label></span></div>
+                </div>
+                <div class="statement-period-row">
+                  <div class="statement-filter-field"><label class="statement-field-label" for="statement-period">أسلوب الفترة</label><select id="statement-period"><option value="range">من تاريخ إلى تاريخ</option><option value="day">يوم محدد</option><option value="month">شهر محدد</option><option value="year">سنة محددة</option></select></div>
+                  <div class="statement-filter-field statement-period-field" data-period-field="range"><label class="statement-field-label" for="statement-from">من تاريخ</label><input id="statement-from" type="date"></div>
+                  <div class="statement-filter-field statement-period-field" data-period-field="range"><label class="statement-field-label" for="statement-to">إلى تاريخ</label><input id="statement-to" type="date"></div>
+                  <div class="statement-filter-field statement-period-field hidden" data-period-field="day"><label class="statement-field-label" for="statement-day">اليوم</label><input id="statement-day" type="date"></div>
+                  <div class="statement-filter-field statement-period-field hidden" data-period-field="month"><label class="statement-field-label" for="statement-month">الشهر</label><input id="statement-month" type="month"></div>
+                  <div class="statement-filter-field statement-period-field hidden" data-period-field="year"><label class="statement-field-label" for="statement-year">السنة</label><input id="statement-year" type="number" min="2000" max="9999" step="1"></div>
+                </div>
+              </div>
+            </div>
+          </details>
+          <details class="data-section statement-result-card" id="statement-summary-card">
+            <summary class="section-header"><div><h2>ملخص الحسابات</h2><p>الرصيد محسوب بطبيعته المحاسبية لكل حساب وعملة.</p></div><span class="statement-chevron" aria-hidden="true">⌄</span></summary>
+            <div class="table-wrap"><table><thead><tr><th>الحساب</th><th>العملة</th><th>رصيد أول المدة</th><th>إجمالي المدين</th><th>إجمالي الدائن</th><th>رصيد آخر المدة</th></tr></thead><tbody id="statement-summary-body"></tbody></table></div><div class="empty-state hidden" id="statement-summary-empty">لا توجد أرصدة مطابقة للفترة المحددة.</div>
+          </details>
+          <details class="data-section statement-result-card" id="statement-details-card" open><summary class="section-header"><div><h2>تفاصيل الحركة</h2><p>مرتبة زمنياً مع الرصيد الجاري لكل حساب.</p></div><span class="statement-chevron" aria-hidden="true">⌄</span></summary><div class="table-wrap"><table><thead id="statement-lines-head"></thead><tbody id="statement-lines-body"></tbody><tfoot id="statement-lines-foot"></tfoot></table></div><div class="empty-state hidden" id="statement-lines-empty">لا توجد حركات منشورة مطابقة للمرشحات.</div></details>
+        </section>
+
+        <section class="view" id="view-financial-operations">
+          <div class="section-toolbar"><div><h2 id="financial-operation-heading">قبض نقدي</h2><p id="financial-operation-subtitle">تسجيل سند قبض نقدي بقيد محاسبي متوازن.</p></div></div>
+          <section class="data-section financial-operation-panel">
+            <div class="section-header"><div><h2 id="financial-operation-form-heading">بيانات العملية</h2><p id="financial-operation-rules">سيُسجل الصندوق النقدي مديناً والحساب المحدد دائناً.</p></div></div>
+            <form id="financial-operation-form">
+              <div class="form-grid financial-operation-grid">
+                <label>نوع العملية<select id="financial-operation-type" required><option value="cashReceipt">قبض نقدي</option><option value="cashDisbursement">صرف نقدي</option><option value="accountTransfer">قيد مالي من حساب إلى حساب</option></select></label>
+                <label>الحساب المدين<select id="financial-operation-debit-account" required><option value="">اختر الحساب المدين</option></select></label>
+                <label>الحساب الدائن<select id="financial-operation-credit-account" required><option value="">اختر الحساب الدائن</option></select></label>
+                <label>المبلغ<input id="financial-operation-amount" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+                <label>تاريخ العملية<input id="financial-operation-date" type="date" required></label>
+                <label>الملاحظة<input id="financial-operation-note" type="text" maxlength="900" required placeholder="سبب العملية أو تفاصيلها"></label>
+              </div>
+              <div class="financial-operation-footer"><span id="financial-operation-currency">العملة: اختر الحساب المدين</span><div class="financial-operation-buttons"><button class="button hidden" id="financial-operation-cancel-edit" type="button">إلغاء التعديل</button><button class="button primary" id="financial-operation-submit" type="submit">تسجيل العملية وترحيل القيد</button></div></div>
+              <div class="inline-result hidden" id="financial-operation-result" role="status"></div>
+            </form>
+          </section>
+          <section class="data-section financial-operation-records">
+            <div class="section-header"><div><h2>سجل العمليات المالية</h2><p>القيود المنشورة ضمن التاريخ المحدد. تعديل العملية أو إلغاؤها ينشئ قيوداً عكسية تحفظ السجل المحاسبي.</p></div></div>
+            <div class="financial-operation-filter">
+              <label>تاريخ العمليات<input id="financial-operation-filter-date" type="date"></label>
+              <button class="button primary" id="financial-operation-filter-load" type="button">عرض العمليات</button>
+            </div>
+            <div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>العملية ورقم القيد</th><th>الحساب المدين</th><th>الحساب الدائن</th><th>المبلغ</th><th>البيان</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="financial-operations-body"></tbody></table></div>
+            <div class="empty-state hidden" id="financial-operations-empty">لا توجد عمليات مالية في التاريخ المحدد.</div>
+          </section>
+        </section>
+
+        <section class="view" id="view-financial-reports">
+          <div class="section-toolbar"><div><h2 id="financial-report-heading">قائمة المركز المالي</h2><p id="financial-report-subtitle">الأصول والالتزامات وحقوق الملكية حتى التاريخ المحدد.</p></div></div>
+          <section class="data-section financial-report-filter">
+            <div class="financial-report-controls">
+              <label id="financial-report-from-field">من تاريخ<input id="financial-report-from" type="date"></label>
+              <label><span id="financial-report-to-label">تاريخ المركز المالي</span><input id="financial-report-to" type="date"></label>
+              <label>العملة (اختياري)<input id="financial-report-currency" type="text" maxlength="12" dir="ltr" placeholder="كل العملات"></label>
+              <button class="button primary" id="financial-report-load" type="button">عرض التقرير</button>
             </div>
           </section>
-          <section class="data-section">
-            <div class="section-header"><div><h2>ملخص الحسابات</h2><p>الرصيد محسوب بطبيعته المحاسبية لكل حساب.</p></div></div>
-            <div class="table-wrap"><table><thead><tr><th>الحساب</th><th>العملة</th><th>رصيد أول المدة</th><th>إجمالي المدين</th><th>إجمالي الدائن</th><th>رصيد آخر المدة</th></tr></thead><tbody id="statement-summary-body"></tbody></table></div>
-          </section>
-          <section class="data-section"><div class="section-header"><div><h2>تفاصيل الحركة</h2><p>مرتبة زمنياً مع الرصيد الجاري لكل حساب.</p></div></div><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>الحساب</th><th>رقم القيد</th><th>نوع العملية</th><th>البيان</th><th>المرجع</th><th>المدين</th><th>الدائن</th><th>الرصيد الجاري</th></tr></thead><tbody id="statement-lines-body"></tbody></table></div><div class="empty-state" id="statement-empty">لا توجد قيود منشورة مطابقة للمرشحات.</div></section>
+          <div class="financial-report-note hidden" id="financial-report-note"></div>
+          <div id="financial-report-content"><div class="empty-state">اختر تقريراً مالياً من القائمة الجانبية.</div></div>
         </section>
 
         <section class="view" id="view-places">
@@ -212,15 +333,20 @@
 
   <dialog class="modal" id="form-modal"><form class="modal-shell" id="entity-form"><header><div><h2 id="modal-title">إضافة</h2><p id="modal-subtitle"></p></div><button class="icon-button" type="button" data-close="form-modal" title="إغلاق" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="form-grid" id="modal-fields"></div><div class="inline-result hidden" id="modal-result"></div></div><footer><button class="button" type="button" data-close="form-modal">إلغاء</button><button class="button primary" id="modal-submit" type="submit">حفظ</button></footer></form></dialog>
 
+  <dialog class="modal" id="customer-assessment-modal"><section class="modal-shell"><header><div><h2>تقرير تقييم العميل</h2><p id="customer-assessment-subtitle">مؤشر آلي مبني على نشاط العميل المالي والتشغيلي.</p></div><button class="icon-button" type="button" data-close="customer-assessment-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="customer-assessment-heading"><div><strong id="assessment-customer-name">—</strong><span id="assessment-customer-contact">—</span></div><div><strong id="assessment-label">—</strong><span>المؤشر <b id="assessment-score">—</b> / 100</span></div></div><div class="customer-assessment-grid" id="customer-assessment-details"></div><p class="assessment-explanation">تُحسب الدرجة من انتظام الرحلات المكتملة، والنشاط، وصافي الإيراد المرحّل، ورصيد المحفظة، وعدد البلاغات. يظهر تنبيه الإلغاء عند 4 طلبات فأكثر وتجاوز نسبة الإلغاء 50٪. هذا مؤشر مراجعة ولا يثبت تعمد المخالفة.</p></div></section></dialog>
+
+  <dialog class="modal customer-sort-modal" id="customer-sort-modal"><form class="modal-shell" id="customer-sort-form"><header><div><h2>فرز العملاء وترتيبهم</h2><p>اختر الحقل واتجاه ترتيب النتائج.</p></div><button class="icon-button" type="button" data-close="customer-sort-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="form-grid"><label class="full">الفرز حسب<select id="customer-sort-by"><option value="rating">التقييم</option><option value="orders">عدد الطلبات</option><option value="name">الاسم</option><option value="region">المنطقة</option><option value="lastRequest">تاريخ آخر طلب</option><option value="createdAt">تاريخ إنشاء الحساب</option></select></label><label class="full">الاتجاه<select id="customer-sort-direction"><option value="desc">تنازلي</option><option value="asc">تصاعدي</option></select></label></div></div><footer><button class="button" id="customer-sort-reset" type="button">الافتراضي</button><button class="button primary" type="submit">تطبيق الترتيب</button></footer></form></dialog>
+
   <dialog class="modal" id="database-modal"><form class="modal-shell" id="database-form"><header><div><h2>اتصال قاعدة البيانات</h2><p>اختبار الاتصال وإنشاء الجداول المطلوبة</p></div><button class="icon-button" type="button" data-close="database-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="form-grid"><label class="full">نوع النظام<select id="db-provider"></select></label><label>اسم الخادم<input id="db-server" placeholder=".\SQLEXPRESS" required></label><label>اسم القاعدة<input id="db-name" required></label><label>اسم المستخدم<input id="db-username"></label><label>كلمة المرور<input id="db-password" type="password"></label><label class="check-field full"><input id="db-integrated" type="checkbox"> استخدام مصادقة Windows</label><label class="check-field"><input id="db-trust" type="checkbox" checked> الوثوق بالشهادة</label><label class="check-field"><input id="db-encrypt" type="checkbox"> تشفير الاتصال</label></div><div class="inline-result hidden" id="database-result"></div></div><footer><button class="button" id="db-test" type="button">اختبار الاتصال</button><button class="button primary" type="submit">حفظ وتجهيز القاعدة</button></footer></form></dialog>
 
   <dialog class="modal safety-map-modal" id="safety-map-modal"><div class="modal-shell"><header><div><h2>متابعة موقع الرحلة</h2><p id="safety-map-summary">—</p></div><button class="icon-button" type="button" data-close="safety-map-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="safety-map-details" id="safety-map-details"></div><div class="safety-map-privacy"><span>تنبيه خصوصية: تحميل الخريطة يرسل إحداثيات الرحلة إلى OpenStreetMap. أثناء المتابعة تُحدّث الإحداثيات الحية كل 12 ثانية. لن تُحمّل قبل الضغط على الزر.</span><button class="button small" id="safety-map-load" type="button">تحميل الخريطة</button></div><iframe class="hidden" id="safety-map-frame" title="خريطة متابعة بلاغ السلامة" loading="lazy" referrerpolicy="no-referrer"></iframe><div class="safety-map-footer"><span id="safety-map-updated">—</span><a class="button small hidden" id="safety-map-route-link" target="_blank" rel="noopener noreferrer">فتح مسار الرحلة</a></div></div></div></dialog>
 
   <dialog class="modal" id="admin-notifications-modal"><section class="modal-shell"><header><div><h2>إشعارات الإدارة</h2><p>الإشعارات الخاصة بحساب المدير الحالي.</p></div><button class="icon-button" type="button" data-close="admin-notifications-modal" title="إغلاق" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="admin-notification-list" id="admin-notifications-list"></div></div></section></dialog>
 
+  <button class="page-scroll-jump" id="page-scroll-jump" type="button" aria-label="الانتقال إلى نهاية الصفحة" title="الانتقال إلى نهاية الصفحة" hidden>↓</button>
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
   <script src="/vendor/signalr/signalr.min.js" defer></script>
   <script src="/vendor/leaflet/leaflet.js" defer></script>
-  <script src="/admin.js?v=20261015-admin-crud" defer></script>
+  <script src="/admin.js?v=20261015-topbar-theme" defer></script>
 </body>
 </html>

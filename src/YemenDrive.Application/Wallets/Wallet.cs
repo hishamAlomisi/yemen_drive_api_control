@@ -22,16 +22,35 @@ public sealed class Wallet(
 
     protected override async Task<object?> GetAsync(WalletModel model, CancellationToken cancellationToken)
     {
-        var userId = await ResolveReadableUserIdAsync(model.UserId, cancellationToken);
-        var wallet = await dbContext.Wallets.AsNoTracking().Include(x => x.Transactions)
+        var userId = await ResolveReadableUserIdAsync(model.UserId, model.PhoneNumber, cancellationToken);
+        var wallet = await dbContext.Wallets.AsNoTracking()
+            .Include(x => x.User)
+            .Include(x => x.Transactions)
             .SingleOrDefaultAsync(x => x.UserId == userId, cancellationToken)
-            ?? throw new ServiceException("wallet_not_found", "محفظة المستخدم غير موجودة.");
+            ?? throw new ServiceException("wallet_not_found", string.IsNullOrWhiteSpace(model.PhoneNumber)
+                ? "محفظة المستخدم غير موجودة."
+                : "لا توجد محفظة مرتبطة برقم الهاتف المدخل.");
         return new
         {
             wallet.Id,
             wallet.UserId,
             wallet.Balance,
             wallet.Currency,
+            owner = new
+            {
+                wallet.User.Id,
+                wallet.User.DisplayName,
+                wallet.User.PhoneNumber,
+                wallet.User.Email,
+                wallet.User.Gender,
+                wallet.User.Street,
+                wallet.User.City,
+                wallet.User.District,
+                wallet.User.Role,
+                wallet.User.IsActive,
+                wallet.User.CreatedAtUtc,
+                wallet.User.UpdatedAtUtc
+            },
             transactions = wallet.Transactions.OrderByDescending(x => x.CreatedAtUtc).Select(x => new
             {
                 x.Id, x.Type, x.Amount, x.BalanceAfter, x.Description, x.ExternalReference, x.CreatedAtUtc
@@ -39,14 +58,38 @@ public sealed class Wallet(
         };
     }
 
-    private async Task<int> ResolveReadableUserIdAsync(int? requestedUserId, CancellationToken token)
+    private async Task<int> ResolveReadableUserIdAsync(int? requestedUserId, string? phoneNumber, CancellationToken token)
     {
         var currentUserId = currentUser.RequireUserId();
-        if (requestedUserId is null || requestedUserId == currentUserId) return currentUserId;
-        var isAdmin = await dbContext.Users.AnyAsync(x => x.Id == currentUserId &&
-            x.Role == UserRole.Admin && x.IsActive, token);
-        if (!isAdmin)
+        int targetUserId;
+        if (!string.IsNullOrWhiteSpace(phoneNumber))
+        {
+            var phone = phoneNumber.Trim();
+            var currentPhone = await dbContext.Users.AsNoTracking()
+                .Where(x => x.Id == currentUserId)
+                .Select(x => x.PhoneNumber)
+                .SingleOrDefaultAsync(token);
+            if (currentPhone == phone) return currentUserId;
+            if (!await IsAdminAsync(currentUserId, token))
+                throw new ServiceException("wallet_access_denied", "لا يمكنك الاطلاع على محفظة مستخدم آخر.");
+
+            targetUserId = await dbContext.Users.AsNoTracking()
+                .Where(x => x.PhoneNumber == phone)
+                .Select(x => (int?)x.Id)
+                .SingleOrDefaultAsync(token)
+                ?? throw new ServiceException("wallet_not_found", "لا توجد محفظة مرتبطة برقم الهاتف المدخل.");
+        }
+        else
+        {
+            targetUserId = requestedUserId ?? currentUserId;
+        }
+
+        if (targetUserId == currentUserId) return currentUserId;
+        if (!await IsAdminAsync(currentUserId, token))
             throw new ServiceException("wallet_access_denied", "لا يمكنك الاطلاع على محفظة مستخدم آخر.");
-        return requestedUserId.Value;
+        return targetUserId;
     }
+
+    private Task<bool> IsAdminAsync(int userId, CancellationToken token) =>
+        dbContext.Users.AnyAsync(x => x.Id == userId && x.Role == UserRole.Admin && x.IsActive, token);
 }

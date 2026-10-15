@@ -18,16 +18,50 @@ public sealed class AccountStatementReport(
         await AccountingAccess.RequireAdminAsync(db, currentUser, token);
         var (from, until) = GetDateRange(model);
         var currency = string.IsNullOrWhiteSpace(model.Currency) ? null : model.Currency.Trim().ToUpperInvariant();
-        if (model.LedgerAccountId is int id && !await db.LedgerAccounts.AnyAsync(x => x.Id == id, token))
-            throw new ServiceException("ledger_account_not_found", "الحساب المالي غير موجود.");
+        List<LedgerAccountSnapshot> statementAccounts;
+        int[]? selectedAccountIds = null;
+        if (model.LedgerAccountId is int id)
+        {
+            var selectedAccount = await db.LedgerAccounts.AsNoTracking()
+                .Where(x => x.Id == id)
+                .Select(x => new LedgerAccountSnapshot(
+                    x.Id, x.Code, x.Name, x.Type, x.Currency, x.ParentLedgerAccountId, x.IsPosting))
+                .SingleOrDefaultAsync(token);
+            if (selectedAccount is null)
+                throw new ServiceException("ledger_account_not_found", "الحساب المالي غير موجود.");
+
+            var treeIds = new HashSet<int> { id };
+            statementAccounts = new List<LedgerAccountSnapshot> { selectedAccount };
+            var frontier = new[] { id };
+            while (frontier.Length > 0)
+            {
+                var children = await db.LedgerAccounts.AsNoTracking()
+                    .Where(x => x.ParentLedgerAccountId.HasValue && frontier.Contains(x.ParentLedgerAccountId.Value))
+                    .Select(x => new LedgerAccountSnapshot(
+                        x.Id, x.Code, x.Name, x.Type, x.Currency, x.ParentLedgerAccountId, x.IsPosting))
+                    .ToListAsync(token);
+                var nextFrontier = children.Where(x => treeIds.Add(x.Id)).ToArray();
+                statementAccounts.AddRange(nextFrontier);
+                frontier = nextFrontier.Select(x => x.Id).ToArray();
+            }
+            selectedAccountIds = treeIds.ToArray();
+        }
+        else
+        {
+            statementAccounts = await db.LedgerAccounts.AsNoTracking()
+                .Select(x => new LedgerAccountSnapshot(
+                    x.Id, x.Code, x.Name, x.Type, x.Currency, x.ParentLedgerAccountId, x.IsPosting))
+                .ToListAsync(token);
+        }
 
         var baseQuery = db.JournalLines.AsNoTracking()
             .Where(x => x.JournalEntry.IsPosted && x.JournalEntry.Status == JournalEntryStatus.Posted);
-        if (model.LedgerAccountId is int accountId) baseQuery = baseQuery.Where(x => x.LedgerAccountId == accountId);
+        if (selectedAccountIds is not null)
+            baseQuery = baseQuery.Where(x => selectedAccountIds.Contains(x.LedgerAccountId));
         if (currency is not null) baseQuery = baseQuery.Where(x => x.Currency == currency);
 
         var beforeQuery = baseQuery;
-        if (from is not null) beforeQuery = beforeQuery.Where(x => x.JournalEntry.PostedAtUtc < from.Value);
+        if (from is not null) beforeQuery = beforeQuery.Where(x => x.JournalEntry.OccurredAtUtc < from.Value);
         else beforeQuery = beforeQuery.Where(x => false);
 
         var openingRows = await beforeQuery
@@ -39,12 +73,12 @@ public sealed class AccountStatementReport(
             x => NaturalBalance(x.Type, x.Debit, x.Credit));
 
         var linesQuery = baseQuery;
-        if (from is not null) linesQuery = linesQuery.Where(x => x.JournalEntry.PostedAtUtc >= from.Value);
-        if (until is not null) linesQuery = linesQuery.Where(x => x.JournalEntry.PostedAtUtc < until.Value);
+        if (from is not null) linesQuery = linesQuery.Where(x => x.JournalEntry.OccurredAtUtc >= from.Value);
+        if (until is not null) linesQuery = linesQuery.Where(x => x.JournalEntry.OccurredAtUtc < until.Value);
         if (model.EntryType is not null) linesQuery = linesQuery.Where(x => x.JournalEntry.Type == model.EntryType);
 
         var rawLines = await linesQuery
-            .OrderBy(x => x.LedgerAccountId).ThenBy(x => x.JournalEntry.PostedAtUtc)
+            .OrderBy(x => x.LedgerAccountId).ThenBy(x => x.JournalEntry.OccurredAtUtc)
             .ThenBy(x => x.JournalEntry.EntryNumber).ThenBy(x => x.LineNumber)
             .Select(x => new
             {
@@ -73,21 +107,110 @@ public sealed class AccountStatementReport(
             };
         }).ToArray();
 
-        var summaries = rawLines.GroupBy(x => new { x.LedgerAccountId, x.accountCode, x.accountName, x.accountType, x.Currency })
+        var accountById = statementAccounts.ToDictionary(x => x.Id);
+        var directSummaries = rawLines.GroupBy(x => new { x.LedgerAccountId, x.accountCode, x.accountName, x.accountType, x.Currency })
             .Select(group =>
             {
                 var key = (group.Key.LedgerAccountId, group.Key.Currency);
                 var openingBalance = opening.TryGetValue(key, out var value) ? value : 0m;
                 var debit = group.Sum(x => x.Debit);
                 var credit = group.Sum(x => x.Credit);
-                return new
-                {
+                var account = accountById[group.Key.LedgerAccountId];
+                return new StatementAccountSummary(
                     group.Key.LedgerAccountId, group.Key.accountCode, group.Key.accountName,
-                    group.Key.accountType, group.Key.Currency, openingBalance,
-                    debit, credit,
-                    closingBalance = openingBalance + NaturalBalance(group.Key.accountType, debit, credit)
-                };
-            }).OrderBy(x => x.accountCode).ToArray();
+                    group.Key.accountType, group.Key.Currency, openingBalance, debit, credit,
+                    openingBalance + NaturalBalance(group.Key.accountType, debit, credit),
+                    HasChildren: false, account.ParentLedgerAccountId, account.IsPosting);
+            }).ToList();
+
+        var currenciesByAccount = new Dictionary<int, HashSet<string>>();
+        void AddAccountCurrency(int accountId, string accountCurrency)
+        {
+            if (!currenciesByAccount.TryGetValue(accountId, out var currencies))
+                currenciesByAccount[accountId] = currencies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            currencies.Add(accountCurrency);
+        }
+
+        foreach (var row in openingRows) AddAccountCurrency(row.LedgerAccountId, row.Currency);
+        foreach (var row in rawLines) AddAccountCurrency(row.LedgerAccountId, row.Currency);
+
+        var directSummaryKeys = directSummaries.Select(x => (x.LedgerAccountId, x.Currency)).ToHashSet();
+        foreach (var account in statementAccounts)
+        {
+            var currencies = currenciesByAccount.TryGetValue(account.Id, out var accountCurrencies)
+                ? accountCurrencies.ToArray()
+                : Array.Empty<string>();
+            if (currencies.Length == 0)
+                currencies = [currency ?? account.Currency];
+
+            foreach (var accountCurrency in currencies)
+            {
+                if (!directSummaryKeys.Add((account.Id, accountCurrency))) continue;
+                var openingBalance = opening.TryGetValue((account.Id, accountCurrency), out var priorBalance)
+                    ? priorBalance
+                    : 0m;
+                directSummaries.Add(new StatementAccountSummary(
+                    account.Id, account.Code, account.Name, account.Type, accountCurrency,
+                    openingBalance, 0m, 0m, openingBalance, HasChildren: false,
+                    account.ParentLedgerAccountId, account.IsPosting));
+            }
+        }
+
+        var parentIds = statementAccounts.Where(x => x.ParentLedgerAccountId.HasValue)
+            .Select(x => x.ParentLedgerAccountId!.Value).ToHashSet();
+        var rollups = new Dictionary<(int AccountId, string Currency), StatementAccountSummary>();
+        foreach (var direct in directSummaries)
+        {
+            var currentId = direct.LedgerAccountId;
+            while (accountById.TryGetValue(currentId, out var current))
+            {
+                if (parentIds.Contains(current.Id))
+                {
+                    var key = (current.Id, direct.Currency);
+                    if (rollups.TryGetValue(key, out var existing))
+                        rollups[key] = existing with
+                        {
+                            OpeningBalance = existing.OpeningBalance + direct.OpeningBalance,
+                            Debit = existing.Debit + direct.Debit,
+                            Credit = existing.Credit + direct.Credit,
+                            ClosingBalance = existing.ClosingBalance + direct.ClosingBalance
+                        };
+                    else
+                        rollups[key] = new StatementAccountSummary(
+                            current.Id, current.Code, current.Name, current.Type, direct.Currency,
+                            direct.OpeningBalance, direct.Debit, direct.Credit, direct.ClosingBalance,
+                            HasChildren: true, current.ParentLedgerAccountId, current.IsPosting);
+                }
+
+                if (current.ParentLedgerAccountId is not int parentId) break;
+                currentId = parentId;
+            }
+        }
+
+        var summaries = new List<StatementAccountSummary>();
+        var directSummariesByAccount = directSummaries.GroupBy(x => x.LedgerAccountId)
+            .ToDictionary(x => x.Key, x => x.ToArray());
+        var rollupsByAccount = rollups.Values.GroupBy(x => x.LedgerAccountId)
+            .ToDictionary(x => x.Key, x => x.ToArray());
+        foreach (var account in statementAccounts)
+        {
+            if (parentIds.Contains(account.Id))
+            {
+                if (rollupsByAccount.TryGetValue(account.Id, out var parentRollups))
+                    summaries.AddRange(parentRollups);
+                else
+                    summaries.Add(new StatementAccountSummary(
+                        account.Id, account.Code, account.Name, account.Type, currency ?? account.Currency,
+                        0m, 0m, 0m, 0m, HasChildren: true,
+                        account.ParentLedgerAccountId, account.IsPosting));
+            }
+            else
+            {
+                if (directSummariesByAccount.TryGetValue(account.Id, out var accountSummaries))
+                    summaries.AddRange(accountSummaries);
+            }
+        }
+        var orderedSummaries = summaries.OrderBy(x => x.AccountCode).ThenBy(x => x.Currency).ToArray();
 
         return new
         {
@@ -96,13 +219,36 @@ public sealed class AccountStatementReport(
             model.LedgerAccountId,
             model.EntryType,
             currency,
-            accounts = summaries,
+            accounts = orderedSummaries,
             lines = resultLines
         };
     }
 
     private static decimal NaturalBalance(LedgerAccountType type, decimal debit, decimal credit) =>
         type is LedgerAccountType.Asset or LedgerAccountType.Expense ? debit - credit : credit - debit;
+
+    private sealed record LedgerAccountSnapshot(
+        int Id,
+        string Code,
+        string Name,
+        LedgerAccountType Type,
+        string Currency,
+        int? ParentLedgerAccountId,
+        bool IsPosting);
+
+    private sealed record StatementAccountSummary(
+        int LedgerAccountId,
+        string AccountCode,
+        string AccountName,
+        LedgerAccountType AccountType,
+        string Currency,
+        decimal OpeningBalance,
+        decimal Debit,
+        decimal Credit,
+        decimal ClosingBalance,
+        bool HasChildren,
+        int? ParentLedgerAccountId,
+        bool IsPosting);
 
     private static (DateTime? From, DateTime? Until) GetDateRange(AccountStatementModel model)
     {

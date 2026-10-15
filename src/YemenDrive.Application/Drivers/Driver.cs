@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
@@ -49,7 +50,7 @@ public sealed class Driver(
             PlateNumber = plateNumber.Trim(),
             CommissionRate = model.CommissionRate,
             IsAvailable = model.IsAvailable,
-            Rating = model.Rating,
+            Rating = 0m,
             PhotoUrl = model.PhotoUrl
         };
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
@@ -77,7 +78,6 @@ public sealed class Driver(
         if (!string.IsNullOrWhiteSpace(model.PlateNumber)) entity.PlateNumber = model.PlateNumber.Trim();
         entity.CommissionRate = model.CommissionRate;
         entity.IsAvailable = model.IsAvailable;
-        entity.Rating = model.Rating;
         if (model.PhotoUrl is not null)
             entity.PhotoUrl = string.IsNullOrWhiteSpace(model.PhotoUrl) ? null : model.PhotoUrl.Trim();
         entity.UpdatedAtUtc = DateTime.UtcNow;
@@ -88,29 +88,16 @@ public sealed class Driver(
     protected override async Task<object?> DeleteAsync(DriverModel model, CancellationToken cancellationToken)
     {
         var entity = await FindAsync(model.Id, cancellationToken);
-        await DeletionGuards.EnsureDriverProfileCanBeDeletedAsync(dbContext, entity.UserId, cancellationToken);
         var user = await dbContext.Users.SingleOrDefaultAsync(x => x.Id == entity.UserId, cancellationToken)
             ?? throw new ServiceException("user_not_found", "المستخدم المرتبط بملف السائق غير موجود.");
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        await DeletionGuards.EnsureDriverProfileCanBeDeletedAsync(dbContext, entity.UserId, cancellationToken);
+        await DeletionGuards.DeleteAutomaticallyCreatedDriverProfileChildrenAsync(dbContext, entity.UserId, cancellationToken);
         dbContext.DriverProfiles.Remove(entity);
         if (user.Role == UserRole.Driver)
         {
             user.Role = UserRole.Customer;
             user.UpdatedAtUtc = DateTime.UtcNow;
-            var partyId = await dbContext.FinancialParties
-                .Where(x => x.Type == FinancialPartyType.User && x.EntityId == user.Id)
-                .Select(x => (int?)x.Id)
-                .SingleOrDefaultAsync(cancellationToken);
-            if (partyId is not null)
-            {
-                await dbContext.LedgerAccounts
-                    .Where(x => x.FinancialPartyId == partyId && x.Purpose == LedgerAccountPurpose.DriverCurrentAccount)
-                    .ExecuteUpdateAsync(
-                        setters => setters
-                            .SetProperty(x => x.IsActive, false)
-                            .SetProperty(x => x.IsPosting, false),
-                        cancellationToken);
-            }
         }
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);

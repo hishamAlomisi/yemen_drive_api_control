@@ -22,6 +22,51 @@ namespace YemenDrive.Database.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.AdminNotificationCampaign", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(700)
+                        .HasColumnType("nvarchar(700)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("RecipientCount")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("SourceCampaignId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Target")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAtUtc");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.ToTable("AdminNotificationCampaigns", t =>
+                        {
+                            t.HasCheckConstraint("CK_AdminNotificationCampaigns_RecipientCount", "[RecipientCount] >= 0");
+
+                            t.HasCheckConstraint("CK_AdminNotificationCampaigns_Target", "[Target] >= 0 AND [Target] <= 2");
+                        });
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.AuthSession", b =>
                 {
                     b.Property<int>("Id")
@@ -409,6 +454,61 @@ namespace YemenDrive.Database.Migrations
                     b.HasIndex("ServiceKindId", "ServiceCatalogItemId");
 
                     b.ToTable("DriverProfiles");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.DriverRating", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("AdminUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Comment")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("CustomerUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("DriverUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("RideId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("Score")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("Source")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AdminUserId");
+
+                    b.HasIndex("CustomerUserId");
+
+                    b.HasIndex("DriverUserId", "CreatedAtUtc");
+
+                    b.HasIndex("RideId", "Source")
+                        .IsUnique()
+                        .HasFilter("[RideId] IS NOT NULL AND [Source] = 0");
+
+                    b.ToTable("DriverRatings", t =>
+                        {
+                            t.HasCheckConstraint("CK_DriverRatings_Score_Range", "[Score] >= 1 AND [Score] <= 5");
+                        });
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.DriverSettlement", b =>
@@ -2235,6 +2335,17 @@ namespace YemenDrive.Database.Migrations
                         });
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.AdminNotificationCampaign", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.User", "CreatedBy")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("CreatedBy");
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.AuthSession", b =>
                 {
                     b.HasOne("YemenDrive.Database.Entities.User", "User")
@@ -2293,6 +2404,38 @@ namespace YemenDrive.Database.Migrations
                     b.Navigation("ServiceKind");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.DriverRating", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.User", "Admin")
+                        .WithMany()
+                        .HasForeignKey("AdminUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("YemenDrive.Database.Entities.User", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("YemenDrive.Database.Entities.User", "Driver")
+                        .WithMany()
+                        .HasForeignKey("DriverUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("YemenDrive.Database.Entities.Ride", "Ride")
+                        .WithMany()
+                        .HasForeignKey("RideId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Admin");
+
+                    b.Navigation("Customer");
+
+                    b.Navigation("Driver");
+
+                    b.Navigation("Ride");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.EmergencyContact", b =>

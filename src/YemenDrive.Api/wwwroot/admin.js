@@ -1,8 +1,17 @@
 const state = {
   view: 'overview',
+  financialReportType: 'position',
+  financialOperationType: 'cashReceipt',
+  financialOperationEditId: null,
   databaseConfigured: false,
   users: [],
+  customers: [],
+  customerSort: { sortBy: 'createdAt', descending: true },
+  accountStatement: { accounts: [], lines: [] },
+  financialOperations: [],
+  notificationCampaigns: [],
   drivers: [],
+  driverRatingReport: { drivers: [], ratings: [] },
   rides: [],
   catalog: [],
   kinds: [],
@@ -11,6 +20,9 @@ const state = {
 
 const busySafetyActions = new Set();
 const safetyAudioUrls = new Map();
+let pageScrollDirection = 'down';
+let lastPageScrollPosition = 0;
+let pageScrollUpdatePending = false;
 let safetyMapTimer = null;
 let safetyMapIncidentId = null;
 let safetyMapLastMarker = '';
@@ -20,6 +32,7 @@ let safetyMapLoaded = false;
 
 const ADMIN_TOKEN_KEY = 'yemendrive_admin_token';
 const ADMIN_REFRESH_TOKEN_KEY = 'yemendrive_admin_refresh_token';
+const ADMIN_TOPBAR_THEME_KEY = 'yemendrive_admin_topbar_theme';
 let adminRefreshInFlight = null;
 let adminHubConnection = null;
 let liveRidesMap = null;
@@ -31,7 +44,9 @@ const pendingLiveRideSnapshots = new Set();
 const titles = {
   overview: ['نظرة عامة', 'متابعة حالة النظام والعمليات الأخيرة'],
   users: ['المستخدمون', 'إدارة حسابات العملاء والسائقين'],
+  customers: ['العملاء', 'بيانات العملاء ومؤشرات النشاط والتقييم'],
   drivers: ['السائقون', 'المركبات والخدمات وحالة التوفر'],
+  'driver-ratings': ['تقييمات السائقين', 'تقييمات العملاء وإضافة تقييم الإدارة'],
   rides: ['الرحلات', 'متابعة الطلبات وحالات التنفيذ'],
   cancellations: ['طلبات الإلغاء', 'مراجعة القرارات والإحالات قبل اعتماد الإدارة'],
   safety: ['بلاغات السلامة', 'بلاغات الرحلات التي تحتاج متابعة فورية'],
@@ -42,10 +57,27 @@ const titles = {
   'payment-methods': ['طرق الدفع الخارجية', 'إدارة وسائل الشحن والدفع الظاهرة للعميل'],
   settlements: ['مديونيات السائقين', 'تحصيل عمولة المنصة من الرحلات النقدية'],
   ledger: ['كشف الحساب', 'استعلام القيود المحاسبية المنشورة والأرصدة'],
+  'financial-operations': ['العمليات المالية', 'تسجيل القيود النقدية والتحويلات المالية اليدوية'],
+  'financial-reports': ['التقارير المالية', 'القوائم المالية المستخرجة من القيود المنشورة'],
   places: ['الأماكن المفضلة', 'الأماكن المحفوظة للمستخدمين'],
   areas: ['مناطق الخدمة', 'الدول والمدن التي تعمل فيها الخدمة'],
   history: ['سجل الرحلات', 'الرحلات السابقة والقادمة'],
-  console: ['محطة API', 'تنفيذ الطلبات المتقدمة']
+  console: ['محطة API', 'تنفيذ الطلبات المتقدمة'],
+  'notification-campaigns': ['إشعارات المستخدمين', 'إنشاء حملات إشعار ومراجعة سجلها']
+};
+
+const financialReportDefinitions = {
+  position: ['قائمة المركز المالي', 'الأصول والالتزامات وحقوق الملكية حتى التاريخ المحدد.'],
+  trialBalance: ['ميزان المراجعة', 'الأرصدة الافتتاحية والحركة والأرصدة الختامية لكل حساب وعملة.'],
+  income: ['قائمة الدخل والأرباح والخسائر', 'الإيرادات والمصروفات وصافي الربح أو الخسارة خلال الفترة.'],
+  cashFlow: ['قائمة التدفقات النقدية', 'حركة النقدية المسجلة في حسابات الصندوق والمحافظ الخارجية خلال الفترة.'],
+  equity: ['قائمة التغيرات في حقوق الملكية', 'أرصدة حقوق الملكية والحركات وصافي نتيجة الفترة.']
+};
+
+const financialOperationDefinitions = {
+  cashReceipt: ['قبض نقدي', 'تسجيل سند قبض نقدي بقيد محاسبي متوازن.', 'سيُسجل حساب من الصندوق النقدي للإدارة مديناً والحساب المحدد دائناً.'],
+  cashDisbursement: ['صرف نقدي', 'تسجيل سند صرف نقدي بقيد محاسبي متوازن.', 'سيُسجل الحساب المحدد مديناً وحساب من الصندوق النقدي للإدارة دائناً.'],
+  accountTransfer: ['قيد مالي', 'تسجيل قيد مالي متوازن من حساب إلى حساب.', 'أدخل الحساب المدين والدائن والمبلغ والتاريخ والملاحظة.']
 };
 
 const rideStatuses = ['مسودة', 'جاري البحث', 'تفاوض', 'تم تعيين سائق', 'السائق في الطريق', 'قيد التنفيذ', 'مكتملة', 'ملغاة', 'الإلغاء قيد المراجعة'];
@@ -54,8 +86,9 @@ const cancellationDriverDecisions = ['—', 'وافق السائق', 'رفض ا�
 const cancellationRefundMethods = { 1: 'استرداد نقدي مباشر من السائق', 2: 'إضافة الاسترداد إلى محفظة العميل' };
 const safetyStatuses = ['جديد', 'تم الاستلام', 'مغلق'];
 const roles = ['عميل', 'سائق', 'مدير'];
+const notificationCampaignTargets = ['العملاء', 'السائقون', 'العملاء والسائقون'];
 const transactionTypes = ['إيداع', 'خصم', 'حجز', 'تحرير', 'استرداد', 'عمولة'];
-const journalEntryTypes = ['رصيد افتتاحي', 'تحصيل نقدي لرحلة', 'دفع رحلة من المحفظة', 'تغذية محفظة', 'إلغاء رحلة', 'تحصيل تسوية سائق', 'تسوية يدوية', 'قيد عكسي'];
+const journalEntryTypes = ['رصيد افتتاحي', 'تحصيل نقدي لرحلة', 'دفع رحلة من المحفظة', 'تغذية محفظة', 'إلغاء رحلة', 'تحصيل تسوية سائق', 'تسوية يدوية', 'قيد عكسي', 'قبض نقدي إداري', 'صرف نقدي إداري', 'تحويل بين حسابات'];
 
 const formConfigs = {
   user: {
@@ -74,7 +107,7 @@ const formConfigs = {
       ['userId','حساب المستخدم','select',true,'driverUsers'],
       ['serviceKindId','نوع الخدمة','select',true,'serviceKinds'], ['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],
       ['vehicleModel','موديل المركبة','text',true], ['plateNumber','رقم اللوحة','text',true],
-      ['commissionRate','نسبة العمولة','number',false,'0.20','0.01'], ['rating','التقييم','number',false,'5','0.1'],
+      ['commissionRate','نسبة العمولة','number',false,'0.20','0.01'],
       ['imageFile','صورة السائق أو المركبة','file'], ['photoUrl','رابط الصورة (اختياري)','url'],
       ['isAvailable','متاح للعمل','checkbox',false,true]
     ], imageField: 'photoUrl'
@@ -82,7 +115,7 @@ const formConfigs = {
   ride: {
     title: 'إنشاء رحلة', subtitle: 'تسجيل طلب رحلة جديد للعميل', model: 'RideModel', operation: 'add', refresh: 'rides',
     fields: [
-      ['customerId','معرف العميل','number',true], ['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],
+      ['customerId','العميل','select',true,'customerUsers'], ['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],
       ['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],
       ['pickupLabel','اسم نقطة الانطلاق','text'], ['pickupAddress','عنوان الانطلاق','text',true],
       ['pickupLatitude','خط عرض الانطلاق','number',true,'15.3694','0.000001'], ['pickupLongitude','خط طول الانطلاق','number',true,'44.1910','0.000001'],
@@ -114,7 +147,7 @@ const formConfigs = {
   },
   settlementPayment: {
     title: 'تحصيل مديونية سائق', subtitle: 'ينشئ قيد تحصيل جديد؛ لا يعدّل الدفعة أو المديونية الأصلية.', model: 'DriverSettlementPaymentModel', operation: 'add', refresh: 'settlements',
-    fields: [['driverSettlementId','معرف سجل المديونية','number',true],['amount','المبلغ المحصل','number',true,'0','0.01'],['currency','العملة','text',true,'YER'],['method','طريقة التحصيل','select',true,[['CashToPlatform','نقد إلى الإدارة'],['BankTransfer','تحويل بنكي'],['WalletTransfer','تحويل محفظة']]],['reference','مرجع التحصيل الفريد','text',true],['note','ملاحظة','textarea']]
+    fields: [['driverSettlementId','سجل المديونية','select',true,'openSettlements'],['amount','المبلغ المحصل','number',true,'0','0.01'],['currency','العملة','text',true,'YER'],['method','طريقة التحصيل','select',true,[['CashToPlatform','نقد إلى الإدارة'],['BankTransfer','تحويل بنكي'],['WalletTransfer','تحويل محفظة']]],['reference','مرجع الإيصال أو التحويل الخارجي','text',true],['note','ملاحظة','textarea']]
   }
   ,paymentMethod: {
     title: 'إضافة طريقة دفع خارجية', subtitle: 'بيانات تعريف وتشغيل فقط؛ لا تضع مفاتيح API أو بيانات سرية هنا.', model: 'PaymentMethodModel', operation: 'add', refresh: 'payment-methods',
@@ -123,6 +156,14 @@ const formConfigs = {
   ,serviceArea: {
     title: 'إضافة مدينة خدمة', subtitle: 'تفعيل الخدمة في دولة ومدينة محددة', model: 'ServiceAreaModel', operation: 'add', refresh: 'areas',
     fields: [['countryCode','رمز الدولة','text',true,'YE'],['countryNameAr','اسم الدولة','text',true,'اليمن'],['cityNameAr','اسم المدينة','text',true],['isActive','الخدمة متاحة','checkbox',false,true]]
+  },
+  driverRating: {
+    title: 'إضافة تقييم الإدارة للسائق', subtitle: 'يسجل كتقييم إدارة مستقل ويضاف إلى متوسط تقييم السائق.', model: 'DriverRatingModel', operation: 'add', refresh: 'driver-ratings',
+    fields: [['driverUserId','السائق','select',true,'driverUsers'],['score','التقييم من 1 إلى 5','number',true,'5','0.5'],['comment','ملاحظة الإدارة','textarea']]
+  },
+  notificationCampaign: {
+    title: 'إضافة إشعار وإرساله', subtitle: 'ينشئ هذا النموذج حملة جديدة؛ إعادة الإرسال لا تعدّل الحملات السابقة.', model: 'AdminNotificationCampaignModel', operation: 'add', refresh: 'notification-campaigns',
+    fields: [['body','نص الإشعار','textarea',true],['target','إرسال إلى','select',true,[['0','العملاء'],['1','السائقون'],['2','العملاء والسائقون']]]]
   }
 };
 
@@ -133,7 +174,156 @@ const number = value => new Intl.NumberFormat('ar-YE-u-nu-latn', { maximumFracti
 const date = value => value ? new Intl.DateTimeFormat('ar-YE-u-nu-latn', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—';
 const badge = (text, tone = '') => `<span class="badge ${tone}">${escapeHtml(text)}</span>`;
 
-async function execute(model, operation, data = {}) {
+const actionIconPaths = {
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"/>',
+  delete: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/>',
+  suspend: '<circle cx="12" cy="12" r="9"/><path d="M9 9v6M15 9v6"/>',
+  activate: '<circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4z"/>',
+  statement: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>',
+  wallet: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H20v16H6.5A2.5 2.5 0 0 1 4 17.5z"/><path d="M4 7h16v4h-5a2 2 0 0 0 0 4h5"/><path d="M15 13h.01"/>',
+  assessment: '<path d="M4 19V5M4 19h17"/><path d="m7 15 4-4 3 2 5-6"/><path d="M16 7h3v3"/>',
+  resend: '<path d="M3 11a9 9 0 0 1 15.4-6.4L21 7"/><path d="M21 3v4h-4"/><path d="M21 13a9 9 0 0 1-15.4 6.4L3 17"/><path d="M3 21v-4h4"/>',
+  default: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/>',
+  cash: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M7 9h.01M17 15h.01"/>',
+  approve: '<circle cx="12" cy="12" r="9"/><path d="m8 12 2.5 2.5L16 9"/>',
+  reject: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>',
+  map: '<path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/>',
+  play: '<path d="m8 5 12 7-12 7z"/>',
+  pause: '<path d="M8 5h3v14H8zM15 5h3v14h-3z"/>',
+  sort: '<path d="M4 7h10M4 12h7M4 17h4"/><path d="m17 7 3 3 3-3M20 10V4M17 17l3-3 3 3M20 14v6"/>'
+};
+
+function iconActionButton(icon, label, handler, options = {}) {
+  const disabledReason = options.disabledReason || '';
+  const tooltip = disabledReason ? `${label} · ${disabledReason}` : label;
+  const disabledClass = disabledReason ? ' is-disabled' : '';
+  const handlerAttribute = handler && !disabledReason ? ` onclick="${handler}"` : '';
+  return `<button class="icon-action tone-${options.tone || icon}${disabledClass}${options.className ? ` ${options.className}` : ''}" type="button" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(tooltip)}"${disabledReason ? ' aria-disabled="true"' : ''}${handlerAttribute}><svg viewBox="0 0 24 24" aria-hidden="true">${actionIconPaths[icon] || actionIconPaths.assessment}</svg></button>`;
+}
+
+function updateIconAction(button, icon, label) {
+  if (!button) return;
+  button.dataset.tooltip = label;
+  button.setAttribute('aria-label', label);
+  button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${actionIconPaths[icon] || actionIconPaths.assessment}</svg>`;
+  const tooltip = document.getElementById(button.getAttribute('aria-describedby'));
+  if (tooltip) tooltip.textContent = label;
+}
+
+function bindActionTooltips() {
+  const tooltip = document.createElement('div');
+  tooltip.className = 'admin-action-tooltip';
+  tooltip.id = 'admin-action-tooltip';
+  tooltip.setAttribute('role', 'tooltip');
+  tooltip.hidden = true;
+  document.body.append(tooltip);
+  let activeButton = null;
+
+  const hide = () => {
+    if (activeButton) activeButton.removeAttribute('aria-describedby');
+    activeButton = null;
+    tooltip.hidden = true;
+  };
+  const show = button => {
+    if (!button?.dataset.tooltip) return hide();
+    activeButton = button;
+    tooltip.textContent = button.dataset.tooltip;
+    tooltip.hidden = false;
+    button.setAttribute('aria-describedby', tooltip.id);
+    requestAnimationFrame(() => {
+      if (activeButton !== button) return;
+      const rect = button.getBoundingClientRect();
+      const tipRect = tooltip.getBoundingClientRect();
+      const left = Math.max(8, Math.min(window.innerWidth - tipRect.width - 8, rect.left + rect.width / 2 - tipRect.width / 2));
+      const top = rect.top > tipRect.height + 12 ? rect.top - tipRect.height - 8 : Math.min(window.innerHeight - tipRect.height - 8, rect.bottom + 8);
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${Math.max(8, top)}px`;
+    });
+  };
+
+  document.addEventListener('pointerover', event => {
+    const button = event.target.closest?.('.icon-action[data-tooltip]');
+    if (button && button !== activeButton) show(button);
+  });
+  document.addEventListener('pointerout', event => {
+    if (activeButton && event.target.closest?.('.icon-action') === activeButton && !activeButton.contains(event.relatedTarget)) hide();
+  });
+  document.addEventListener('focusin', event => {
+    const button = event.target.closest?.('.icon-action[data-tooltip]');
+    if (button) show(button);
+  });
+  document.addEventListener('focusout', event => {
+    if (activeButton && event.target === activeButton) hide();
+  });
+  window.addEventListener('scroll', hide, true);
+  window.addEventListener('resize', hide);
+}
+
+class AdminOperationCancelled extends Error {}
+
+const readOnlyOperations = new Set(['list', 'get', 'report', 'search']);
+const adminModelLabels = {
+  UserModel: 'حساب المستخدم', DriverModel: 'ملف السائق', RideModel: 'الرحلة',
+  ServiceKindModel: 'نوع الخدمة', ServiceCatalogModel: 'الخدمة', PricingRuleModel: 'قاعدة التسعير',
+  PaymentMethodModel: 'طريقة الدفع', ServiceAreaModel: 'منطقة الخدمة',
+  DriverSettlementPaymentModel: 'تحصيل مديونية السائق', DriverRatingModel: 'تقييم السائق',
+  RideCancellationRequestModel: 'طلب إلغاء الرحلة', SafetyIncidentModel: 'بلاغ السلامة',
+  NotificationModel: 'الإشعار', AccountingSetupModel: 'تهيئة الحسابات المالية',
+  FinancialOperationModel: 'العملية المالية',
+  DatabaseConfigurationModel: 'اتصال قاعدة البيانات',
+  AdminNotificationCampaignModel: 'حملة إشعار'
+};
+
+function adminConfirmationMessage(model, operation, data = {}) {
+  const action = String(operation || '').toLowerCase();
+  const label = adminModelLabels[model] || 'البيانات';
+  if (model === 'AdminNotificationCampaignModel' && action === 'add') {
+    const target = notificationCampaignTargets[Number(data.target)] || 'المستخدمين المحددين';
+    return `سيُنشأ سجل إرسال جديد ويُضاف الإشعار داخل التطبيق ويُجدول للأجهزة المسجلة لدى ${target}. هل تريد المتابعة؟`;
+  }
+  if (model === 'AdminNotificationCampaignModel' && action === 'delete')
+    return 'سيُحذف سجل الحملة من لوحة التحكم فقط. الإشعارات التي وصلت إلى المستخدمين أو أُرسلت إلى أجهزتهم لن تُسحب. هل تريد حذف السجل؟';
+  if (model === 'FinancialOperationModel' && action === 'add') {
+    const operationName = financialOperationDefinitions[data.operationType]?.[0] || 'العملية المالية';
+    const accountName = id => {
+      const account = state.ledgerAccounts.find(item => Number(item.id) === Number(id));
+      return account ? `${account.code} — ${account.name}` : `الحساب ${id || 'غير محدد'}`;
+    };
+    return `سيُرحّل قيد ${operationName} بمبلغ ${data.amount || 0} ${state.ledgerAccounts.find(item => Number(item.id) === Number(data.debitAccountId))?.currency || ''}.\nمدين: ${accountName(data.debitAccountId)}\nدائن: ${accountName(data.creditAccountId)}\nالتاريخ: ${data.operationDate || 'غير محدد'}\nالملاحظة: ${data.note || '—'}\nلا يمكن تعديل القيد بعد ترحيله. هل تريد المتابعة؟`;
+  }
+  if (model === 'FinancialOperationModel' && action === 'update')
+    return `سيُنشأ قيد عكسي للعملية ${data.journalEntryId || ''} ثم يُرحّل القيد الجديد بالبيانات المعدلة. سيبقى القيد الأصلي محفوظاً في السجل المحاسبي. هل تريد المتابعة؟`;
+  if (model === 'FinancialOperationModel' && action === 'delete')
+    return `سيُلغى القيد ${data.journalEntryId || ''} بإنشاء قيد عكسي متوازن. سيبقى القيد الأصلي محفوظاً لأغراض المراجعة المحاسبية. هل تريد المتابعة؟`;
+  if (model === 'ServiceKindModel' && action === 'update' && data.isDefault === true)
+    return `سيتم تعيين نوع الخدمة المحدد كنوع افتراضي للعملاء وتغيير الاختيار الحالي. هل تريد المتابعة؟`;
+  if (model === 'UserModel' && action === 'update' && data.isActive === false)
+    return 'سيتم إيقاف الحساب ومنع صاحبه من استخدام التطبيق. هل تريد المتابعة؟';
+  if (model === 'DatabaseConfigurationModel' && action === 'save')
+    return 'سيتم حفظ إعدادات الاتصال الجديدة وتجهيز الجداول المطلوبة في قاعدة البيانات المحددة. هل تريد المتابعة؟';
+  if (action === 'delete') return `سيتم حذف ${label} نهائيًا، وقد تُحذف معه البيانات التابعة المسموح بحذفها تلقائيًا. هل تريد المتابعة؟`;
+  if (action === 'update') return `سيتم حفظ التعديلات على ${label}. هل تريد المتابعة؟`;
+  if (action === 'add' || action === 'create') return `سيتم إنشاء ${label} وحفظه في قاعدة البيانات. هل تريد المتابعة؟`;
+  const operationNames = {
+    accept: 'استلام البلاغ', reject: 'رفض الطلب', refer: 'إحالة الطلب',
+    adminapprove: 'اعتماد القرار', adminreject: 'رفض القرار', cancel: 'تنفيذ الإلغاء'
+  };
+  return `سيتم تنفيذ «${operationNames[action] || action}» على ${label} وتحديث بيانات النظام. هل تريد المتابعة؟`;
+}
+
+function confirmAdminOperation(model, operation, data = {}) {
+  return window.confirm(adminConfirmationMessage(model, operation, data));
+}
+
+function isAdminOperationCancelled(error) {
+  return error instanceof AdminOperationCancelled;
+}
+
+async function execute(model, operation, data = {}, options = {}) {
+  if (!readOnlyOperations.has(String(operation || '').toLowerCase()) &&
+      options.confirmed !== true && !confirmAdminOperation(model, operation, data)) {
+    throw new AdminOperationCancelled();
+  }
   const response = await adminFetch('/api/admin/execute', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -303,7 +493,9 @@ function renderAdminNotifications() {
     button.type = 'button';
     button.className = `admin-notification-item${item.isRead === true ? '' : ' unread'}`;
     button.innerHTML = `<strong>${escapeHtml(item.title || 'إشعار')}</strong><span>${escapeHtml(item.body || '')}</span><small>${escapeHtml(date(item.createdAtUtc))}</small>`;
-    button.addEventListener('click', () => openAdminNotification(item).catch(error => toast(error.message, true)));
+    button.addEventListener('click', () => openAdminNotification(item).catch(error => {
+      if (!isAdminOperationCancelled(error)) toast(error.message, true);
+    }));
     return button;
   }));
 }
@@ -386,10 +578,199 @@ async function loadUsers(search = '') {
   toggleEmpty('#users-body', '#users-empty', rows);
 }
 
+async function loadCustomers(search = '') {
+  const result = await execute('CustomerAssessmentModel', search ? 'search' : 'list', {
+    query: search || null,
+    sortBy: state.customerSort.sortBy,
+    descending: state.customerSort.descending
+  });
+  state.customers = Array.isArray(result.data) ? result.data : [];
+  const rows = state.customers.map(item => {
+    const name = item.displayName || 'بدون اسم';
+    const status = item.isActive
+      ? iconActionButton('suspend', 'إيقاف الحساب', `setCustomerStatus(${Number(item.id)}, false)`, { tone: 'warning' })
+      : iconActionButton('activate', 'تفعيل الحساب', `setCustomerStatus(${Number(item.id)}, true)`, { tone: 'success' });
+    const actions = `<div class="customer-actions">${iconActionButton('edit', 'تعديل بيانات العميل', `editAdminEntity('user', ${Number(item.id)})`)}${iconActionButton('delete', 'حذف حساب العميل', `deleteAdminEntity('user', ${Number(item.id)})`)}${status}${iconActionButton('statement', 'كشف حساب العميل', `openCustomerAccountStatement(${Number(item.id)})`, { tone: 'info' })}${iconActionButton('wallet', 'كشف محفظة العميل', `openCustomerWallet(${Number(item.id)})`, { tone: 'success' })}${iconActionButton('assessment', 'تقرير تقييم العميل', `openCustomerAssessment(${Number(item.id)})`, { tone: 'gold' })}</div>`;
+    return `<tr><td><span class="cell-main">${escapeHtml(name)}</span><span class="cell-sub">#${Number(item.id)}</span></td><td><span class="cell-main">${escapeHtml(item.phoneNumber)}</span><span class="cell-sub">${escapeHtml(item.email || 'لا يوجد بريد')}</span></td><td><span class="cell-main">${escapeHtml(item.city || '—')}</span><span class="cell-sub">${escapeHtml([item.district, item.street].filter(Boolean).join('، ') || '')}</span></td><td>${number(item.requestedRideCount)} / ${number(item.completedRideCount)}</td><td>${number(item.cancelledRideCount)}<span class="cell-sub">${number(item.cancellationRate)}٪</span></td><td>${number(item.collectedRideRevenue)} YER</td><td>${number(item.walletBalance)} YER</td><td>${number(item.safetyReportCount)}</td><td><span class="cell-main">${escapeHtml(item.label)}</span><span class="cell-sub">${number(item.score)} / 100</span></td><td>${date(item.lastRequestAtUtc)}</td><td>${badge(item.isActive ? 'نشط' : 'موقوف', item.isActive ? 'success' : 'danger')}</td><td>${actions}</td></tr>`;
+  });
+  toggleEmpty('#customers-body', '#customers-empty', rows);
+}
+
+window.setCustomerStatus = async (id, isActive) => {
+  try {
+    const result = await execute('UserModel', 'update', { id: Number(id), role: 0, isActive });
+    toast(result.message || (isActive ? 'تم تفعيل الحساب.' : 'تم إيقاف الحساب.'));
+    await loadCustomers($('#customer-search').value.trim());
+  } catch (error) { if (!isAdminOperationCancelled(error)) toast(error.message, true); }
+};
+
+window.openCustomerAssessment = id => {
+  const item = state.customers.find(customer => Number(customer.id) === Number(id));
+  if (!item) return toast('تعذر العثور على بيانات العميل. حدّث القائمة ثم حاول مرة أخرى.', true);
+  $('#assessment-customer-name').textContent = item.displayName || 'بدون اسم';
+  $('#assessment-customer-contact').textContent = `${item.phoneNumber || '—'} · ${item.email || 'لا يوجد بريد'}`;
+  $('#assessment-label').textContent = item.label || 'لا يوجد سجل كافٍ';
+  $('#assessment-score').textContent = number(item.score);
+  const metrics = [
+    ['الطلبات المسجلة', number(item.requestedRideCount)], ['الرحلات المكتملة', number(item.completedRideCount)],
+    ['الرحلات الملغاة', `${number(item.cancelledRideCount)} (${number(item.cancellationRate)}٪)`],
+    ['صافي الإيراد المحصل', `${number(item.collectedRideRevenue)} YER`],
+    ['رصيد المحفظة الحالي', `${number(item.walletBalance)} YER`], ['البلاغات', number(item.safetyReportCount)],
+    ['المدينة', item.city || '—'], ['تاريخ إنشاء الحساب', date(item.createdAtUtc)]
+  ];
+  $('#customer-assessment-details').innerHTML = metrics.map(([label, value]) => `<div class="customer-assessment-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
+  $('#customer-assessment-modal').showModal();
+};
+
+window.openCustomerWallet = async id => {
+  const item = state.customers.find(customer => Number(customer.id) === Number(id));
+  if (!item) return toast('تعذر العثور على بيانات العميل.', true);
+  try {
+    $('#wallet-phone-number').value = item.phoneNumber || '';
+    await setView('wallet');
+    await loadWallet();
+  } catch (error) { toast(error.message, true); }
+};
+
+window.openCustomerAccountStatement = async id => {
+  const item = state.customers.find(customer => Number(customer.id) === Number(id));
+  if (!item) return toast('تعذر العثور على بيانات العميل.', true);
+  try {
+    await loadLedgerAccounts();
+    const account = state.ledgerAccounts.find(row => row.code === `2100-WLT-${item.walletId}`);
+    if (!account) return toast('لا يوجد حساب محاسبي للمحفظة حتى الآن.', true);
+    $('#statement-account').value = String(account.id);
+    $('#statement-account-search').value = statementAccountLabel(account);
+    await setView('ledger');
+  } catch (error) { toast(error.message, true); }
+};
+
+window.setDriverAccountStatus = async (userId, isActive) => {
+  try {
+    const result = await execute('UserModel', 'update', { id: Number(userId), role: 1, isActive });
+    toast(result.message || (isActive ? 'تم تفعيل حساب السائق.' : 'تم إيقاف حساب السائق.'));
+    await loadDrivers();
+  } catch (error) { if (!isAdminOperationCancelled(error)) toast(error.message, true); }
+};
+
+window.openDriverWallet = async userId => {
+  const item = state.drivers.find(driver => Number(driver.userId) === Number(userId));
+  if (!item) return toast('تعذر العثور على بيانات السائق.', true);
+  try {
+    $('#wallet-phone-number').value = item.phoneNumber || '';
+    await setView('wallet');
+    await loadWallet();
+  } catch (error) { toast(error.message, true); }
+};
+
+window.openDriverAccountStatement = async userId => {
+  try {
+    await loadLedgerAccounts();
+    const account = state.ledgerAccounts.find(row => row.code === `1100-DRV-${Number(userId)}`);
+    if (!account) return toast('لا يوجد حساب محاسبي للسائق حتى الآن.', true);
+    $('#statement-account').value = String(account.id);
+    $('#statement-account-search').value = statementAccountLabel(account);
+    await setView('ledger');
+  } catch (error) { toast(error.message, true); }
+};
+
+async function loadDriverRatings() {
+  const filter = $('#driver-rating-filter');
+  const selectedDriverId = Number(filter.value) || null;
+  const result = await execute('DriverRatingReportModel', 'list', selectedDriverId ? { driverUserId: selectedDriverId } : {});
+  state.driverRatingReport = result.data || { drivers: [], ratings: [] };
+  const drivers = state.driverRatingReport.drivers || [];
+  const previousSelection = filter.value;
+  filter.innerHTML = `<option value="">كل السائقين</option>${drivers.map(item => `<option value="${Number(item.driverUserId)}">${escapeHtml(item.driverName || 'بدون اسم')} · ${escapeHtml(item.driverPhone || '')}</option>`).join('')}`;
+  if ([...filter.options].some(option => option.value === previousSelection)) filter.value = previousSelection;
+
+  const selected = drivers.find(item => Number(item.driverUserId) === Number(filter.value));
+  const ratings = state.driverRatingReport.ratings || [];
+  const customerRatings = ratings.filter(item => Number(item.source) === 0);
+  const adminRatings = ratings.filter(item => Number(item.source) === 1);
+  const weighted = (customerAvg, customerCount, adminAvg, adminCount) => {
+    const count = Number(customerCount) + Number(adminCount);
+    return count ? (Number(customerAvg) * Number(customerCount) + Number(adminAvg) * Number(adminCount)) / count : 0;
+  };
+  if (selected) {
+    $('#driver-customer-average').textContent = Number(selected.customerAverage || 0).toFixed(1);
+    $('#driver-customer-count').textContent = `${number(selected.customerRatingCount)} تقييم من العملاء`;
+    $('#driver-admin-average').textContent = Number(selected.adminAverage || 0).toFixed(1);
+    $('#driver-admin-count').textContent = `${number(selected.adminRatingCount)} تقييم من الإدارة`;
+    const allReviewCount = Number(selected.customerRatingCount) + Number(selected.adminRatingCount);
+    $('#driver-combined-average').textContent = allReviewCount
+      ? weighted(selected.customerAverage, selected.customerRatingCount, selected.adminAverage, selected.adminRatingCount).toFixed(1)
+      : '—';
+  } else {
+    const customerCount = drivers.reduce((sum, item) => sum + Number(item.customerRatingCount || 0), 0);
+    const adminCount = drivers.reduce((sum, item) => sum + Number(item.adminRatingCount || 0), 0);
+    const customerTotal = drivers.reduce((sum, item) => sum + Number(item.customerAverage || 0) * Number(item.customerRatingCount || 0), 0);
+    const adminTotal = drivers.reduce((sum, item) => sum + Number(item.adminAverage || 0) * Number(item.adminRatingCount || 0), 0);
+    $('#driver-customer-average').textContent = customerCount ? (customerTotal / customerCount).toFixed(1) : '—';
+    $('#driver-customer-count').textContent = `${number(customerCount)} تقييم من العملاء`;
+    $('#driver-admin-average').textContent = adminCount ? (adminTotal / adminCount).toFixed(1) : '—';
+    $('#driver-admin-count').textContent = `${number(adminCount)} تقييم من الإدارة`;
+    const combinedCount = customerCount + adminCount;
+    $('#driver-combined-average').textContent = combinedCount ? ((customerTotal + adminTotal) / combinedCount).toFixed(1) : '—';
+  }
+
+  const rows = ratings.map(item => {
+    const fromCustomer = Number(item.source) === 0;
+    const author = fromCustomer ? `${item.customerName || 'عميل'} · ${item.customerPhone || ''}` : `${item.adminName || 'الإدارة'}`;
+    return `<tr><td>${date(item.createdAtUtc)}</td><td><span class="cell-main">${escapeHtml(item.driverName || '—')}</span><span class="cell-sub">${escapeHtml(item.driverPhone || '')}</span></td><td>${badge(fromCustomer ? 'العميل' : 'الإدارة', fromCustomer ? 'info' : 'warning')}</td><td>${number(item.score)} / 5</td><td>${item.rideId ? `#${Number(item.rideId)}` : '—'}</td><td>${escapeHtml(author)}</td><td>${escapeHtml(item.comment || '—')}</td></tr>`;
+  });
+  toggleEmpty('#driver-ratings-body', '#driver-ratings-empty', rows);
+}
+
+async function loadNotificationCampaigns() {
+  const result = await execute('AdminNotificationCampaignModel', 'list', {});
+  state.notificationCampaigns = Array.isArray(result.data) ? result.data : [];
+  const rows = state.notificationCampaigns.map(item => {
+    const target = notificationCampaignTargets[Number(item.target)] || 'غير محدد';
+    const source = item.sourceCampaignId
+      ? `<span class="cell-sub">إعادة إرسال من #${Number(item.sourceCampaignId)}</span>`
+      : '—';
+    const actions = `<div class="notification-campaign-actions">${iconActionButton('resend', 'إعادة إرسال كحملة جديدة', `resendNotificationCampaign(${Number(item.id)})`, { tone: 'info' })}${iconActionButton('delete', 'حذف سجل الحملة', `deleteNotificationCampaign(${Number(item.id)})`)}</div>`;
+    return `<tr><td>${date(item.createdAtUtc)}</td><td><div class="notification-campaign-text">${escapeHtml(item.body || '')}</div></td><td>${escapeHtml(target)}</td><td>${number(item.recipientCount)}</td><td>${escapeHtml(item.createdByName || '—')}</td><td>${source}</td><td>${actions}</td></tr>`;
+  });
+  toggleEmpty('#notification-campaigns-body', '#notification-campaigns-empty', rows);
+}
+
+window.deleteNotificationCampaign = async id => {
+  try {
+    const result = await execute('AdminNotificationCampaignModel', 'delete', { id: Number(id) });
+    toast(result.message || 'تم حذف سجل الحملة.');
+    await loadNotificationCampaigns();
+  } catch (error) {
+    if (!isAdminOperationCancelled(error)) toast(error.message || 'تعذر حذف سجل الحملة.', true);
+  }
+};
+
+window.resendNotificationCampaign = async id => {
+  const campaign = state.notificationCampaigns.find(item => Number(item.id) === Number(id));
+  if (!campaign) return toast('تعذر العثور على الإشعار. حدّث السجل ثم حاول مرة أخرى.', true);
+  try {
+    await openForm('notificationCampaign');
+    activeForm.sourceCampaignId = Number(campaign.id);
+    $('#modal-fields [name="body"]').value = campaign.body || '';
+    $('#modal-fields [name="target"]').value = String(campaign.target ?? 2);
+    $('#modal-subtitle').textContent = `نسخة جديدة من الحملة #${Number(campaign.id)}. يمكنك تعديل النص أو الفئة؛ لن تتغير الحملة الأصلية.`;
+  } catch (error) {
+    toast(error.message || 'تعذر فتح نموذج إعادة الإرسال.', true);
+  }
+};
+
 async function loadDrivers() {
   const result = await execute('DriverModel', 'list', {});
   state.drivers = result.data;
-  const rows = result.data.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.displayName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.userId)}</span></td><td>${escapeHtml(item.phoneNumber)}</td><td><span class="cell-main">${escapeHtml(item.vehicleModel)}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${escapeHtml(item.plateNumber)}</td><td>${number(item.rating)}</td><td>${badge(item.isAvailable ? 'متاح' : 'غير متاح', item.isAvailable ? 'success' : '')}</td><td>${recordActions('driver', item.id)}</td></tr>`);
+  const rows = result.data.map(item => {
+    const userId = Number(item.userId);
+    const status = item.isActive
+      ? iconActionButton('suspend', 'إيقاف حساب السائق', `setDriverAccountStatus(${userId}, false)`, { tone: 'warning' })
+      : iconActionButton('activate', 'تفعيل حساب السائق', `setDriverAccountStatus(${userId}, true)`, { tone: 'success' });
+    const actions = `<div class="driver-actions">${status}${iconActionButton('statement', 'كشف حساب السائق', `openDriverAccountStatement(${userId})`, { tone: 'info' })}${iconActionButton('wallet', 'كشف محفظة السائق', `openDriverWallet(${userId})`, { tone: 'success' })}${recordActions('driver', item.id)}</div>`;
+    return `<tr><td><span class="cell-main">${escapeHtml(item.displayName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.userId)}</span></td><td>${escapeHtml(item.phoneNumber)}</td><td><span class="cell-main">${escapeHtml(item.vehicleModel)}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${escapeHtml(item.plateNumber)}</td><td>${number(item.rating)}</td><td>${badge(item.isActive ? 'الحساب نشط' : 'الحساب موقوف', item.isActive ? 'success' : 'danger')}<span class="cell-sub">${item.isAvailable ? 'متاح' : 'غير متاح'}</span></td><td>${actions}</td></tr>`;
+  });
   toggleEmpty('#drivers-body', '#drivers-empty', rows);
 }
 
@@ -745,18 +1126,20 @@ async function loadCatalog() {
   const [catalog, kinds] = await Promise.all([execute('ServiceCatalogModel','list',{}), execute('ServiceKindModel','list',{})]);
   state.catalog = catalog.data; state.kinds = kinds.data;
   toggleEmpty('#catalog-body','#catalog-empty',catalog.data.map(item => `<tr><td>${item.imageUrl ? `<img class="table-icon" src="${escapeHtml(item.imageUrl)}" alt="">` : '—'}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.nameAr)}</td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${number(item.basePrice)}</td><td>${number(item.arrivalMinutes)} د</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td><td>${recordActions('serviceCatalog', item.id)}</td></tr>`));
-  toggleEmpty('#kinds-body','#kinds-empty',kinds.data.map(item => `<tr><td>${item.imageUrl ? `<img class="table-icon" src="${escapeHtml(item.imageUrl)}" alt="">` : '—'}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.nameAr)}</td><td>${number(item.sortOrder)}</td><td>${item.isDefault ? badge('افتراضي','success') : (item.isActive ? `<button class="button small" onclick="setDefaultServiceKind(${Number(item.id)})">تعيين افتراضي</button>` : '—')}</td><td>${badge(item.isActive ? 'نشط' : 'متوقف', item.isActive ? 'success' : 'danger')}</td><td>${recordActions('serviceKind', item.id)}</td></tr>`));
+  toggleEmpty('#kinds-body','#kinds-empty',kinds.data.map(item => `<tr><td>${item.imageUrl ? `<img class="table-icon" src="${escapeHtml(item.imageUrl)}" alt="">` : '—'}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.nameAr)}</td><td>${number(item.sortOrder)}</td><td>${item.isDefault ? badge('افتراضي','success') : (item.isActive ? iconActionButton('default', 'تعيين نوع الخدمة افتراضيًا', `setDefaultServiceKind(${Number(item.id)})`, { tone: 'gold' }) : '—')}</td><td>${badge(item.isActive ? 'نشط' : 'متوقف', item.isActive ? 'success' : 'danger')}</td><td>${recordActions('serviceKind', item.id)}</td></tr>`));
 }
 
 window.setDefaultServiceKind = async id => {
   const item = state.kinds.find(kind => Number(kind.id) === Number(id));
   if (!item || !item.isActive) return toast('لا يمكن تعيين نوع خدمة متوقف كافتراضي.', true);
-  await execute('ServiceKindModel', 'update', {
-    id: item.id, code: item.code, nameAr: item.nameAr, imageUrl: item.imageUrl,
-    isActive: true, isDefault: true, sortOrder: item.sortOrder || 0
-  });
-  toast('تم تعيين النوع الافتراضي للعميل.');
-  await loadCatalog();
+  try {
+    await execute('ServiceKindModel', 'update', {
+      id: item.id, code: item.code, nameAr: item.nameAr, imageUrl: item.imageUrl,
+      isActive: true, isDefault: true, sortOrder: item.sortOrder || 0
+    });
+    toast('تم تعيين النوع الافتراضي للعميل.');
+    await loadCatalog();
+  } catch (error) { if (!isAdminOperationCancelled(error)) toast(error.message, true); }
 };
 
 async function loadPricing() {
@@ -765,23 +1148,39 @@ async function loadPricing() {
 }
 
 async function loadWallet() {
-  const userId = $('#wallet-user-id').value.trim();
-  if (!userId) return toast('أدخل معرف المستخدم أولاً.', true);
-  const numericUserId = Number(userId);
-  if (!Number.isInteger(numericUserId) || numericUserId <= 0) return toast('معرف المستخدم يجب أن يكون رقماً صحيحاً.', true);
-  const result = await execute('WalletModel','get',{ userId: numericUserId });
+  const phoneNumber = $('#wallet-phone-number').value.trim();
+  if (!phoneNumber) return toast('أدخل رقم هاتف المستخدم أولاً.', true);
+  $('#wallet-summary').classList.add('hidden');
+  $('#wallet-body').innerHTML = '';
+  $('#wallet-empty').classList.remove('hidden');
+  $('#wallet-empty').textContent = 'جارٍ البحث عن المحفظة…';
+  const result = await execute('WalletModel','get',{ phoneNumber });
   const wallet = result.data;
   $('#wallet-summary').classList.remove('hidden');
   $('#wallet-balance').textContent = number(wallet.balance);
   $('#wallet-currency').textContent = wallet.currency;
   $('#wallet-transactions-count').textContent = number(wallet.transactions.length);
+  const owner = wallet.owner || {};
+  const ownerRole = Number(owner.role) === 1 ? 'سائق' : Number(owner.role) === 2 ? 'مدير' : 'عميل';
+  const ownerAddress = [owner.city, owner.district, owner.street].filter(value => value && String(value).trim()).join('، ');
+  $('#wallet-owner-name').textContent = owner.displayName || 'بدون اسم مسجل';
+  $('#wallet-owner-id').textContent = `معرف المستخدم: ${owner.id ?? wallet.userId}`;
+  $('#wallet-owner-phone').textContent = owner.phoneNumber || '—';
+  $('#wallet-owner-email').textContent = owner.email || '—';
+  $('#wallet-owner-role').textContent = ownerRole;
+  $('#wallet-owner-status').textContent = owner.isActive ? 'نشط' : 'موقوف';
+  $('#wallet-owner-gender').textContent = owner.gender || '—';
+  $('#wallet-owner-address').textContent = ownerAddress || '—';
+  $('#wallet-owner-created').textContent = owner.createdAtUtc ? date(owner.createdAtUtc) : '—';
+  $('#wallet-owner-updated').textContent = owner.updatedAtUtc ? date(owner.updatedAtUtc) : '—';
+  $('#wallet-empty').textContent = 'لا توجد حركات في هذه المحفظة.';
   toggleEmpty('#wallet-body','#wallet-empty',wallet.transactions.map(item => `<tr><td>${badge(transactionTypes[item.type] ?? item.type, item.type === 0 ? 'success' : item.type === 1 ? 'danger' : 'info')}</td><td>${number(item.amount)}</td><td>${number(item.balanceAfter)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.externalReference || '—')}</td><td>${date(item.createdAtUtc)}</td></tr>`));
 }
 
 async function loadSettlements() {
   const result = await execute('DriverSettlementPaymentModel', 'list', {});
   state.settlements = result.data || [];
-  const rows = state.settlements.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.driverName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.driverPhone || item.driverId)}</span></td><td>${escapeHtml(item.id)}</td><td>${number(item.amountDue)} YER</td><td>${number(item.amountPaid)} YER</td><td>${number(item.amountOutstanding)} YER</td><td>${escapeHtml(item.paymentReference || '—')}</td><td>${date(item.createdAtUtc)}</td><td>${item.isSettled ? badge('تم التحصيل','success') : `<button class="button small" onclick="openSettlementForm(${Number(item.id)}, ${Number(item.amountOutstanding)})">تسجيل تحصيل</button>`}</td></tr>`);
+  const rows = state.settlements.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.driverName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.driverPhone || item.driverId)}</span></td><td>${escapeHtml(item.id)}</td><td>${number(item.amountDue)} YER</td><td>${number(item.amountPaid)} YER</td><td>${number(item.amountOutstanding)} YER</td><td>${escapeHtml(item.paymentReference || '—')}</td><td>${date(item.createdAtUtc)}</td><td>${item.isSettled ? badge('تم التحصيل','success') : iconActionButton('cash', 'تسجيل تحصيل من السائق', `openSettlementForm(${Number(item.id)}, ${Number(item.amountOutstanding)})`, { tone: 'success' })}</td></tr>`);
   toggleEmpty('#settlements-body', '#settlements-empty', rows);
 }
 
@@ -808,7 +1207,7 @@ async function loadCancellations() {
     const payment = item.paymentProvider ? `${item.paymentProvider} · ${number(item.paymentAmount)} YER` : 'لا توجد دفعة مسجلة';
     const refundRoute = item.requestedRefundMethod ? (cancellationRefundMethods[item.requestedRefundMethod] || 'مسار استرداد غير معروف') : 'لا يوجد مسار استرداد مطلوب';
     const place = item.cancellationLatitude == null ? '—' : `${number(item.cancellationLatitude)}, ${number(item.cancellationLongitude)}`;
-    const actions = isAdminReview ? `<div class="action-row"><button class="button small primary" onclick="decideCancellation(${Number(item.id)}, true)">اعتماد الإلغاء</button><button class="button small" onclick="decideCancellation(${Number(item.id)}, false)">رفض الطلب</button></div>` : '—';
+    const actions = isAdminReview ? `<div class="action-row">${iconActionButton('approve', 'اعتماد الإلغاء', `decideCancellation(${Number(item.id)}, true)`, { tone: 'success' })}${iconActionButton('reject', 'رفض طلب الإلغاء', `decideCancellation(${Number(item.id)}, false)`, { tone: 'danger' })}</div>` : '—';
     return `<tr><td>#${escapeHtml(item.id)}</td><td><span class="cell-main">${escapeHtml(item.customerName || item.customerPhone || item.customerId)}</span><span class="cell-sub">السائق: ${escapeHtml(item.driverName || 'غير معيّن')}</span></td><td><span class="cell-main">${escapeHtml(item.pickup)} ← ${escapeHtml(item.destination)}</span><span class="cell-sub">الإجمالي: ${number(item.totalAmount)} YER</span></td><td><span class="cell-main">${escapeHtml(item.reason)}</span>${item.driverNote ? `<span class="cell-sub">ملاحظة السائق: ${escapeHtml(item.driverNote)}</span>` : ''}</td><td>${badge(decision, isAdminReview ? 'warning' : Number(item.status) === 3 ? 'success' : Number(item.status) === 4 ? 'danger' : 'info')}</td><td><span class="cell-main">${escapeHtml(payment)}</span><span class="cell-sub">الاسترداد: ${escapeHtml(refundRoute)}</span>${item.paymentStatus != null ? `<span class="cell-sub">حالة: ${escapeHtml(item.paymentStatus)}</span>` : ''}</td><td>${escapeHtml(place)}</td><td>${date(item.createdAtUtc)}</td><td>${actions}</td></tr>`;
   });
   toggleEmpty('#cancellations-body', '#cancellations-empty', rows);
@@ -826,9 +1225,10 @@ async function loadSafety() {
     const location = item.latitude == null
       ? 'لا يوجد موقع مسجل'
       : `${number(item.latitude)}, ${number(item.longitude)} · ${locationSource}${item.locationObservedAtUtc ? ` · رُصد ${date(item.locationObservedAtUtc)}` : ''}`;
-    const actions = status === 2 ? '—' : `<div class="action-row">${status === 0 ? `<button class="button small" ${busySafetyActions.has(Number(item.id)) ? 'disabled' : ''} onclick="decideSafety(${Number(item.id)}, false)">استلام</button>` : ''}<button class="button small primary" ${busySafetyActions.has(Number(item.id)) ? 'disabled' : ''} onclick="decideSafety(${Number(item.id)}, true)">إغلاق البلاغ</button></div>`;
+    const busy = busySafetyActions.has(Number(item.id));
+    const actions = status === 2 ? '—' : `<div class="action-row">${status === 0 ? iconActionButton('approve', 'استلام البلاغ', `decideSafety(${Number(item.id)}, false)`, { tone: 'info', disabledReason: busy ? 'العملية قيد التنفيذ' : '' }) : ''}${iconActionButton('reject', 'إغلاق البلاغ', `decideSafety(${Number(item.id)}, true)`, { tone: 'danger', disabledReason: busy ? 'العملية قيد التنفيذ' : '' })}</div>`;
     const driver = item.driverId ? `<span class="cell-main">${escapeHtml(item.driverName || 'السائق')}</span><span class="cell-sub">${escapeHtml(item.driverPhone || 'لا يوجد رقم مسجل')}</span>` : 'لم يعيّن سائق';
-    const mapAction = item.rideId ? `<button class="button small" onclick="openSafetyMap(${Number(item.id)})">عرض الرحلة على الخريطة</button>` : '—';
+    const mapAction = item.rideId ? iconActionButton('map', 'متابعة الرحلة على الخريطة', `openSafetyMap(${Number(item.id)})`, { tone: 'info' }) : '—';
     return `<tr><td>#${Number(item.id)}</td><td><span class="cell-main">${escapeHtml(item.userName || item.userPhone || '—')}</span><span class="cell-sub">${escapeHtml(item.userPhone || '')}</span></td><td>${driver}</td><td><span class="cell-main">#${Number(item.rideId || 0) || '—'}</span><span class="cell-sub">${mapAction}</span></td><td>${escapeHtml(item.message)}</td><td>${escapeHtml(location)}</td><td>${badge(safetyStatuses[status] || item.status, status === 2 ? 'success' : status === 1 ? 'info' : 'danger')}</td><td>${date(item.createdAtUtc)}</td><td>${actions}</td></tr>`;
   });
   toggleEmpty('#safety-body', '#safety-empty', rows);
@@ -842,7 +1242,7 @@ window.decideSafety = async (id, resolve) => {
     await loadSafety();
     await execute('SafetyIncidentModel', resolve ? 'adminApprove' : 'accept', { id: incidentId });
     toast(resolve ? 'تم إغلاق بلاغ السلامة.' : 'تم استلام البلاغ، وأزيل إجراء الاستلام لمنع تكراره.');
-  } catch (error) { toast(error.message, true); }
+  } catch (error) { if (!isAdminOperationCancelled(error)) toast(error.message, true); }
   finally { busySafetyActions.delete(incidentId); await loadSafety().catch(error => toast(error.message, true)); }
 };
 
@@ -855,17 +1255,26 @@ async function loadSafetyRecordings() {
     const role = Number(item.userRole) === 1 ? 'سائق' : Number(item.userRole) === 0 ? 'عميل' : 'مستخدم';
     const recordingPath = `${escapeHtml(item.pickupLabel || 'الانطلاق')} ← ${escapeHtml(item.destinationLabel || 'الوجهة')}`;
     const driver = item.driverId ? `<span class="cell-main">${escapeHtml(item.driverName || '—')}</span><span class="cell-sub">${escapeHtml(item.driverPhone || '')}</span>` : 'غير معيّن';
-    return `<tr><td>#${Number(item.id)}</td><td>#${Number(item.rideId || 0) || '—'}</td><td>${recordingPath}</td><td><span class="cell-main">${escapeHtml(item.userName || '—')} (${role})</span><span class="cell-sub">${escapeHtml(item.userPhone || '')}</span></td><td>${driver}</td><td>${number((Number(item.durationMilliseconds) || 0) / 1000)} ث<span class="cell-sub">${number((Number(item.uploadedBytes) || 0) / 1024)} ك.ب</span></td><td>${date(item.startedAtUtc)}</td><td>${date(item.consentAtUtc)}</td><td><div class="recording-player"><button class="button small" onclick="prepareSafetyRecording(${Number(item.id)})">تجهيز التشغيل</button><audio controls preload="none" class="hidden" id="safety-audio-${Number(item.id)}" aria-label="تشغيل تسجيل السلامة رقم ${Number(item.id)}"></audio></div></td></tr>`;
+    return `<tr><td>#${Number(item.id)}</td><td>#${Number(item.rideId || 0) || '—'}</td><td>${recordingPath}</td><td><span class="cell-main">${escapeHtml(item.userName || '—')} (${role})</span><span class="cell-sub">${escapeHtml(item.userPhone || '')}</span></td><td>${driver}</td><td>${number((Number(item.durationMilliseconds) || 0) / 1000)} ث<span class="cell-sub">${number((Number(item.uploadedBytes) || 0) / 1024)} ك.ب</span></td><td>${date(item.startedAtUtc)}</td><td>${date(item.consentAtUtc)}</td><td><div class="recording-player">${iconActionButton('play', `تشغيل تسجيل السلامة رقم ${Number(item.id)}`, `playSafetyRecording(${Number(item.id)})`, { tone: 'success' })}<audio controls preload="none" class="hidden" id="safety-audio-${Number(item.id)}" aria-label="تشغيل تسجيل السلامة رقم ${Number(item.id)}"></audio></div></td></tr>`;
   });
   toggleEmpty('#safety-recordings-body', '#safety-recordings-empty', rows);
 }
 
-window.prepareSafetyRecording = async id => {
+window.playSafetyRecording = async id => {
   const recordingId = Number(id);
-  const button = document.querySelector(`#safety-recordings-body button[onclick="prepareSafetyRecording(${recordingId})"]`);
+  const button = document.querySelector(`#safety-recordings-body button[onclick="playSafetyRecording(${recordingId})"]`);
   const audio = document.getElementById(`safety-audio-${recordingId}`);
   if (!audio) return;
-  if (button) { button.disabled = true; button.textContent = 'جارٍ تحميل الصوت…'; }
+  if (audio.src) {
+    if (audio.paused) {
+      try { await audio.play(); }
+      catch (_) { toast('تعذر تشغيل الصوت تلقائياً. استخدم مشغل الصوت الظاهر.', true); }
+    } else {
+      audio.pause();
+    }
+    return;
+  }
+  if (button) { button.disabled = true; updateIconAction(button, 'play', 'جارٍ تحميل التسجيل'); }
   try {
     const response = await adminFetch(`/api/admin/safety/recordings/${recordingId}/audio`, {
       cache: 'no-store'
@@ -880,10 +1289,20 @@ window.prepareSafetyRecording = async id => {
     audio.src = url;
     audio.classList.remove('hidden');
     audio.load();
-    if (button) { button.textContent = 'تم التجهيز'; button.title = 'استخدم أزرار مشغل الصوت للاستماع'; }
+    audio.onplay = () => {
+      updateIconAction(button, 'pause', 'إيقاف التسجيل مؤقتًا');
+    };
+    audio.onpause = () => {
+      updateIconAction(button, 'play', 'متابعة تشغيل التسجيل');
+    };
+    audio.onended = () => {
+      updateIconAction(button, 'play', 'إعادة تشغيل التسجيل');
+    };
+    try { await audio.play(); }
+    catch (_) { toast('تم تحميل التسجيل؛ استخدم زر التشغيل في مشغل الصوت.', true); }
   } catch (error) {
     toast(error.message, true);
-    if (button) button.textContent = 'إعادة المحاولة';
+    updateIconAction(button, 'play', 'إعادة محاولة تشغيل التسجيل');
   } finally { if (button) button.disabled = false; }
 };
 
@@ -967,26 +1386,290 @@ window.openSafetyMap = async id => {
 };
 
 window.decideCancellation = async (id, approve) => {
-  const label = approve ? 'اعتماد إلغاء الرحلة' : 'رفض طلب الإلغاء';
-  const warning = approve
-    ? 'سيتم إلغاء الرحلة وإشعار الطرفين وتنفيذ التسوية المالية لمسار الاسترداد المحدد، مرة واحدة فقط.'
-    : 'سيتم رفض الطلب وإشعار العميل والسائق.';
-  if (!window.confirm(`${label}\n${warning}`)) return;
   const note = window.prompt('ملاحظة الإدارة (اختيارية):') || undefined;
   try {
     const result = await execute('RideCancellationRequestModel', approve ? 'adminApprove' : 'adminReject', { id, note });
     toast(result.message || 'تم حفظ قرار الإدارة.');
     await loadCancellations();
-  } catch (error) { toast(error.message, true); }
+  } catch (error) { if (!isAdminOperationCancelled(error)) toast(error.message, true); }
 };
 
 async function loadLedgerAccounts() {
   const result = await execute('LedgerAccountModel', 'list', {});
   state.ledgerAccounts = result.data || [];
-  const select = $('#statement-account');
-  const current = select.value;
-  select.innerHTML = `<option value="">كافة الحسابات</option>${state.ledgerAccounts.map(item => `<option value="${Number(item.id)}">${escapeHtml(item.code)} — ${escapeHtml(item.name)} (${escapeHtml(item.currency)})</option>`).join('')}`;
-  select.value = [...select.options].some(option => option.value === current) ? current : '';
+  const selectedId = $('#statement-account').value;
+  const search = $('#statement-account-search');
+  const selected = state.ledgerAccounts.find(item => String(item.id) === selectedId);
+  $('#statement-account').value = selected ? String(selected.id) : '';
+  if (selected) search.value = statementAccountLabel(selected);
+  hideStatementAccountOptions();
+}
+
+function isWithinAdminCashAccount(account) {
+  const visited = new Set();
+  let current = account;
+  while (current && visited.add(Number(current.id))) {
+    if (String(current.code) === '1000') return true;
+    if (current.parentLedgerAccountId == null) return false;
+    current = state.ledgerAccounts.find(item => Number(item.id) === Number(current.parentLedgerAccountId));
+  }
+  return false;
+}
+
+function fillFinancialAccountSelect(select, accounts, prompt, selectedId = '') {
+  const selected = accounts.some(item => String(item.id) === String(selectedId)) ? String(selectedId) : '';
+  select.innerHTML = `<option value="">${prompt}</option>${accounts.map(item =>
+    `<option value="${Number(item.id)}">${escapeHtml(item.code)} — ${escapeHtml(item.name)} (${escapeHtml(item.currency)})</option>`).join('')}`;
+  select.value = selected;
+}
+
+function syncFinancialOperationForm() {
+  const type = $('#financial-operation-type');
+  if (!type) return;
+  const operationType = financialOperationDefinitions[state.financialOperationType]
+    ? state.financialOperationType : 'cashReceipt';
+  state.financialOperationType = operationType;
+  type.value = operationType;
+  const definition = financialOperationDefinitions[operationType];
+  $('#financial-operation-heading').textContent = definition[0];
+  $('#financial-operation-subtitle').textContent = definition[1];
+  $('#financial-operation-rules').textContent = definition[2];
+  if (state.view === 'financial-operations') {
+    $('#page-title').textContent = definition[0];
+    $('#page-subtitle').textContent = definition[1];
+  }
+  $$('.nav-item[data-view="financial-operations"]').forEach(item =>
+    item.classList.toggle('active', item.dataset.financialOperation === operationType));
+
+  const postingAccounts = state.ledgerAccounts.filter(item => item.isActive && item.isPosting);
+  const cashAccounts = postingAccounts.filter(isWithinAdminCashAccount);
+  const debitOptions = operationType === 'cashReceipt' ? cashAccounts : postingAccounts;
+  const creditOptions = operationType === 'cashDisbursement' ? cashAccounts : postingAccounts;
+  const debitSelect = $('#financial-operation-debit-account');
+  const creditSelect = $('#financial-operation-credit-account');
+  const oldDebitId = debitSelect.value;
+  const oldCreditId = creditSelect.value;
+  fillFinancialAccountSelect(debitSelect, debitOptions, 'اختر الحساب المدين', oldDebitId);
+  const debitAccount = postingAccounts.find(item => Number(item.id) === Number(debitSelect.value));
+  const matchingCreditOptions = creditOptions.filter(item =>
+    (!debitAccount || String(item.currency).toUpperCase() === String(debitAccount.currency).toUpperCase()) &&
+    Number(item.id) !== Number(debitSelect.value));
+  fillFinancialAccountSelect(creditSelect, matchingCreditOptions, 'اختر الحساب الدائن', oldCreditId);
+  const creditAccount = postingAccounts.find(item => Number(item.id) === Number(creditSelect.value));
+  const currencyStatus = $('#financial-operation-currency');
+  currencyStatus.classList.remove('is-error');
+  if (debitAccount && creditAccount) {
+    currencyStatus.textContent = `العملة: ${debitAccount.currency}`;
+  } else if (operationType !== 'accountTransfer' && cashAccounts.length === 0) {
+    currencyStatus.textContent = 'حسابات الصندوق النقدي (1000) غير مهيأة أو لا تقبل القيود.';
+    currencyStatus.classList.add('is-error');
+  } else if (debitAccount) {
+    currencyStatus.textContent = `العملة: ${debitAccount.currency} · اختر حساباً دائناً بالعملة نفسها`;
+  } else {
+    currencyStatus.textContent = 'العملة: اختر الحساب المدين';
+  }
+}
+
+function initializeFinancialOperationDate() {
+  const input = $('#financial-operation-date');
+  if (!input || input.value) return;
+  const now = new Date();
+  input.value = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function initializeFinancialOperationFilterDate() {
+  const input = $('#financial-operation-filter-date');
+  if (!input || input.value) return;
+  const now = new Date();
+  input.value = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function financialOperationRow(item) {
+  const entryId = Number(item.journalEntryId);
+  const statusTone = item.status === 'مرحل' ? 'success' : item.status === 'تم تعديلها' ? 'info' : 'warning';
+  const actions = item.canModify
+    ? '<div class="action-row">' +
+      iconActionButton('edit', 'تعديل العملية', 'editFinancialOperation(' + entryId + ')') +
+      iconActionButton('delete', 'إلغاء العملية بقيد عكسي', 'deleteFinancialOperation(' + entryId + ')', { tone: 'danger' }) +
+      '</div>'
+    : '<span class="cell-sub">لا توجد إجراءات</span>';
+  return '<tr><td>' + escapeHtml(item.operationDate) + '</td>' +
+    '<td><span class="cell-main">' + escapeHtml(item.operationName) + '</span><span class="cell-sub" dir="ltr">' + escapeHtml(item.entryNumber) + '</span></td>' +
+    '<td>' + escapeHtml(item.debitAccount) + '</td><td>' + escapeHtml(item.creditAccount) + '</td>' +
+    '<td><span class="cell-main">' + number(item.amount) + ' ' + escapeHtml(item.currency) + '</span></td>' +
+    '<td><span class="cell-main">' + escapeHtml(item.note) + '</span></td>' +
+    '<td>' + badge(item.status, statusTone) + '</td><td>' + actions + '</td></tr>';
+}
+
+async function loadFinancialOperations() {
+  const result = await execute('FinancialOperationModel', 'list', {
+    operationDate: $('#financial-operation-filter-date').value || null
+  });
+  state.financialOperations = result.data || [];
+  toggleEmpty('#financial-operations-body', '#financial-operations-empty',
+    state.financialOperations.map(financialOperationRow));
+}
+
+async function submitFinancialOperation(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const editingId = state.financialOperationEditId;
+  const submit = $('#financial-operation-submit');
+  const resultBox = $('#financial-operation-result');
+  submit.disabled = true;
+  resultBox.className = 'inline-result hidden';
+  try {
+    const data = {
+      journalEntryId: editingId || 0,
+      operationType: $('#financial-operation-type').value,
+      debitAccountId: Number($('#financial-operation-debit-account').value),
+      creditAccountId: Number($('#financial-operation-credit-account').value),
+      amount: Number($('#financial-operation-amount').value),
+      operationDate: $('#financial-operation-date').value,
+      note: $('#financial-operation-note').value.trim()
+    };
+    const result = await execute('FinancialOperationModel', editingId ? 'update' : 'add', data);
+    const entryNumber = editingId ? result.data?.replacement?.entryNumber : result.data?.entryNumber;
+    const message = editingId
+      ? 'تم تعديل العملية بإنشاء قيد عكسي وترحيل قيد جديد.' + (entryNumber ? ' رقم القيد الجديد: ' + entryNumber : '')
+      : 'تم تسجيل العملية وترحيل القيد.' + (entryNumber ? ' رقم القيد: ' + entryNumber : '');
+    resultBox.className = 'inline-result success';
+    resultBox.textContent = message;
+    toast(message);
+    const operationType = data.operationType;
+    form.reset();
+    state.financialOperationEditId = null;
+    $('#financial-operation-type').value = operationType;
+    state.financialOperationType = operationType;
+    initializeFinancialOperationDate();
+    $('#financial-operation-filter-date').value = data.operationDate;
+    syncFinancialOperationForm();
+    syncFinancialOperationEditState();
+    try {
+      await loadFinancialOperations();
+    } catch (refreshError) {
+      toast('تم حفظ العملية، لكن تعذر تحديث سجل العمليات: ' + (refreshError.message || 'خطأ غير معروف.'), true);
+    }
+  } catch (error) {
+    if (!isAdminOperationCancelled(error)) {
+      resultBox.className = 'inline-result error';
+      resultBox.textContent = error.message || 'تعذر ترحيل القيد المالي.';
+      toast(resultBox.textContent, true);
+    }
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+function syncFinancialOperationEditState() {
+  const editing = Number(state.financialOperationEditId) > 0;
+  $('#financial-operation-form-heading').textContent = editing ? 'تعديل العملية المالية' : 'بيانات العملية';
+  $('#financial-operation-submit').textContent = editing ? 'حفظ التعديل وترحيل القيود' : 'تسجيل العملية وترحيل القيد';
+  $('#financial-operation-cancel-edit').classList.toggle('hidden', !editing);
+}
+
+window.editFinancialOperation = journalEntryId => {
+  const item = state.financialOperations.find(record => Number(record.journalEntryId) === Number(journalEntryId));
+  if (!item || !item.canModify) {
+    toast('تعذر فتح العملية للتعديل. حدّث السجل ثم حاول مرة أخرى.', true);
+    return;
+  }
+  state.financialOperationEditId = Number(item.journalEntryId);
+  state.financialOperationType = item.operationType;
+  $('#financial-operation-type').value = item.operationType;
+  syncFinancialOperationForm();
+  $('#financial-operation-debit-account').value = String(item.debitAccountId);
+  syncFinancialOperationForm();
+  $('#financial-operation-credit-account').value = String(item.creditAccountId);
+  $('#financial-operation-amount').value = String(item.amount);
+  $('#financial-operation-date').value = item.operationDate;
+  $('#financial-operation-note').value = item.note;
+  syncFinancialOperationEditState();
+  $('#financial-operation-form').scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+
+window.deleteFinancialOperation = async journalEntryId => {
+  try {
+    const result = await execute('FinancialOperationModel', 'delete', { journalEntryId: Number(journalEntryId) });
+    const reversalNumber = result.data?.reversalEntryNumber || result.data?.entryNumber;
+    toast('تم إلغاء العملية بقيد عكسي.' + (reversalNumber ? ' رقم القيد العكسي: ' + reversalNumber : ''));
+    await loadFinancialOperations();
+  } catch (error) {
+    if (!isAdminOperationCancelled(error)) toast(error.message || 'تعذر إلغاء العملية المالية.', true);
+  }
+};
+
+function cancelFinancialOperationEdit() {
+  const operationType = state.financialOperationType;
+  state.financialOperationEditId = null;
+  $('#financial-operation-form').reset();
+  $('#financial-operation-type').value = operationType;
+  initializeFinancialOperationDate();
+  syncFinancialOperationForm();
+  syncFinancialOperationEditState();
+  $('#financial-operation-result').className = 'inline-result hidden';
+}
+
+function statementAccountLabel(item) {
+  return `${item.code} — ${item.name} (${item.currency})`;
+}
+
+function hideStatementAccountOptions() {
+  const options = $('#statement-account-options');
+  options.hidden = true;
+  $('#statement-account-search').setAttribute('aria-expanded', 'false');
+}
+
+function positionStatementAccountOptions() {
+  const input = $('#statement-account-search');
+  const options = $('#statement-account-options');
+  const rect = input.getBoundingClientRect();
+  const width = Math.min(rect.width, window.innerWidth - 16);
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+  const availableBelow = Math.max(0, window.innerHeight - rect.bottom - 8);
+  const availableAbove = Math.max(0, rect.top - 8);
+  const placeAbove = availableBelow < 170 && availableAbove > availableBelow;
+  const maxHeight = Math.max(80, Math.min(320, placeAbove ? availableAbove : availableBelow));
+  options.style.maxHeight = `${maxHeight}px`;
+  options.style.left = `${left}px`;
+  options.style.width = `${width}px`;
+  options.style.top = placeAbove
+    ? `${Math.max(8, rect.top - Math.min(maxHeight, options.scrollHeight) - 5)}px`
+    : `${rect.bottom + 5}px`;
+}
+
+function statementAccountSearchText(item) {
+  return [
+    statementAccountLabel(item), item.financialPartyName, item.financialPartyPhoneNumber,
+    item.id, item.financialPartyId, item.purpose
+  ].filter(value => value != null).join(' ').toLocaleLowerCase();
+}
+
+function renderStatementAccountOptions(query = '') {
+  const options = $('#statement-account-options');
+  const normalizedQuery = String(query || '').trim().toLocaleLowerCase();
+  const matches = state.ledgerAccounts.filter(item =>
+    !normalizedQuery || statementAccountSearchText(item).includes(normalizedQuery));
+  if (!matches.length) {
+    options.innerHTML = '<div class="statement-account-options-empty">لا توجد حسابات مطابقة.</div>';
+  } else {
+    const selectedId = Number($('#statement-account').value) || null;
+    options.innerHTML = matches.map(item => {
+      const main = item.parentLedgerAccountId == null;
+      return `<div class="statement-account-option ${main ? 'is-main' : 'is-sub'}" role="option" tabindex="-1" aria-selected="${Number(item.id) === selectedId}" data-account-id="${Number(item.id)}"><span class="statement-account-option-name">${escapeHtml(statementAccountLabel(item))}</span><span class="statement-account-option-kind">${main ? 'حساب رئيسي' : 'حساب فرعي'}</span></div>`;
+    }).join('');
+  }
+  options.hidden = false;
+  $('#statement-account-search').setAttribute('aria-expanded', 'true');
+  positionStatementAccountOptions();
+}
+
+function chooseStatementAccount(id) {
+  const account = state.ledgerAccounts.find(item => Number(item.id) === Number(id));
+  if (!account) return;
+  $('#statement-account').value = String(account.id);
+  $('#statement-account-search').value = statementAccountLabel(account);
+  hideStatementAccountOptions();
 }
 
 function syncStatementPeriodFields() {
@@ -994,9 +1677,19 @@ function syncStatementPeriodFields() {
   $$('.statement-period-field').forEach(field => field.classList.toggle('hidden', field.dataset.periodField !== mode));
 }
 
+function syncStatementModeFields() {
+  const summaryMode = $('#statement-mode').value === 'summary';
+  $('#statement-zero-filter').classList.toggle('hidden', !summaryMode);
+  $('#statement-hide-zero-accounts').disabled = !summaryMode;
+  renderAccountStatement();
+}
+
 function statementRequest() {
   const data = {};
   const accountId = $('#statement-account').value;
+  const accountSearch = $('#statement-account-search').value.trim();
+  if (accountSearch && !accountId)
+    throw new Error('اختر حسابًا من قائمة النتائج، أو امسح الحقل لعرض كافة الحسابات.');
   const entryType = $('#statement-type').value;
   if (accountId) data.ledgerAccountId = Number(accountId);
   if (entryType !== '') data.entryType = Number(entryType);
@@ -1019,14 +1712,265 @@ function statementRequest() {
 async function loadAccountStatement() {
   const result = await execute('AccountStatementModel', 'report', statementRequest());
   const data = result.data || { accounts: [], lines: [] };
-  const summaries = (data.accounts || []).map(item => `<tr><td><span class="cell-main">${escapeHtml(item.accountCode)} — ${escapeHtml(item.accountName)}</span><span class="cell-sub">${escapeHtml(item.accountType)}</span></td><td>${escapeHtml(item.currency)}</td><td>${number(item.openingBalance)}</td><td>${number(item.debit)}</td><td>${number(item.credit)}</td><td>${number(item.closingBalance)}</td></tr>`);
-  toggleEmpty('#statement-summary-body', '#statement-empty', summaries);
-  const rows = (data.lines || []).map(item => `<tr><td>${date(item.postedAtUtc)}</td><td><span class="cell-main">${escapeHtml(item.accountCode)} — ${escapeHtml(item.accountName)}</span><span class="cell-sub">${escapeHtml(item.currency)}</span></td><td>${escapeHtml(item.entryNumber)}</td><td>${escapeHtml(journalEntryTypes[item.entryType] || item.entryType)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.entryReference)}</td><td>${number(item.debit)}</td><td>${number(item.credit)}</td><td>${number(item.runningBalance)}</td></tr>`);
-  toggleEmpty('#statement-lines-body', '#statement-empty', rows);
+  state.accountStatement = {
+    accounts: Array.isArray(data.accounts) ? data.accounts : [],
+    lines: Array.isArray(data.lines) ? data.lines : []
+  };
+  renderAccountStatement();
+}
+
+function initializeFinancialReportDates() {
+  const now = new Date();
+  const today = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  $('#financial-report-from').value = `${today.slice(0, 4)}-01-01`;
+  $('#financial-report-to').value = today;
+}
+
+async function loadFinancialReport() {
+  const reportType = state.financialReportType;
+  const dateToUtc = $('#financial-report-to').value;
+  const dateFromUtc = $('#financial-report-from').value;
+  if (!dateToUtc) throw new Error('حدد تاريخ التقرير أولاً.');
+  if (reportType !== 'position' && !dateFromUtc) throw new Error('حدد بداية الفترة أولاً.');
+  if (reportType !== 'position' && dateFromUtc > dateToUtc)
+    throw new Error('تاريخ البداية يجب ألا يتجاوز تاريخ النهاية.');
+
+  const button = $('#financial-report-load');
+  button.disabled = true;
+  button.textContent = 'جارٍ إعداد التقرير…';
+  try {
+    const request = { reportType, dateToUtc };
+    if (reportType !== 'position') request.dateFromUtc = dateFromUtc;
+    const currency = $('#financial-report-currency').value.trim();
+    if (currency) request.currency = currency;
+    const result = await execute('FinancialStatementsModel', 'report', request);
+    renderFinancialReport(result.data || {});
+  } finally {
+    button.disabled = false;
+    button.textContent = 'عرض التقرير';
+  }
+}
+
+function financialReportTable(title, headers, rows, emptyMessage = 'لا توجد بيانات ضمن الفترة المحددة.') {
+  const content = rows.length
+    ? `<div class="table-wrap"><table><thead><tr>${headers.map(header => `<th>${header}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`
+    : `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
+  return `<section class="data-section financial-report-card"><div class="section-header"><div><h2>${escapeHtml(title)}</h2></div></div>${content}</section>`;
+}
+
+function financialReportMetricCards(totals, fields) {
+  return `<div class="financial-report-metrics">${totals.map(total => fields.map(([key, label]) => `<article class="financial-report-metric"><span>${escapeHtml(label)} · ${escapeHtml(total.currency)}</span><strong>${number(total[key])}</strong></article>`).join('')).join('')}</div>`;
+}
+
+function financialAccountRows(rows) {
+  return rows.map(row => `<tr><td><span class="cell-main">${escapeHtml(row.accountCode)} — ${escapeHtml(row.accountName)}</span></td><td>${escapeHtml(row.currency)}</td><td>${number(row.amount)}</td></tr>`);
+}
+
+function renderFinancialReport(data) {
+  const reportType = data.reportType || state.financialReportType;
+  const root = $('#financial-report-content');
+  const note = $('#financial-report-note');
+  note.textContent = data.note || '';
+  note.classList.toggle('hidden', !data.note);
+  const sections = data.sections || [];
+  let content = '';
+
+  if (reportType === 'position') {
+    const totals = data.totals || [];
+    content += financialReportMetricCards(totals, [
+      ['assets', 'إجمالي الأصول'], ['liabilities', 'إجمالي الالتزامات'],
+      ['totalEquity', 'إجمالي حقوق الملكية'], ['difference', 'فرق التوازن']
+    ]);
+    for (const section of sections)
+      content += financialReportTable(section.title, ['الحساب', 'العملة', 'الرصيد'], financialAccountRows(section.rows || []));
+    content += financialReportTable('مطابقة المركز المالي',
+      ['العملة', 'الأصول', 'الالتزامات', 'حقوق الملكية المسجلة', 'الأرباح المتراكمة', 'إجمالي الالتزامات وحقوق الملكية', 'الفرق'],
+      totals.map(item => `<tr><td>${escapeHtml(item.currency)}</td><td>${number(item.assets)}</td><td>${number(item.liabilities)}</td><td>${number(item.recordedEquity)}</td><td>${number(item.retainedEarnings)}</td><td>${number(item.liabilitiesAndEquity)}</td><td>${number(item.difference)}</td></tr>`));
+  } else if (reportType === 'income') {
+    const totals = data.totals || [];
+    content += financialReportMetricCards(totals, [
+      ['revenue', 'الإيرادات'], ['expenses', 'المصروفات'], ['netIncome', 'صافي الربح أو الخسارة']
+    ]);
+    for (const section of sections)
+      content += financialReportTable(section.title, ['الحساب', 'العملة', 'المبلغ'], financialAccountRows(section.rows || [], 'المبلغ'));
+    content += financialReportTable('صافي نتيجة الفترة', ['العملة', 'الإيرادات', 'المصروفات', 'صافي الربح أو الخسارة'],
+      totals.map(item => `<tr><td>${escapeHtml(item.currency)}</td><td>${number(item.revenue)}</td><td>${number(item.expenses)}</td><td>${number(item.netIncome)}</td></tr>`));
+  } else if (reportType === 'trialBalance') {
+    const rows = data.rows || [];
+    const totals = data.totals || [];
+    content += financialReportTable('ميزان المراجعة',
+      ['الحساب', 'العملة', 'مدين أول المدة', 'دائن أول المدة', 'حركة مدينة', 'حركة دائنة', 'رصيد مدين', 'رصيد دائن'],
+      rows.map(item => `<tr><td><span class="cell-main">${escapeHtml(item.accountCode)} — ${escapeHtml(item.accountName)}</span></td><td>${escapeHtml(item.currency)}</td><td>${number(item.openingDebit)}</td><td>${number(item.openingCredit)}</td><td>${number(item.debit)}</td><td>${number(item.credit)}</td><td>${number(item.closingDebit)}</td><td>${number(item.closingCredit)}</td></tr>`));
+    content += financialReportTable('إجماليات ميزان المراجعة',
+      ['العملة', 'مدين أول المدة', 'دائن أول المدة', 'حركة مدينة', 'حركة دائنة', 'رصيد مدين', 'رصيد دائن'],
+      totals.map(item => `<tr><td>${escapeHtml(item.currency)}</td><td>${number(item.openingDebit)}</td><td>${number(item.openingCredit)}</td><td>${number(item.debit)}</td><td>${number(item.credit)}</td><td>${number(item.closingDebit)}</td><td>${number(item.closingCredit)}</td></tr>`));
+  } else if (reportType === 'cashFlow') {
+    const totals = data.totals || [];
+    const categoryNames = { operating: 'تشغيلية', investing: 'استثمارية', financing: 'تمويلية', opening: 'أرصدة افتتاحية', unclassified: 'غير مصنفة' };
+    content += financialReportMetricCards(totals, [
+      ['openingCash', 'رصيد النقدية أول المدة'], ['netChange', 'صافي التغير'], ['closingCash', 'رصيد النقدية آخر المدة']
+    ]);
+    content += financialReportTable('ملخص التدفقات النقدية',
+      ['العملة', 'رصيد أول المدة', 'متحصلات تشغيلية', 'مدفوعات تشغيلية', 'صافي الاستثمار', 'صافي التمويل', 'غير مصنف', 'تسويات افتتاحية', 'صافي التغير', 'رصيد آخر المدة'],
+      totals.map(item => `<tr><td>${escapeHtml(item.currency)}</td><td>${number(item.openingCash)}</td><td>${number(item.operatingInflow)}</td><td>${number(item.operatingOutflow)}</td><td>${number(item.investingNet)}</td><td>${number(item.financingNet)}</td><td>${number(item.unclassifiedNet)}</td><td>${number(item.openingBalanceAdjustments)}</td><td>${number(item.netChange)}</td><td>${number(item.closingCash)}</td></tr>`));
+    content += financialReportTable('حركة النقدية بحسب العملية',
+      ['التصنيف', 'العملية', 'العملة', 'متحصلات', 'مدفوعات', 'صافي الحركة'],
+      (data.rows || []).map(item => `<tr><td>${escapeHtml(categoryNames[item.category] || item.category)}</td><td>${escapeHtml(item.operation)}</td><td>${escapeHtml(item.currency)}</td><td>${number(item.inflow)}</td><td>${number(item.outflow)}</td><td>${number(item.net)}</td></tr>`));
+  } else if (reportType === 'equity') {
+    const totals = data.totals || [];
+    content += financialReportMetricCards(totals, [
+      ['openingEquity', 'حقوق الملكية أول المدة'], ['periodNetIncome', 'صافي نتيجة الفترة'], ['closingEquity', 'حقوق الملكية آخر المدة']
+    ]);
+    content += financialReportTable('التغيرات في حقوق الملكية',
+      ['الحساب', 'العملة', 'رصيد أول المدة', 'زيادة', 'انخفاض', 'نتيجة الفترة', 'رصيد آخر المدة'],
+      (data.rows || []).map(item => `<tr><td><span class="cell-main">${escapeHtml(item.accountCode)} — ${escapeHtml(item.accountName)}</span></td><td>${escapeHtml(item.currency)}</td><td>${number(item.openingBalance)}</td><td>${number(item.increase)}</td><td>${number(item.decrease)}</td><td>${number(item.periodNetIncome)}</td><td>${number(item.closingBalance)}</td></tr>`));
+    content += financialReportTable('إجماليات حقوق الملكية',
+      ['العملة', 'رصيد أول المدة', 'زيادة', 'انخفاض', 'صافي نتيجة الفترة', 'رصيد آخر المدة'],
+      totals.map(item => `<tr><td>${escapeHtml(item.currency)}</td><td>${number(item.openingEquity)}</td><td>${number(item.increase)}</td><td>${number(item.decrease)}</td><td>${number(item.periodNetIncome)}</td><td>${number(item.closingEquity)}</td></tr>`));
+  }
+
+  root.innerHTML = content || '<div class="empty-state">لا توجد بيانات مالية مطابقة للتقرير.</div>';
+}
+
+function statementMoney(value, currency, caption = '') {
+  const suffix = [caption, currency].filter(Boolean).map(escapeHtml).join(' · ');
+  return `<span class="cell-main">${number(value)}</span><span class="cell-sub">${suffix}</span>`;
+}
+
+function statementAccountCell(item) {
+  return `<span class="cell-main">${escapeHtml(item.accountCode)} — ${escapeHtml(item.accountName)}</span><span class="cell-sub">${escapeHtml(item.currency)}</span>`;
+}
+
+function statementTotalsByCurrency(accounts) {
+  const totals = new Map();
+  for (const item of accounts) {
+    const currency = String(item.currency || '—');
+    const total = totals.get(currency) || { currency, openingBalance: 0, debit: 0, credit: 0, closingBalance: 0 };
+    total.openingBalance += Number(item.openingBalance) || 0;
+    total.debit += Number(item.debit) || 0;
+    total.credit += Number(item.credit) || 0;
+    total.closingBalance += Number(item.closingBalance) || 0;
+    totals.set(currency, total);
+  }
+  return [...totals.values()].sort((a, b) => a.currency.localeCompare(b.currency));
+}
+
+function statementHasZeroBalance(item) {
+  return Math.abs(Number(item.closingBalance) || 0) < 0.000001;
+}
+
+function statementAccountBalanceSides(item) {
+  const balance = Number(item.closingBalance) || 0;
+  const type = typeof item.accountType === 'string' ? item.accountType.toLowerCase() : Number(item.accountType);
+  const debitNormal = type === 'asset' || type === 'expense' || type === 0 || type === 4;
+  const debitBalance = debitNormal ? balance : -balance;
+  return { debit: Math.max(debitBalance, 0), credit: Math.max(-debitBalance, 0) };
+}
+
+function statementBalanceCell(value, currency, accountType) {
+  const amount = Number(value) || 0;
+  const sides = statementAccountBalanceSides({ closingBalance: amount, accountType });
+  const tone = Math.abs(amount) < 0.000001 ? '' : sides.debit > 0 ? 'statement-balance-debit' : 'statement-balance-credit';
+  return `<td class="${tone}">${statementMoney(amount, currency)}</td>`;
+}
+
+function statementBalanceTotalsByCurrency(accounts) {
+  const totals = new Map();
+  for (const item of accounts.filter(account => !account.hasChildren)) {
+    const currency = String(item.currency || '—');
+    const total = totals.get(currency) || { currency, debit: 0, credit: 0 };
+    const sides = statementAccountBalanceSides(item);
+    total.debit += sides.debit;
+    total.credit += sides.credit;
+    totals.set(currency, total);
+  }
+  return [...totals.values()].sort((a, b) => a.currency.localeCompare(b.currency));
+}
+
+function renderAccountStatement() {
+  const { accounts, lines } = state.accountStatement;
+  const accountId = Number($('#statement-account').value) || null;
+  const selectedAccountHasChildren = accountId !== null && state.ledgerAccounts.some(
+    item => Number(item.parentLedgerAccountId) === accountId);
+  const showAccountColumn = accountId === null || selectedAccountHasChildren;
+  const aggregateAccounts = accountId === null || selectedAccountHasChildren;
+  const selectedAccountType = state.ledgerAccounts.find(item => Number(item.id) === accountId)?.type;
+  const detailed = $('#statement-mode').value === 'detailed';
+  const hideZeroAccounts = !detailed && $('#statement-hide-zero-accounts').checked;
+  const visibleAccounts = accounts.filter(item => {
+    if (hideZeroAccounts) return !statementHasZeroBalance(item);
+    if (detailed)
+      return !statementHasZeroBalance(item) || (Number(item.debit) || 0) !== 0 || (Number(item.credit) || 0) !== 0;
+    return true;
+  });
+  const currencies = [...new Set(visibleAccounts.map(item => String(item.currency || '—')))].sort();
+  const multipleCurrencies = currencies.length > 1;
+
+  const summaryRows = visibleAccounts.map(item => `<tr class="${item.hasChildren ? 'statement-parent-row' : ''}"><td>${statementAccountCell(item)}</td><td>${escapeHtml(item.currency)}</td><td>${statementMoney(item.openingBalance, item.currency)}</td><td>${statementMoney(item.debit, item.currency)}</td><td>${statementMoney(item.credit, item.currency)}</td><td>${statementMoney(item.closingBalance, item.currency)}</td></tr>`);
+  $('#statement-summary-body').innerHTML = summaryRows.join('');
+  $('#statement-summary-card .table-wrap').classList.toggle('hidden', summaryRows.length === 0);
+  $('#statement-summary-empty').classList.toggle('hidden', summaryRows.length > 0);
+
+  const head = $('#statement-lines-head');
+  const body = $('#statement-lines-body');
+  const foot = $('#statement-lines-foot');
+  const empty = $('#statement-lines-empty');
+  if (!detailed) {
+    const columns = aggregateAccounts
+      ? `${showAccountColumn ? '<th>الحساب</th>' : ''}${multipleCurrencies ? '<th>العملة</th>' : ''}<th>مدين</th><th>دائن</th>`
+      : `${multipleCurrencies ? '<th>العملة</th>' : ''}<th>إجمالي مدين</th><th>إجمالي دائن</th><th>الرصيد الجاري</th>`;
+    head.innerHTML = `<tr>${columns}</tr>`;
+    const rows = visibleAccounts.map(item => {
+      if (!aggregateAccounts)
+        return `<tr>${multipleCurrencies ? `<td>${escapeHtml(item.currency)}</td>` : ''}<td>${statementMoney(item.debit, item.currency)}</td><td>${statementMoney(item.credit, item.currency)}</td>${statementBalanceCell(item.closingBalance, item.currency, item.accountType)}</tr>`;
+      const sides = statementAccountBalanceSides(item);
+      return `<tr class="${item.hasChildren ? 'statement-parent-row' : ''}">${showAccountColumn ? `<td>${statementAccountCell(item)}</td>` : ''}${multipleCurrencies ? `<td>${escapeHtml(item.currency)}</td>` : ''}<td>${statementMoney(sides.debit, item.currency)}</td><td>${statementMoney(sides.credit, item.currency)}</td></tr>`;
+    });
+    body.innerHTML = rows.join('');
+    const totals = aggregateAccounts
+      ? statementBalanceTotalsByCurrency(accounts)
+      : statementTotalsByCurrency(accounts);
+    foot.innerHTML = totals.filter(total => !hideZeroAccounts || (Number(total.debit) || 0) !== 0 || (Number(total.credit) || 0) !== 0).map(total => {
+      const currencyCell = multipleCurrencies ? `<th>${escapeHtml(total.currency)}</th>` : '';
+      if (!aggregateAccounts) {
+        return `<tr class="statement-total-row" aria-label="إجمالي ${escapeHtml(total.currency)}" title="إجمالي ${escapeHtml(total.currency)}">${currencyCell}<th>${statementMoney(total.debit, total.currency, multipleCurrencies ? '' : 'الإجمالي')}</th><th>${statementMoney(total.credit, total.currency)}</th>${statementBalanceCell(total.closingBalance, total.currency, selectedAccountType)}</tr>`;
+      }
+      const difference = total.debit - total.credit;
+      const balanceDebit = Math.max(difference, 0);
+      const balanceCredit = Math.max(-difference, 0);
+      const label = selectedAccountHasChildren ? 'إجمالي السجلات التابعة' : 'إجمالي السجلات';
+      return `<tr class="statement-total-row"><th>${label}</th>${currencyCell}<th>${statementMoney(total.debit, total.currency)}</th><th>${statementMoney(total.credit, total.currency)}</th></tr><tr class="statement-balance-row"><th>الرصيد</th>${currencyCell}<th>${statementMoney(balanceDebit, total.currency)}</th><th>${statementMoney(balanceCredit, total.currency)}</th></tr>`;
+    }).join('');
+    $('#statement-details-card .table-wrap').classList.toggle('hidden', rows.length === 0);
+    empty.textContent = 'لا توجد حركات منشورة مطابقة للمرشحات.';
+    empty.classList.toggle('hidden', rows.length > 0);
+    return;
+  }
+
+  head.innerHTML = `<tr>${showAccountColumn ? '<th>الحساب</th>' : ''}<th>مدين</th><th>دائن</th><th>الرصيد الجاري</th><th>التاريخ</th><th>نوع العملية</th><th>البيان</th><th>رقم المرجع</th></tr>`;
+  const rows = lines.map(item => `<tr>${showAccountColumn ? `<td>${statementAccountCell(item)}</td>` : ''}<td>${statementMoney(item.debit, item.currency)}</td><td>${statementMoney(item.credit, item.currency)}</td>${statementBalanceCell(item.runningBalance, item.currency, item.accountType)}<td>${date(item.occurredAtUtc || item.postedAtUtc)}</td><td>${escapeHtml(journalEntryTypes[item.entryType] || item.entryType)}</td><td><span class="cell-main">${escapeHtml(item.description || '—')}</span></td><td><span class="cell-main">${escapeHtml(item.entryReference || item.entryNumber || '—')}</span>${item.entryReference && item.entryNumber ? `<span class="cell-sub">${escapeHtml(item.entryNumber)}</span>` : ''}</td></tr>`);
+  body.innerHTML = rows.join('');
+
+  const activeSubtotalAccounts = visibleAccounts.filter(item =>
+    !statementHasZeroBalance(item) || (Number(item.debit) || 0) !== 0 || (Number(item.credit) || 0) !== 0);
+  const subtotalRows = aggregateAccounts ? activeSubtotalAccounts.map(item => `<tr class="statement-subtotal-row ${item.hasChildren ? 'statement-parent-row' : ''}"><th>إجمالي ${escapeHtml(item.accountCode)} — ${escapeHtml(item.accountName)} · ${escapeHtml(item.currency)}</th><td>${statementMoney(item.debit, item.currency)}</td><td>${statementMoney(item.credit, item.currency)}</td><td>${statementMoney(item.closingBalance, item.currency)}</td><td colspan="4"></td></tr>`) : [];
+  const totals = statementTotalsByCurrency(accounts.filter(item => !item.hasChildren));
+  const totalRows = totals.map(total => {
+    const label = aggregateAccounts
+      ? `${selectedAccountHasChildren ? 'إجمالي الحسابات التابعة' : 'الإجمالي العام'} · ${escapeHtml(total.currency)}`
+      : `الإجمالي · ${escapeHtml(total.currency)}`;
+    const balance = aggregateAccounts ? '—' : statementMoney(total.closingBalance, total.currency);
+    if (!aggregateAccounts)
+      return `<tr class="statement-total-row"><td>${statementMoney(total.debit, total.currency)}</td><td>${statementMoney(total.credit, total.currency)}</td><td>${balance}</td><th colspan="4">${label}</th></tr>`;
+    return `<tr class="statement-total-row"><th>${label}</th><th>${statementMoney(total.debit, total.currency)}</th><th>${statementMoney(total.credit, total.currency)}</th><th>—</th><th colspan="4">إجمالي الحركات حسب العملة</th></tr>`;
+  });
+  foot.innerHTML = [...subtotalRows, ...totalRows].join('');
+  $('#statement-details-card .table-wrap').classList.toggle('hidden', rows.length === 0);
+  empty.textContent = 'لا توجد حركات منشورة مطابقة للمرشحات.';
+  empty.classList.toggle('hidden', rows.length > 0);
 }
 
 async function initializeAccounting() {
-  if (!window.confirm('سيتم إنشاء الحسابات الأساسية المفقودة وربط العملاء والسائقين وأنواع الخدمة الموجودة بحساباتها المالية، دون إنشاء قيود أو تغيير أرصدة. هل تريد المتابعة؟')) return;
   const button = $('#accounting-setup-button');
   button.disabled = true;
   try {
@@ -1034,6 +1978,8 @@ async function initializeAccounting() {
     toast(result.message || 'تمت تهيئة وربط الحسابات المالية.');
     await loadLedgerAccounts();
     await loadAccountStatement();
+  } catch (error) {
+    if (!isAdminOperationCancelled(error)) toast(error.message, true);
   } finally { button.disabled = false; }
 }
 
@@ -1051,7 +1997,10 @@ async function loadView(view, quiet = false) {
   try {
     if (view === 'overview') await loadDashboard();
     if (view === 'users') await loadUsers($('#user-search').value.trim());
+    if (view === 'customers') await loadCustomers($('#customer-search').value.trim());
     if (view === 'drivers') await loadDrivers();
+    if (view === 'driver-ratings') await loadDriverRatings();
+    if (view === 'notification-campaigns') await loadNotificationCampaigns();
     if (view === 'rides') {
       await loadRides();
       await loadActiveRideSnapshot();
@@ -1065,6 +2014,14 @@ async function loadView(view, quiet = false) {
     if (view === 'payment-methods') await loadPaymentMethods();
     if (view === 'settlements') await loadSettlements();
     if (view === 'ledger') { await loadLedgerAccounts(); await loadAccountStatement(); }
+    if (view === 'financial-operations') {
+      await loadLedgerAccounts();
+      initializeFinancialOperationFilterDate();
+      syncFinancialOperationForm();
+      syncFinancialOperationEditState();
+      await loadFinancialOperations();
+    }
+    if (view === 'financial-reports') await loadFinancialReport();
     if (view === 'places') await loadPlaces();
     if (view === 'areas') await loadAreas();
     if (view === 'history') await loadHistory();
@@ -1086,14 +2043,100 @@ async function loadHistory() {
   toggleEmpty('#history-body', '#history-empty', (result.data || []).map(item => `<tr><td>${escapeHtml(item.customerName || item.customerId)}</td><td>${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')} ← ${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td></tr>`));
 }
 
-function setView(view) {
+function setView(view, financialReportType = null, financialOperationType = null) {
+  if (view === 'financial-reports' && financialReportDefinitions[financialReportType])
+    state.financialReportType = financialReportType;
+  if (view === 'financial-operations' && financialOperationDefinitions[financialOperationType])
+    state.financialOperationType = financialOperationType;
   state.view = view;
   $$('.view').forEach(item => item.classList.toggle('active', item.id === `view-${view}`));
-  $$('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === view));
-  $('#page-title').textContent = titles[view][0];
-  $('#page-subtitle').textContent = titles[view][1];
+  const isActiveNavItem = item => item.dataset.view === view &&
+    (view !== 'financial-reports' || item.dataset.financialReport === state.financialReportType) &&
+    (view !== 'financial-operations' || item.dataset.financialOperation === state.financialOperationType);
+  $$('.nav-item').forEach(item => item.classList.toggle('active', isActiveNavItem(item)));
+  const activeItem = $$('.nav-item').find(isActiveNavItem);
+  const activeGroup = activeItem?.closest('.nav-group');
+  const activeSubgroup = activeItem?.closest('.nav-subgroup');
+  $$('.nav-group').forEach(group => {
+    group.classList.toggle('has-active', group === activeGroup);
+    if (group === activeGroup) group.open = true;
+  });
+  $$('.nav-subgroup').forEach(group => {
+    group.classList.toggle('has-active', group === activeSubgroup);
+    if (group === activeSubgroup) group.open = true;
+  });
+  const pageTitle = view === 'financial-reports'
+    ? financialReportDefinitions[state.financialReportType]
+    : view === 'financial-operations' ? financialOperationDefinitions[state.financialOperationType] : titles[view];
+  $('#page-title').textContent = pageTitle[0];
+  $('#page-subtitle').textContent = pageTitle[1];
+  if (view === 'financial-reports') {
+    $('#financial-report-heading').textContent = pageTitle[0];
+    $('#financial-report-subtitle').textContent = pageTitle[1];
+    $('#financial-report-from-field').classList.toggle('hidden', state.financialReportType === 'position');
+    $('#financial-report-to-label').textContent = state.financialReportType === 'position' ? 'تاريخ المركز المالي' : 'إلى تاريخ';
+  }
   closeSidebar();
-  loadView(view);
+  return loadView(view);
+}
+
+function applySegmentedFieldDesign(root) {
+  root.querySelectorAll('label.check-field').forEach(label => {
+    const control = [...label.children].find(element => element.matches('input[type="checkbox"], input[type="radio"]'));
+    if (!control) return;
+    const title = [...label.childNodes]
+      .filter(node => node !== control)
+      .map(node => node.textContent || '')
+      .join(' ')
+      .trim();
+    if (!title) return;
+    const titleSegment = document.createElement('span');
+    titleSegment.className = 'field-label-segment';
+    titleSegment.textContent = title;
+    const controlSegment = document.createElement('span');
+    controlSegment.className = 'field-control-segment';
+    controlSegment.append(control);
+    label.replaceChildren(titleSegment, controlSegment);
+    label.classList.remove('check-field');
+    label.classList.add('segmented-check-field');
+  });
+
+  const labels = root.querySelectorAll('label:not(.check-field):not(.statement-field-label):not(.field-label-segment)');
+  labels.forEach(label => {
+    if (label.classList.contains('segmented-field')) return;
+    const control = [...label.children].find(element => {
+      if (!element.matches('input, select, textarea')) return false;
+      return !['checkbox', 'radio', 'hidden'].includes((element.type || '').toLowerCase());
+    });
+    if (!control) return;
+
+    const children = [...label.childNodes];
+    const controlIndex = children.indexOf(control);
+    if (controlIndex < 0) return;
+    const titleNodes = children.slice(0, controlIndex);
+    if (!titleNodes.some(node => (node.textContent || '').trim())) return;
+
+    const titleContent = titleNodes.filter(node => node.nodeType !== Node.TEXT_NODE || node.textContent.trim());
+    let titleSegment;
+    if (titleContent.length === 1 && titleContent[0] instanceof HTMLElement && titleContent[0].tagName === 'SPAN') {
+      titleSegment = titleContent[0];
+      titleSegment.classList.add('field-label-segment');
+    } else {
+      titleSegment = document.createElement('span');
+      titleSegment.className = 'field-label-segment';
+      titleNodes.forEach(node => {
+        if (node.nodeType !== Node.TEXT_NODE || node.textContent.trim()) titleSegment.append(node);
+      });
+    }
+
+    const controlSegment = document.createElement('span');
+    controlSegment.className = 'field-control-segment';
+    controlSegment.append(control, ...children.slice(controlIndex + 1));
+    label.replaceChildren(titleSegment, controlSegment);
+    label.classList.add('segmented-field');
+    if (control.matches('textarea')) label.classList.add('field-has-textarea');
+    if (control.matches('input[type="file"]')) label.classList.add('field-has-file');
+  });
 }
 
 function buildField(field) {
@@ -1108,7 +2151,8 @@ function buildField(field) {
 let activeForm = null;
 const formEntityLabels = {
   user: 'المستخدم', driver: 'ملف السائق', ride: 'الرحلة', serviceKind: 'نوع الخدمة',
-  serviceCatalog: 'الخدمة', pricingRule: 'قاعدة التسعير', paymentMethod: 'طريقة الدفع', serviceArea: 'منطقة الخدمة'
+  serviceCatalog: 'الخدمة', pricingRule: 'قاعدة التسعير', paymentMethod: 'طريقة الدفع',
+  serviceArea: 'منطقة الخدمة', driverRating: 'تقييم السائق'
 };
 const formStateKeys = {
   user: 'users', driver: 'drivers', ride: 'rides', serviceKind: 'kinds',
@@ -1120,12 +2164,14 @@ function recordActions(name, id, lockedReason = '') {
   const numericId = Number(id);
   if (!Number.isSafeInteger(numericId) || numericId <= 0) return '—';
   if (lockedReason) {
-    return `<div class="action-row" title="${escapeHtml(lockedReason)}"><button class="button small" disabled>تعديل</button><button class="button small danger" disabled>حذف</button></div>`;
+    return `<div class="action-row">${iconActionButton('edit', 'تعديل', null, { disabledReason: lockedReason })}${iconActionButton('delete', 'حذف', null, { disabledReason: lockedReason })}</div>`;
   }
-  return `<div class="action-row"><button class="button small" onclick="editAdminEntity('${name}', ${numericId})">تعديل</button><button class="button small danger" onclick="deleteAdminEntity('${name}', ${numericId})">حذف</button></div>`;
+  return `<div class="action-row">${iconActionButton('edit', 'تعديل', `editAdminEntity('${name}', ${numericId})`)}${iconActionButton('delete', 'حذف', `deleteAdminEntity('${name}', ${numericId})`)}</div>`;
 }
 
 function findFormEntity(name, id) {
+  if (name === 'user')
+    return [...(state.users || []), ...(state.customers || [])].find(item => Number(item.id) === Number(id)) || null;
   const stateKey = formStateKeys[name];
   return stateKey ? (state[stateKey] || []).find(item => Number(item.id) === Number(id)) : null;
 }
@@ -1143,15 +2189,14 @@ window.deleteAdminEntity = async (name, id) => {
   const key = `${name}:${id}`;
   if (deletingRecords.has(key)) return;
   const label = formEntityLabels[name] || 'السجل';
-  if (!window.confirm(`هل تريد حذف ${label} نهائياً؟\nسيتحقق النظام من عدم وجود سجلات مرتبطة قبل الحذف.`)) return;
-
   deletingRecords.add(key);
   try {
     const result = await execute(config.model, 'delete', { id: Number(id) });
     toast(result.message || `تم حذف ${label}.`);
-    await loadView(config.refresh, true);
+    const refreshView = name === 'user' && state.view === 'customers' ? 'customers' : config.refresh;
+    await loadView(refreshView, true);
   } catch (error) {
-    toast(error.message || `تعذر حذف ${label}.`, true);
+    if (!isAdminOperationCancelled(error)) toast(error.message || `تعذر حذف ${label}.`, true);
   } finally {
     deletingRecords.delete(key);
   }
@@ -1174,8 +2219,18 @@ async function openForm(name, entity = null) {
   if (!config) throw new Error('نموذج الإدارة غير متاح.');
   const editing = entity !== null;
   let fields = config.fields.map(field => [...field]);
-  if (name === 'driver' && !state.users.length) {
+  if (name === 'ride') {
+    try {
+      const result = await execute('UserModel', 'list', {});
+      state.users = result.data || [];
+    } catch { }
+  } else if (name === 'driver' && !state.users.length) {
     try { await loadUsers(); } catch { }
+  } else if (name === 'driverRating' && !state.drivers.length) {
+    try { await loadDrivers(); } catch { }
+  }
+  if (name === 'settlementPayment' && !state.settlements.length) {
+    try { await loadSettlements(); } catch { }
   }
   if (name === 'serviceCatalog' || name === 'serviceKind' || name === 'driver' || name === 'ride' || name === 'pricingRule' || name === 'quote') {
     if (!state.kinds.length || !state.catalog.length) { try { await loadCatalog(); } catch {} }
@@ -1196,6 +2251,39 @@ async function openForm(name, entity = null) {
       return field;
     });
   }
+  if (name === 'ride') {
+    const customerUsers = [
+      ['', 'اختر العميل'],
+      ...(state.users || [])
+        .filter(x => Number(x.role) === 0 && x.isActive !== false)
+        .map(x => [String(x.id), `${x.displayName || 'بدون اسم'} - ${x.phoneNumber || ''}`])
+        .filter(option => option[0] && option[0] !== 'undefined')
+    ];
+    fields = fields.map(field => field[0] === 'customerId'
+      ? [field[0], field[1], 'select', field[3], customerUsers]
+      : field);
+  }
+  if (name === 'settlementPayment') {
+    const openSettlements = [
+      ['', 'اختر سجل المديونية'],
+      ...(state.settlements || [])
+        .filter(x => !x.isSettled && Number(x.amountOutstanding) > 0)
+        .map(x => [String(x.id), `#${x.id} — ${x.driverName || `السائق ${x.driverId}`} — متبقٍ ${number(x.amountOutstanding)} YER`])
+        .filter(option => option[0] && option[0] !== 'undefined')
+    ];
+    fields = fields.map(field => field[0] === 'driverSettlementId'
+      ? [field[0], field[1], 'select', field[3], openSettlements]
+      : field);
+  }
+  if (name === 'driverRating') {
+    const driverUsers = [
+      ['', 'اختر السائق'],
+      ...(state.drivers || []).map(x => [String(x.userId), `${x.displayName || 'بدون اسم'} - ${x.phoneNumber || ''}`])
+    ];
+    fields = fields.map(field => field[0] === 'driverUserId'
+      ? [field[0], field[1], 'select', field[3], driverUsers]
+      : field);
+  }
   if (editing && name === 'user') {
     fields = fields.map(field => field[0] === 'password' ? [field[0], 'كلمة المرور الجديدة (اختيارية)', field[2], false, '', field[5]] : field);
   }
@@ -1205,13 +2293,16 @@ async function openForm(name, entity = null) {
     fields,
     operation: editing ? 'update' : config.operation,
     editId: editing ? Number(entity.id) : null,
-    editing
+    editing,
+    sourceCampaignId: null
   };
   $('#modal-title').textContent = editing ? `تعديل ${formEntityLabels[name] || config.title}` : config.title;
   $('#modal-subtitle').textContent = editing
     ? 'عدّل البيانات ثم احفظ التغييرات. يبقى الحذف محمياً عند وجود سجلات مرتبطة.'
     : config.subtitle;
+  $('#modal-submit').textContent = name === 'notificationCampaign' ? 'إرسال الإشعار' : 'حفظ';
   $('#modal-fields').innerHTML = fields.map(buildField).join('');
+  applySegmentedFieldDesign($('#modal-fields'));
   $$('#modal-fields input[type="file"]').forEach(input => input.addEventListener('change', () => {
     const preview = $(`#modal-fields [data-preview-for="${input.name}"]`);
     if (!preview) return;
@@ -1244,7 +2335,6 @@ async function openForm(name, entity = null) {
     refreshCatalogOptions();
   }
   $('#modal-result').className = 'inline-result hidden';
-  if (name === 'wallet' && $('#wallet-user-id').value.trim()) $('#modal-fields [name="userId"]').value = $('#wallet-user-id').value.trim();
   $('#form-modal').showModal();
 }
 
@@ -1273,6 +2363,10 @@ async function submitEntityForm(event) {
     const form = event.currentTarget;
     const data = readForm(form, activeForm.fields);
     if (activeForm.editing) data.id = activeForm.editId;
+    if (activeForm.name === 'notificationCampaign' && activeForm.sourceCampaignId)
+      data.sourceCampaignId = activeForm.sourceCampaignId;
+    if (!readOnlyOperations.has(String(activeForm.operation || '').toLowerCase()) &&
+        !confirmAdminOperation(activeForm.model, activeForm.operation, data)) return;
     const image = form.elements.imageFile?.files?.[0];
     if (image) {
       const upload = new FormData(); upload.append('file', image);
@@ -1281,14 +2375,30 @@ async function submitEntityForm(event) {
       if (!uploaded.success) throw new Error(uploaded.message || 'تعذر رفع الصورة.');
       data[activeForm.imageField || 'imageUrl'] = uploaded.url;
     }
-    const result = await execute(activeForm.model, activeForm.operation, data);
+    const result = await execute(activeForm.model, activeForm.operation, data, { confirmed: true });
     resultBox.className = 'inline-result success';
     const imageUrl = result.data?.imageUrl || result.data?.photoUrl;
-    resultBox.innerHTML = `${escapeHtml(result.message)}${imageUrl ? `<br><img class="form-image-preview" src="${escapeHtml(imageUrl)}" alt=""><br><small>${escapeHtml(imageUrl)}</small>` : ''}${activeForm.name === 'quote' ? `<pre>${escapeHtml(JSON.stringify(result.data, null, 2))}</pre>` : ''}`;
-    toast(result.message);
-    if (activeForm.refresh) await loadView(activeForm.refresh === 'wallet' ? state.view : activeForm.refresh, true);
+    if (activeForm.name === 'notificationCampaign' && result.data?.recipientCount != null) {
+      const target = notificationCampaignTargets[Number(result.data.target)] || 'المستهدفين';
+      const message = `حُفظ سجل الحملة وأُنشئ الإشعار لـ ${number(result.data.recipientCount)} حساب من ${target}. تتم متابعة إرسال الإشعارات للأجهزة المسجلة بالخلفية.`;
+      resultBox.textContent = message;
+      toast(message);
+    } else {
+      resultBox.innerHTML = `${escapeHtml(result.message)}${imageUrl ? `<br><img class="form-image-preview" src="${escapeHtml(imageUrl)}" alt=""><br><small>${escapeHtml(imageUrl)}</small>` : ''}${activeForm.name === 'quote' ? `<pre>${escapeHtml(JSON.stringify(result.data, null, 2))}</pre>` : ''}`;
+      toast(result.message);
+    }
+    if (activeForm.refresh) {
+      const refreshView = activeForm.name === 'user' && state.view === 'customers'
+        ? 'customers'
+        : activeForm.refresh === 'wallet' ? state.view : activeForm.refresh;
+      await loadView(refreshView, true);
+    }
     if (activeForm.name !== 'quote') setTimeout(() => $('#form-modal').close(), 700);
-  } catch (error) { resultBox.className = 'inline-result error'; resultBox.textContent = error.message; }
+  } catch (error) {
+    if (!isAdminOperationCancelled(error)) {
+      resultBox.className = 'inline-result error'; resultBox.textContent = error.message;
+    }
+  }
   finally { submit.disabled = false; }
 }
 
@@ -1307,6 +2417,7 @@ function readDatabaseForm() {
 }
 
 async function sendDatabase(endpoint) {
+  if (endpoint.endsWith('/save') && !confirmAdminOperation('DatabaseConfigurationModel', 'save')) return;
   const resultBox = $('#database-result'); resultBox.className = 'inline-result'; resultBox.textContent = 'جارٍ تنفيذ الطلب...';
   try {
     const response = await fetch(endpoint, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(readDatabaseForm()) });
@@ -1324,8 +2435,99 @@ async function sendDatabase(endpoint) {
 function syncDatabaseAuth() { const disabled = $('#db-integrated').checked; $('#db-username').disabled = disabled; $('#db-password').disabled = disabled; }
 function closeSidebar() { $('#sidebar').classList.remove('open'); $('#sidebar-backdrop').classList.remove('open'); }
 
+function applyAdminTopbarTheme(theme, persist = false) {
+  const selectedTheme = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.adminTopbarTheme = selectedTheme;
+  const button = $('#topbar-theme-toggle');
+  if (button) {
+    const switchingToLight = selectedTheme === 'dark';
+    button.innerHTML = switchingToLight
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"></path></svg>'
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.1A8.6 8.6 0 0 1 8.9 3.8 8.7 8.7 0 1 0 20.2 15.1Z"></path></svg>';
+    const actionLabel = switchingToLight ? 'تغيير الشريط إلى الوضع الفاتح' : 'تغيير الشريط إلى الوضع الداكن';
+    button.title = actionLabel;
+    button.setAttribute('aria-label', `الشريط العلوي ${selectedTheme === 'dark' ? 'داكن' : 'فاتح'}، انقر للتبديل إلى ${switchingToLight ? 'الفاتح' : 'الداكن'}`);
+    button.setAttribute('aria-pressed', String(selectedTheme === 'dark'));
+  }
+  if (persist) {
+    try { localStorage.setItem(ADMIN_TOPBAR_THEME_KEY, selectedTheme); } catch {}
+  }
+}
+
+function loadAdminTopbarTheme() {
+  try { return localStorage.getItem(ADMIN_TOPBAR_THEME_KEY) === 'light' ? 'light' : 'dark'; }
+  catch { return 'dark'; }
+}
+
+function updatePageScrollJump() {
+  const button = $('#page-scroll-jump');
+  const documentElement = document.documentElement;
+  const position = Math.max(window.scrollY || 0, documentElement.scrollTop || 0, document.body.scrollTop || 0);
+  const bottom = Math.max(documentElement.scrollHeight, document.body.scrollHeight) - window.innerHeight;
+  if (position > lastPageScrollPosition + 2) pageScrollDirection = 'down';
+  else if (position < lastPageScrollPosition - 2) pageScrollDirection = 'up';
+  lastPageScrollPosition = position;
+
+  if (bottom <= 100 || position <= 56) {
+    button.classList.remove('is-visible');
+    button.hidden = true;
+    return;
+  }
+  if (position >= bottom - 56) pageScrollDirection = 'up';
+  button.textContent = pageScrollDirection === 'down' ? '↓' : '↑';
+  const label = pageScrollDirection === 'down' ? 'الانتقال إلى نهاية الصفحة' : 'العودة إلى أعلى الصفحة';
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  const wasHidden = button.hidden;
+  button.hidden = false;
+  if (wasHidden) {
+    button.classList.remove('is-visible');
+    requestAnimationFrame(() => button.classList.add('is-visible'));
+  } else {
+    button.classList.add('is-visible');
+  }
+}
+
+function schedulePageScrollJumpUpdate() {
+  if (pageScrollUpdatePending) return;
+  pageScrollUpdatePending = true;
+  requestAnimationFrame(() => {
+    pageScrollUpdatePending = false;
+    updatePageScrollJump();
+  });
+}
+
+function initializePageScrollJump() {
+  const button = $('#page-scroll-jump');
+  lastPageScrollPosition = window.scrollY || document.documentElement.scrollTop || 0;
+  button.addEventListener('click', () => {
+    const documentElement = document.documentElement;
+    const bottom = Math.max(documentElement.scrollHeight, document.body.scrollHeight) - window.innerHeight;
+    const target = pageScrollDirection === 'down' ? bottom : 0;
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    window.scrollTo({ top: target, behavior: reduceMotion ? 'auto' : 'smooth' });
+  });
+  window.addEventListener('scroll', schedulePageScrollJumpUpdate, { passive: true });
+  window.addEventListener('resize', schedulePageScrollJumpUpdate, { passive: true });
+  schedulePageScrollJumpUpdate();
+}
+
 function bindEvents() {
-  $$('.nav-item').forEach(button => button.addEventListener('click', () => setView(button.dataset.view)));
+  bindActionTooltips();
+  initializePageScrollJump();
+  initializeFinancialReportDates();
+  initializeFinancialOperationDate();
+  initializeFinancialOperationFilterDate();
+  $('#topbar-theme-toggle').addEventListener('click', () => {
+    const currentTheme = document.documentElement.dataset.adminTopbarTheme;
+    applyAdminTopbarTheme(currentTheme === 'dark' ? 'light' : 'dark', true);
+  });
+  window.addEventListener('storage', event => {
+    if (event.key === ADMIN_TOPBAR_THEME_KEY)
+      applyAdminTopbarTheme(event.newValue === 'light' ? 'light' : 'dark');
+  });
+  $$('.nav-item').forEach(button => button.addEventListener('click', () =>
+    setView(button.dataset.view, button.dataset.financialReport || null, button.dataset.financialOperation || null)));
   $$('[data-go]').forEach(button => button.addEventListener('click', () => setView(button.dataset.go)));
   $$('[data-form]').forEach(button => button.addEventListener('click', () => openForm(button.dataset.form)));
   $$('[data-close]').forEach(button => button.addEventListener('click', () => document.getElementById(button.dataset.close).close()));
@@ -1359,9 +2561,114 @@ function bindEvents() {
     $('#safety-map-route-link').classList.toggle('hidden', !$('#safety-map-route-link').href);
   });
   let searchTimer; $('#user-search').addEventListener('input', event => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadUsers(event.target.value.trim()).catch(error => toast(error.message, true)), 300); });
+  $('#customer-search-button').addEventListener('click', () => loadCustomers($('#customer-search').value.trim()).catch(error => toast(error.message, true)));
+  $('#customer-search').addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); loadCustomers(event.currentTarget.value.trim()).catch(error => toast(error.message, true)); }
+  });
+  $('#customer-sort-button').addEventListener('click', () => {
+    $('#customer-sort-by').value = state.customerSort.sortBy;
+    $('#customer-sort-direction').value = state.customerSort.descending ? 'desc' : 'asc';
+    $('#customer-sort-modal').showModal();
+  });
+  $('#customer-sort-form').addEventListener('submit', event => {
+    event.preventDefault();
+    state.customerSort = {
+      sortBy: $('#customer-sort-by').value,
+      descending: $('#customer-sort-direction').value === 'desc'
+    };
+    $('#customer-sort-modal').close();
+    loadCustomers($('#customer-search').value.trim()).catch(error => toast(error.message, true));
+  });
+  $('#customer-sort-reset').addEventListener('click', () => {
+    state.customerSort = { sortBy: 'createdAt', descending: true };
+    $('#customer-sort-modal').close();
+    loadCustomers($('#customer-search').value.trim()).catch(error => toast(error.message, true));
+  });
+  $('#driver-rating-filter').addEventListener('change', () => loadDriverRatings().catch(error => toast(error.message, true)));
+  $('#driver-ratings-refresh').addEventListener('click', () => loadDriverRatings().catch(error => toast(error.message, true)));
   $('#wallet-load').addEventListener('click', () => loadWallet().catch(error => toast(error.message, true)));
+  $('#wallet-phone-number').addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); loadWallet().catch(error => toast(error.message, true)); }
+  });
   $('#statement-load').addEventListener('click', () => loadAccountStatement().catch(error => toast(error.message, true)));
+  $('#financial-report-load').addEventListener('click', () => loadFinancialReport().catch(error => toast(error.message, true)));
+  $('#financial-report-to').addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); loadFinancialReport().catch(error => toast(error.message, true)); }
+  });
+  $('#financial-operation-type').addEventListener('change', () => {
+    state.financialOperationType = $('#financial-operation-type').value;
+    syncFinancialOperationForm();
+  });
+  $('#financial-operation-debit-account').addEventListener('change', syncFinancialOperationForm);
+  $('#financial-operation-credit-account').addEventListener('change', syncFinancialOperationForm);
+  $('#financial-operation-form').addEventListener('submit', submitFinancialOperation);
+  $('#financial-operation-cancel-edit').addEventListener('click', cancelFinancialOperationEdit);
+  $('#financial-operation-filter-load').addEventListener('click', () =>
+    loadFinancialOperations().catch(error => toast(error.message, true)));
+  $('#financial-operation-filter-date').addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      loadFinancialOperations().catch(error => toast(error.message, true));
+    }
+  });
+  const accountSearch = $('#statement-account-search');
+  const accountOptions = $('#statement-account-options');
+  document.body.appendChild(accountOptions);
+  const matchStatementAccount = value => state.ledgerAccounts.find(
+    item => statementAccountLabel(item) === String(value || '').trim());
+  const syncStatementAccountSelection = () => {
+    const account = matchStatementAccount(accountSearch.value);
+    $('#statement-account').value = account ? String(account.id) : '';
+    if (account) hideStatementAccountOptions();
+    else renderStatementAccountOptions(accountSearch.value);
+  };
+  accountSearch.addEventListener('focus', () => renderStatementAccountOptions(''));
+  accountSearch.addEventListener('input', syncStatementAccountSelection);
+  accountSearch.addEventListener('change', syncStatementAccountSelection);
+  accountSearch.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { hideStatementAccountOptions(); return; }
+    if (event.key === 'ArrowDown' && !accountOptions.hidden) {
+      event.preventDefault();
+      accountOptions.querySelector('[data-account-id]')?.focus();
+      return;
+    }
+    if (event.key === 'Enter' && !accountOptions.hidden) {
+      const exact = matchStatementAccount(accountSearch.value);
+      const first = accountOptions.querySelector('[data-account-id]');
+      if (!exact && first) { event.preventDefault(); chooseStatementAccount(first.dataset.accountId); }
+    }
+  });
+  accountOptions.addEventListener('pointerdown', event => {
+    if (event.target.closest('[data-account-id]')) event.preventDefault();
+  });
+  accountOptions.addEventListener('click', event => {
+    const option = event.target.closest('[data-account-id]');
+    if (option) chooseStatementAccount(option.dataset.accountId);
+  });
+  accountOptions.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { hideStatementAccountOptions(); accountSearch.focus(); return; }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    const options = [...accountOptions.querySelectorAll('[data-account-id]')];
+    const currentIndex = options.indexOf(document.activeElement);
+    const nextIndex = event.key === 'ArrowDown' ? currentIndex + 1 : currentIndex - 1;
+    event.preventDefault();
+    if (nextIndex < 0) accountSearch.focus();
+    else if (options[nextIndex]) options[nextIndex].focus();
+  });
+  document.addEventListener('pointerdown', event => {
+    if (!event.target.closest('.statement-account-picker') && !accountOptions.contains(event.target))
+      hideStatementAccountOptions();
+  });
+  window.addEventListener('resize', () => { if (!accountOptions.hidden) positionStatementAccountOptions(); });
+  document.addEventListener('scroll', () => { if (!accountOptions.hidden) positionStatementAccountOptions(); }, true);
+  document.addEventListener('scroll', event => {
+    if (event.target === accountOptions || accountOptions.contains(event.target)) return;
+    hideStatementAccountOptions();
+  }, true);
+  window.addEventListener('resize', hideStatementAccountOptions);
   $('#statement-period').addEventListener('change', syncStatementPeriodFields);
+  $('#statement-mode').addEventListener('change', syncStatementModeFields);
+  $('#statement-hide-zero-accounts').addEventListener('change', renderAccountStatement);
   $('#accounting-setup-button').addEventListener('click', () => initializeAccounting().catch(error => toast(error.message, true)));
   $('#db-integrated').addEventListener('change', syncDatabaseAuth);
   $('#db-test').addEventListener('click', () => sendDatabase('/api/setup/database/test'));
@@ -1406,6 +2713,8 @@ window.addEventListener('beforeunload', () => {
 });
 
 async function start() {
+  applyAdminTopbarTheme(loadAdminTopbarTheme());
+  applySegmentedFieldDesign(document);
   bindEvents();
   const settings = await loadDatabaseStatus();
   if (!settings?.configured) {

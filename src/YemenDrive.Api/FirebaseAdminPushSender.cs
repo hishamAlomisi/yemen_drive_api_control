@@ -31,7 +31,7 @@ public sealed class FirebaseAdminPushSender(IConfiguration configuration)
                 Notification = new AndroidNotification
                 {
                     ChannelId = "yemendrive_alerts",
-                    Icon = "ic_stat_yemendrive",
+                    Icon = "ic_launcher",
                     Color = "#0F6B78",
                     Sound = "default"
                 }
@@ -54,9 +54,16 @@ public sealed class FirebaseAdminPushSender(IConfiguration configuration)
         lock (_gate)
         {
             if (_messaging is not null) return _messaging;
+            var credentialPath = configuration["GOOGLE_APPLICATION_CREDENTIALS"]
+                ?? configuration["Firebase:CredentialsPath"];
+            var credential = string.IsNullOrWhiteSpace(credentialPath)
+                ? GoogleCredential.GetApplicationDefault()
+                : CredentialFactory.FromFile<ServiceAccountCredential>(Path.IsPathRooted(credentialPath)
+                    ? credentialPath
+                    : Path.Combine(AppContext.BaseDirectory, credentialPath)).ToGoogleCredential();
             var firebaseApp = FirebaseApp.Create(new AppOptions
             {
-                Credential = GoogleCredential.GetApplicationDefault(),
+                Credential = credential,
                 ProjectId = configuration["Firebase:ProjectId"] ?? "yemendrive-7ab97"
             }, "YemenDrivePush");
             _messaging = FirebaseMessaging.GetMessaging(firebaseApp);

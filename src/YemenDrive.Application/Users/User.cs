@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
@@ -130,9 +131,12 @@ public sealed class User(
             await dbContext.Users.CountAsync(x => x.Role == UserRole.Admin && x.IsActive, cancellationToken) <= 1)
             throw new ServiceException("last_admin_required", "لا يمكن حذف آخر حساب مدير نشط في النظام.");
 
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         await DeletionGuards.EnsureUserCanBeDeletedAsync(dbContext, entity.Id, cancellationToken);
+        await DeletionGuards.DeleteAutomaticallyCreatedUserChildrenAsync(dbContext, entity.Id, cancellationToken);
         dbContext.Users.Remove(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return new { entity.Id };
     }
 
