@@ -48,8 +48,12 @@ var settingsPath = Directory.Exists(Path.Combine(AppContext.BaseDirectory, "secu
 builder.Services.AddSingleton(new DatabaseConfigurationStore(settingsPath));
 builder.Services.AddSingleton<IDatabaseProvider, SqlServerDatabaseProvider>();
 builder.Services.AddSingleton<DatabaseConfigurator>();
-builder.Services.AddSingleton(serviceProvider =>
-    new OtpChallengeStore(serviceProvider.GetRequiredService<IWebHostEnvironment>().IsDevelopment()));
+var consoleOtpEnabled = builder.Environment.IsDevelopment() ||
+    string.Equals(
+        Environment.GetEnvironmentVariable("YEMENDRIVE_ENABLE_CONSOLE_OTP"),
+        "1",
+        StringComparison.Ordinal);
+builder.Services.AddSingleton(new OtpChallengeStore(consoleOtpEnabled));
 builder.Services.AddScoped<TrustedDeviceCredentialService>();
 builder.Services.AddScoped<AuthSessionService>();
 builder.Services.AddHttpContextAccessor();

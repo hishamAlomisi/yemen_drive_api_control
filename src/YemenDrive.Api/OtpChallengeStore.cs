@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 
 namespace YemenDrive.Api;
 
-public sealed class OtpChallengeStore(bool isDevelopment)
+public sealed class OtpChallengeStore(bool consoleOtpEnabled)
 {
     private sealed record Challenge(string Id, string Destination, string Purpose, string Code, string VerificationToken, DateTime ExpiresAtUtc, int FailedAttempts = 0);
     private const int MaximumFailedAttempts = 5;
@@ -12,7 +12,7 @@ public sealed class OtpChallengeStore(bool isDevelopment)
 
     public (string ChallengeId, int ExpiresInSeconds)? TryCreate(string destination, string purpose)
     {
-        if (!isDevelopment) return null;
+        if (!consoleOtpEnabled) return null;
 
         var now = DateTime.UtcNow;
         foreach (var expired in _challenges.Where(item => item.Value.ExpiresAtUtc < now))
