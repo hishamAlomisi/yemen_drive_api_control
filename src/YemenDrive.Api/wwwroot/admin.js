@@ -62,6 +62,8 @@ const titles = {
   places: ['الأماكن المفضلة', 'الأماكن المحفوظة للمستخدمين'],
   areas: ['مناطق الخدمة', 'الدول والمدن التي تعمل فيها الخدمة'],
   history: ['سجل الرحلات', 'الرحلات السابقة والقادمة'],
+  'waiting-report': ['تقرير تأخيرات الرحلات', 'مواقع التوقف ومدد الانتظار والرسوم المضافة لأجرة الراكب'],
+  'route-change-report': ['سجل تغييرات المسار', 'طلبات تغيير الوجهة ومواقعها وتفاصيل احتساب الأجرة'],
   console: ['محطة API', 'تنفيذ الطلبات المتقدمة'],
   'notification-campaigns': ['إشعارات المستخدمين', 'إنشاء حملات إشعار ومراجعة سجلها']
 };
@@ -122,6 +124,7 @@ const formConfigs = {
       ['destinationLabel','اسم الوجهة','text'], ['destinationAddress','عنوان الوجهة','text',true],
       ['destinationLatitude','خط عرض الوجهة','number',true,'15.3547','0.000001'], ['destinationLongitude','خط طول الوجهة','number',true,'44.2067','0.000001'],
       ['customerPrice','سعر العميل','number',false,'0','0.01'],
+      ['moreThanFourPassengers','أكثر من 4 ركاب','checkbox'], ['passengerNotes','ملاحظات الركوب','text'],
       ['status','حالة الإنشاء','select',true,[['1','بدء البحث عن سائق'],['0','حفظ كمسودة']]]
     ]
   },
@@ -138,8 +141,8 @@ const formConfigs = {
     ]
   },
   pricingRule: {
-    title: 'إضافة قاعدة تسعير', subtitle: 'تحديد السعر ورسوم العميل وعمولة السائق', model: 'PricingRuleModel', operation: 'add', refresh: 'pricing',
-    fields: [['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],['baseFare','السعر الأساسي','number',true,'500','0.01'],['perKilometer','لكل كيلومتر','number',true,'100','0.01'],['perMinute','لكل دقيقة','number',true,'20','0.01'],['serviceFee','رسوم الخدمة الثابتة على العميل','number',true,'0','0.01'],['driverCommissionRate','نسبة عمولة السائق (0 إلى 1)','number',true,'0','0.01'],['driverCommissionFixed','عمولة السائق الثابتة','number',true,'0','0.01'],['cancellationFee','رسم الإلغاء','number',true,'0','0.01'],['driverShareRate','نسبة السائق القديمة','number',false,'0','0.01'],['isActive','نشطة','checkbox',false,true]]
+    title: 'إضافة قاعدة تسعير', subtitle: 'اضبط الأجرة والانتظار وحدود المفاوضة لكل خدمة. نسبة 0 تمنع التغيير في ذلك الاتجاه؛ رسوم انتظار 0 تعطّل الانتظار المدفوع. الحدود من الأجرة المقترحة قبل رسم الخدمة.', model: 'PricingRuleModel', operation: 'add', refresh: 'pricing',
+    fields: [['serviceKindId','نوع الخدمة','select',true,'serviceKinds'],['serviceCatalogItemId','الخدمة','select',true,'serviceCatalogItems'],['baseFare','السعر الأساسي','number',true,'500','0.01'],['perKilometer','لكل كيلومتر','number',true,'100','0.01'],['perMinute','لكل دقيقة','number',true,'20','0.01'],['serviceFee','رسوم الخدمة الثابتة على العميل','number',true,'0','0.01'],['driverCommissionRate','نسبة عمولة السائق (0 إلى 1)','number',true,'0','0.01'],['driverCommissionFixed','عمولة السائق الثابتة','number',true,'0','0.01'],['cancellationFee','رسم الإلغاء','number',true,'0','0.01'],['routeChangeFee','رسوم تغيير المسار (ر.ي)','number',true,'0','0.01'],['waitingFreeMinutes','الانتظار المجاني لكل توقف (دقيقة)','number',true,'0','1'],['waitingPricePerMinute','رسوم دقيقة الانتظار (ر.ي)','number',true,'0','0.01'],['waitingMaxFee','سقف رسوم الانتظار للرحلة (ر.ي)','number',true,'0','1'],['maxPriceDecreasePercent','أقصى خفض من الأجرة المقترحة (%)','number',true,'0','0.01'],['maxPriceIncreasePercent','أقصى رفع من الأجرة المقترحة (%)','number',true,'0','0.01'],['driverShareRate','نسبة السائق القديمة','number',false,'0','0.01'],['isActive','نشطة','checkbox',false,true]]
   },
   quote: {
     title: 'تجربة التسعير', subtitle: 'احتساب سعر رحلة دون حفظها', model: 'PricingModel', operation: 'report',
@@ -779,8 +782,9 @@ async function loadRides() {
   const result = await execute('RideModel', 'list', value ? { status: Number(value) } : {});
   state.rides = result.data;
   const rows = result.data.map(item => {
+    const ridingOptions = `${item.moreThanFourPassengers ? '<span class="cell-sub">أكثر من 4 ركاب</span>' : ''}${item.passengerNotes ? `<span class="cell-sub">${escapeHtml(item.passengerNotes)}</span>` : ''}`;
     const lockedReason = Number(item.status) === 0 ? '' : 'تُدار الرحلات بعد بدء البحث عبر سير العمل التشغيلي والإلغاء الرسمي.';
-    return `<tr><td><span class="cell-main">${escapeHtml(item.customerName || item.customerId)}</span></td><td>${escapeHtml(item.driverName || 'لم يحدد')}</td><td><span class="cell-main">${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')}</span><span class="cell-sub">${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td><td>${recordActions('ride', item.id, lockedReason)}</td></tr>`;
+    return `<tr><td><span class="cell-main">${escapeHtml(item.customerName || item.customerId)}</span></td><td>${escapeHtml(item.driverName || 'لم يحدد')}</td><td><span class="cell-main">${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')}</span><span class="cell-sub">${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td><td>${ridingOptions}<button class="btn btn-sm" type="button" data-waiting-ride="${Number(item.id)}">الانتظار ${number(item.waitingFee || 0)} ر.ي</button>${recordActions('ride', item.id, lockedReason)}</td></tr>`;
   });
   toggleEmpty('#rides-body', '#rides-empty', rows);
 }
@@ -1144,7 +1148,7 @@ window.setDefaultServiceKind = async id => {
 
 async function loadPricing() {
   const result = await execute('PricingRuleModel','list',{}); state.pricing = result.data;
-  toggleEmpty('#pricing-body','#pricing-empty',result.data.map(item => `<tr><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${number(item.baseFare)}</td><td>${number(item.perKilometer)}</td><td>${number(item.perMinute)}</td><td>${number(item.serviceFee)}</td><td>${number((item.driverCommissionRate || 0) * 100)}%</td><td>${number(item.driverCommissionFixed || 0)}</td><td>${number(item.cancellationFee || 0)}</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td><td>${recordActions('pricingRule', item.id)}</td></tr>`));
+  toggleEmpty('#pricing-body','#pricing-empty',result.data.map(item => `<tr><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)}</td><td>${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${number(item.baseFare)}</td><td>${number(item.perKilometer)}</td><td>${number(item.perMinute)}</td><td>${number(item.serviceFee)}</td><td>${number((item.driverCommissionRate || 0) * 100)}%</td><td>${number(item.driverCommissionFixed || 0)}</td><td>${number(item.cancellationFee || 0)}</td><td>${number(item.routeChangeFee || 0)}</td><td>${number(item.waitingFreeMinutes || 0)} د</td><td>${number(item.waitingPricePerMinute || 0)}</td><td>${number(item.waitingMaxFee || 0)}</td><td>${number(item.maxPriceDecreasePercent || 0)}%</td><td>${number(item.maxPriceIncreasePercent || 0)}%</td><td>${badge(item.isActive ? 'نشطة' : 'متوقفة', item.isActive ? 'success' : 'danger')}</td><td>${recordActions('pricingRule', item.id)}</td></tr>`));
 }
 
 async function loadWallet() {
@@ -2025,6 +2029,8 @@ async function loadView(view, quiet = false) {
     if (view === 'places') await loadPlaces();
     if (view === 'areas') await loadAreas();
     if (view === 'history') await loadHistory();
+    if (view === 'waiting-report') await loadWaitingReport();
+    if (view === 'route-change-report') await loadRouteChangeReport();
   } catch (error) { if (!quiet) toast(error.message, true); }
 }
 
@@ -2302,6 +2308,16 @@ async function openForm(name, entity = null) {
     : config.subtitle;
   $('#modal-submit').textContent = name === 'notificationCampaign' ? 'إرسال الإشعار' : 'حفظ';
   $('#modal-fields').innerHTML = fields.map(buildField).join('');
+  if (name === 'pricingRule') {
+    const limits = { routeChangeFee: [0,999999999], waitingFreeMinutes: [0,120], waitingPricePerMinute: [0,999999999], waitingMaxFee: [0,999999999], maxPriceDecreasePercent: [0,100], maxPriceIncreasePercent: [0,1000] };
+    for (const [field, [min,max]] of Object.entries(limits)) {
+      const input = document.querySelector('#modal-fields [name="' + field + '"]');
+      if (input) { input.min = String(min); input.max = String(max); if (field === 'routeChangeFee') input.step = '1'; }
+    }
+    const help = document.createElement('p'); help.className = 'form-help';
+    help.textContent = 'مثال: أجرة 1000 وخفض 20% ورفع 30% تسمح من 800 إلى 1300 ر.ي. تُحفظ السياسة مع الرحلة. الانتظار يحتاج موافقة الطرفين؛ تتوقف الرسوم عند الاستئناف أو الحركة المؤكدة أو انقطاع موقع السائق لدقيقتين. السقف يشمل جميع توقفات الرحلة. رسوم تغيير المسار تُضاف لكل تغيير يقبله الطرفان، وتُحفظ سياستها مع الرحلة.';
+    document.querySelector('#modal-fields').append(help);
+  }
   applySegmentedFieldDesign($('#modal-fields'));
   $$('#modal-fields input[type="file"]').forEach(input => input.addEventListener('change', () => {
     const preview = $(`#modal-fields [data-preview-for="${input.name}"]`);
@@ -2374,6 +2390,10 @@ async function submitEntityForm(event) {
       const uploaded = await uploadResponse.json().catch(() => ({ success: false }));
       if (!uploaded.success) throw new Error(uploaded.message || 'تعذر رفع الصورة.');
       data[activeForm.imageField || 'imageUrl'] = uploaded.url;
+    }
+    if (activeForm.name === 'ride') {
+      const quote = await execute('PricingModel', 'report', { serviceKindId: data.serviceKindId, serviceCatalogItemId: data.serviceCatalogItemId, customerId: data.customerId, pickupLatitude: data.pickupLatitude, pickupLongitude: data.pickupLongitude, destinationLatitude: data.destinationLatitude, destinationLongitude: data.destinationLongitude, distanceKm: 0, durationMinutes: 0 });
+      data.pricingQuoteToken = quote.data.pricingQuoteToken;
     }
     const result = await execute(activeForm.model, activeForm.operation, data, { confirmed: true });
     resultBox.className = 'inline-result success';
@@ -2747,3 +2767,19 @@ async function start() {
 }
 
 start();
+
+document.addEventListener('click', async event => {
+  const button = event.target.closest('[data-waiting-ride]');
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const result = await execute('RideWaitingModel', 'get', { rideId: Number(button.dataset.waitingRide) });
+    const data = result.data;
+    let dialog = document.getElementById('waiting-details-dialog');
+    if (!dialog) { dialog = document.createElement('dialog'); dialog.id = 'waiting-details-dialog'; document.body.append(dialog); }
+    const reasons = { driver_resumed: 'استأنف السائق', vehicle_moving: 'حركة السيارة', connection_lost: 'انقطاع الموقع', fee_cap: 'بلوغ السقف', rejected: 'رفض', withdrawn: 'سحب الطلب', request_expired: 'انتهاء مهلة الموافقة', ride_cancelled: 'إلغاء الرحلة', ride_closed: 'إغلاق الرحلة' };
+    dialog.innerHTML = '<h3>تفاصيل الانتظار</h3><p>المجاني لكل توقف: ' + number(data.waitingFreeMinutes) + ' دقيقة — الدقيقة: ' + number(data.waitingPricePerMinute) + ' ر.ي — السقف للرحلة: ' + number(data.waitingMaxFee) + ' ر.ي</p><p>رسوم الانتظار الحالية: ' + number(data.waitingFee) + ' ر.ي — إجمالي الرحلة الحالي: ' + number(data.totalAmount) + ' ر.ي</p>' + (data.history || []).map(item => '<p>طلب #' + number(item.id) + ' — صاحب الطلب #' + number(item.requestedByUserId) + ' — الموافق: ' + (item.approvedByUserId ? '#' + number(item.approvedByUserId) : 'لم يوافق بعد') + '<br>بدأ: ' + date(item.startedAtUtc) + ' — انتهى: ' + date(item.endedAtUtc) + ' — ' + escapeHtml(reasons[item.endReason] || 'مفتوح') + ' — الرسوم المثبتة: ' + number(item.fee) + ' ر.ي</p>').join('') + '<form method="dialog"><button class="btn" type="submit">إغلاق</button></form>';
+    dialog.showModal();
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; }
+});

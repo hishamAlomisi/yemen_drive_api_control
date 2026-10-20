@@ -80,6 +80,10 @@ builder.Services.AddScoped<IRideRealtimePublisher, SignalRRideRealtimePublisher>
 builder.Services.AddScoped<NotificationSaveCaptureInterceptor>();
 builder.Services.AddSingleton<FirebaseAdminPushSender>();
 builder.Services.AddHostedService<NotificationPushWorker>();
+builder.Services.AddScoped<RideOfferExpiration>();
+builder.Services.AddScoped<RideWaitingCoordinator>();
+builder.Services.AddHostedService<RideWaitingWorker>();
+builder.Services.AddHostedService<RideOfferExpirationWorker>();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.NumberHandling = JsonNumberHandling.AllowReadingFromString);
 
@@ -149,6 +153,24 @@ app.UseStaticFiles(new StaticFileOptions
         {
             context.Context.Response.Headers.CacheControl = "no-store";
             context.Context.Response.Headers["Referrer-Policy"] = "no-referrer";
+            return;
+        }
+
+        var requestPath = context.Context.Request.Path.Value ?? string.Empty;
+        var extension = Path.GetExtension(requestPath);
+        var isImage = extension.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+                      extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                      extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+                      extension.Equals(".webp", StringComparison.OrdinalIgnoreCase) ||
+                      extension.Equals(".gif", StringComparison.OrdinalIgnoreCase) ||
+                      extension.Equals(".svg", StringComparison.OrdinalIgnoreCase) ||
+                      extension.Equals(".ico", StringComparison.OrdinalIgnoreCase);
+        if (isImage)
+        {
+            var cachePolicy = requestPath.StartsWith("/uploads/", StringComparison.OrdinalIgnoreCase)
+                ? "public, max-age=31536000, immutable"
+                : "public, max-age=86400";
+            context.Context.Response.Headers.CacheControl = cachePolicy;
         }
     }
 });
@@ -383,6 +405,8 @@ app.MapGet("/api/safety/shares/{token}", async (
         pickupLongitude = ride.PickupLongitude,
         destinationLatitude = ride.DestinationLatitude,
         destinationLongitude = ride.DestinationLongitude,
+        routePolyline = ride.RoutePolyline,
+        routeVersion = ride.RouteVersion,
         driverName = ride.Driver?.DisplayName,
         latitude = location?.Latitude,
         longitude = location?.Longitude,

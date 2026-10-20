@@ -7,6 +7,7 @@ using YemenDrive.Database.Entities;
 using YemenDrive.Application.Accounting;
 using YemenDrive.Application.Administration;
 using YemenDrive.Application.Places;
+using YemenDrive.Application.Pricing;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -25,6 +26,8 @@ public sealed class Ride(
     public override IReadOnlyCollection<string> Operations { get; } = ["add", "create", "update", "delete", "get", "cancel"];
     protected override async Task<object?> AddAsync(RideModel model, CancellationToken cancellationToken)
     {
+        if (model.PassengerNotes?.Trim().Length > 1000)
+            throw new ServiceException("passenger_notes_too_long", "الملاحظات لا تتجاوز 1000 حرف.");
         // A signed-in client is always bound to the token. The explicit id is
         // retained only for unauthenticated administrative/test requests.
         var customerId = currentUser.UserId ?? model.CustomerId;
@@ -76,9 +79,12 @@ public sealed class Ride(
             DestinationLatitude = model.DestinationLatitude,
             DestinationLongitude = model.DestinationLongitude,
             CustomerPrice = model.CustomerPrice,
+            MoreThanFourPassengers = model.MoreThanFourPassengers ?? false,
+            PassengerNotes = model.PassengerNotes?.Trim(),
             IdempotencyKey = idempotencyKey,
             Status = model.Status ?? RideStatus.Searching
         };
+        await RidePricingPolicy.ApplyQuoteAsync(dbContext, entity, model.PricingQuoteToken, cancellationToken);
         dbContext.Rides.Add(entity);
         await StoreRecentDestinationAsync(entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -95,7 +101,10 @@ public sealed class Ride(
 
     protected override async Task<object?> UpdateAsync(RideModel model, CancellationToken cancellationToken)
     {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         var entity = await FindAsync(model.Id, cancellationToken);
+        if (model.CustomerPaymentEnabled == true || model.Status == RideStatus.Completed)
+            await new RideWaitingCoordinator(dbContext).EnsureSettledAsync(entity, cancellationToken);
         var isAdmin = await IsAdminAsync(cancellationToken);
         if (HasDraftDetails(model))
         {
@@ -104,6 +113,7 @@ public sealed class Ride(
             if (entity.Status != RideStatus.Draft)
                 throw new ServiceException("ride_details_locked", "لا يمكن تعديل بيانات الرحلة بعد خروجها من المسودة.");
             await ApplyDraftDetailsAsync(entity, model, cancellationToken);
+            await RidePricingPolicy.ApplyQuoteAsync(dbContext, entity, model.PricingQuoteToken, cancellationToken);
         }
 
         var previousStatus = entity.Status;
@@ -128,6 +138,12 @@ public sealed class Ride(
                 !await dbContext.PaymentTransactions.AnyAsync(x => x.RideId == entity.Id && x.Status == PaymentStatus.Paid, cancellationToken))
                 throw new ServiceException("payment_required", "لا يمكن إنهاء الرحلة قبل تسجيل تحصيل المبلغ.");
             statusChanged = entity.Status != model.Status.Value;
+            if (model.Status.Value == RideStatus.Cancelled)
+            {
+                var waiting = new RideWaitingCoordinator(dbContext);
+                var stop = await waiting.ReconcileAsync(entity, DateTime.UtcNow, cancellationToken);
+                if (stop?.IsOpen == true) waiting.Close(entity, stop, DateTime.UtcNow, "ride_cancelled");
+            }
             entity.Status = model.Status.Value;
         }
         if (model.CustomerPaymentEnabled is not null)
@@ -140,6 +156,9 @@ public sealed class Ride(
         }
         if (model.CustomerPrice is not null)
         {
+            if (currentUser.UserId != entity.CustomerId && !isAdmin)
+                throw new ServiceException("ride_access_denied", "تعديل السعر متاح لصاحب الطلب فقط.");
+            RidePricingPolicy.ValidateCustomerPrice(entity, model.CustomerPrice);
             if (entity.Status == RideStatus.Draft && isAdmin)
             {
                 entity.CustomerPrice = model.CustomerPrice;
@@ -152,11 +171,16 @@ public sealed class Ride(
             }
         }
         entity.UpdatedAtUtc = DateTime.UtcNow;
-        if (entity.Status == RideStatus.InProgress && entity.StartedAtUtc is null) entity.StartedAtUtc = DateTime.UtcNow;
+        if (entity.Status == RideStatus.InProgress && entity.StartedAtUtc is null)
+        {
+            entity.StartedAtUtc = DateTime.UtcNow;
+            await RideRouteChangePolicy.StartTrackingAsync(dbContext, entity, entity.StartedAtUtc.Value, cancellationToken);
+        }
         if (entity.Status == RideStatus.Completed && entity.CompletedAtUtc is null) entity.CompletedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
         if (statusChanged)
             await NotifyRideStatusRecipientsAsync(entity, "تحديث حالة الرحلة", StatusMessage(entity.Status), cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         if (realtimePublisher is not null &&
             (entity.Status != previousStatus || entity.DriverId != previousDriverId))
         {
@@ -481,13 +505,17 @@ public sealed class Ride(
         model.PickupLabel is not null ||
         model.PickupAddress is not null ||
         model.DestinationLabel is not null ||
-        model.DestinationAddress is not null;
+        model.DestinationAddress is not null || model.MoreThanFourPassengers is not null || model.PassengerNotes is not null;
 
     private async Task ApplyDraftDetailsAsync(
         RideEntity entity,
         RideModel model,
         CancellationToken cancellationToken)
     {
+        if (model.PassengerNotes?.Trim().Length > 1000)
+            throw new ServiceException("passenger_notes_too_long", "الملاحظات لا تتجاوز 1000 حرف.");
+        if (model.PassengerNotes is not null) entity.PassengerNotes = model.PassengerNotes.Trim();
+        if (model.MoreThanFourPassengers is bool moreThanFour) entity.MoreThanFourPassengers = moreThanFour;
         if (model.CustomerId is int customerId && customerId != entity.CustomerId)
         {
             if (!await dbContext.Users.AnyAsync(x => x.Id == customerId && x.IsActive, cancellationToken))
@@ -571,6 +599,10 @@ public sealed class Ride(
 
     private static object ToResult(RideEntity x, int? notifiedDriverCount = null) => new
     {
+        x.RouteVersion, x.RouteChangeFee, x.RouteChangeFees, x.RouteCompletedFare, x.RouteSegmentStartedAtUtc, x.RoutePolyline,
+        x.QuotedPrice, x.MinCustomerPrice, x.MaxCustomerPrice,
+        x.WaitingFreeMinutes, x.WaitingPricePerMinute, x.WaitingMaxFee, x.WaitingFee,
+        x.MoreThanFourPassengers, x.PassengerNotes,
         x.Id, x.CustomerId, x.DriverId, x.Status, x.ServiceKindId, x.ServiceCatalogItemId,
         serviceKindCode = x.ServiceKind?.Code, serviceKindNameAr = x.ServiceKind?.NameAr,
         serviceCode = x.ServiceCatalogItem?.Code, serviceNameAr = x.ServiceCatalogItem?.NameAr,

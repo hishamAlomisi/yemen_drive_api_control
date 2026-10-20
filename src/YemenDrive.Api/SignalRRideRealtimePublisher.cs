@@ -11,6 +11,12 @@ public sealed class SignalRRideRealtimePublisher(
     YemenDriveDbContext db,
     ILogger<SignalRRideRealtimePublisher> logger) : IRideRealtimePublisher
 {
+    public Task PublishRideRequestViewedAsync(int customerUserId, RideSearchViewer viewer,
+        CancellationToken cancellationToken) => TrySendAsync(
+            hub.Clients.Group(TrackingHub.UserGroup(customerUserId)),
+            "rideRequestViewed", viewer,
+            "Could not publish request view for ride {RideId}.", viewer.RideId);
+
     public async Task PublishRideAvailableAsync(
         IReadOnlyCollection<RideAvailableRecipient> recipients,
         CancellationToken cancellationToken)

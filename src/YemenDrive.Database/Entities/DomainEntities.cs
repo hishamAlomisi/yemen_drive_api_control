@@ -158,6 +158,34 @@ public sealed class ServiceArea : Entity
 
 public sealed class Ride : Entity
 {
+    public bool HasRoutePricingSnapshot { get; set; }
+    public decimal RouteBaseFare { get; set; }
+    public decimal RoutePerKilometer { get; set; }
+    public decimal RoutePerMinute { get; set; }
+    public double RouteQuotedDistanceMeters { get; set; }
+    public double RouteQuotedDurationSeconds { get; set; }
+    public decimal RouteOriginalFare { get; set; }
+    public decimal RouteChangeFee { get; set; }
+    public decimal RouteChangeFees { get; set; }
+    public decimal RouteCompletedFare { get; set; }
+    public double RouteCompletedDistanceMeters { get; set; }
+    public int RouteVersion { get; set; }
+    public DateTime? RouteSegmentStartedAtUtc { get; set; }
+    public double RouteSegmentLatitude { get; set; }
+    public double RouteSegmentLongitude { get; set; }
+    public int? PricingRuleId { get; set; }
+    public decimal? QuotedPrice { get; set; }
+    public decimal? MinCustomerPrice { get; set; }
+    public decimal? MaxCustomerPrice { get; set; }
+    public int WaitingFreeMinutes { get; set; }
+    public decimal WaitingPricePerMinute { get; set; }
+    public decimal WaitingMaxFee { get; set; }
+    public decimal WaitingFee { get; set; }
+    public decimal AppliedDriverCommissionRate { get; set; }
+    public decimal AppliedDriverCommissionFixed { get; set; }
+    public bool MoreThanFourPassengers { get; set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(1000)]
+    public string? PassengerNotes { get; set; }
     public byte[] RowVersion { get; set; } = [];
     public string? IdempotencyKey { get; set; }
     public int CustomerId { get; set; }
@@ -229,6 +257,7 @@ public sealed class WalletTransaction : Entity
 
 public sealed class LocationUpdate : Entity
 {
+    public double? Accuracy { get; set; }
     public int RideId { get; set; }
     public Ride Ride { get; set; } = null!;
     public int ActorId { get; set; }
@@ -601,6 +630,12 @@ public sealed class RideSafetyShare : Entity
 
 public sealed class PricingRule : Entity
 {
+    public decimal RouteChangeFee { get; set; }
+    public int WaitingFreeMinutes { get; set; }
+    public decimal WaitingPricePerMinute { get; set; }
+    public decimal WaitingMaxFee { get; set; }
+    public decimal MaxPriceDecreasePercent { get; set; }
+    public decimal MaxPriceIncreasePercent { get; set; }
     public int ServiceKindId { get; set; }
     public ServiceKind ServiceKind { get; set; } = null!;
     public int ServiceCatalogItemId { get; set; }

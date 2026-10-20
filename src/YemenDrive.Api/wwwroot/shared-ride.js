@@ -16,6 +16,32 @@
   let animationFrame = 0;
   let retryTimer = null;
   let stopped = false;
+  let routeLine = null;
+  let snapshotRevision = 0;
+
+  function decodeRoute(encoded) {
+    if (typeof encoded !== 'string' || encoded.length > 500000) return [];
+    let index = 0, latitude = 0, longitude = 0;
+    const points = [];
+    const component = () => {
+      let value = 0, shift = 0, byte;
+      do {
+        if (index >= encoded.length || shift > 30) throw new Error('invalid route');
+        byte = encoded.charCodeAt(index++) - 63;
+        if (byte < 0 || byte > 63) throw new Error('invalid route');
+        value |= (byte & 31) << shift; shift += 5;
+      } while (byte >= 32);
+      return value & 1 ? ~(value >> 1) : value >> 1;
+    };
+    try {
+      while (index < encoded.length && points.length < 50000) {
+        latitude += component(); longitude += component();
+        if (!validPoint(latitude / 100000, longitude / 100000)) return [];
+        points.push([latitude / 100000, longitude / 100000]);
+      }
+    } catch (_) { return []; }
+    return points;
+  }
 
   const statusNames = {
     0: 'مسودة', 1: 'يتم البحث عن سائق', 2: 'يجري التفاوض',
@@ -102,6 +128,7 @@
   }
 
   async function loadSnapshot() {
+    const revision = ++snapshotRevision;
     if (!token) throw new Error('رابط المشاركة غير صالح.');
     const response = await fetch(`/api/safety/shares/${encodeURIComponent(token)}`, {
       cache: 'no-store',
@@ -109,7 +136,11 @@
     });
     if (!response.ok) throw new Error('رابط المشاركة غير متاح أو انتهت صلاحيته.');
     const snapshot = await response.json();
+    if (revision !== snapshotRevision) return;
     showRideStatus(snapshot.status);
+    if (routeLine) { routeLine.remove(); routeLine = null; }
+    const routePoints = decodeRoute(snapshot.routePolyline);
+    if (routePoints.length > 1) routeLine = L.polyline(routePoints, { color: '#147d5a', weight: 5 }).addTo(map);
 
     endpointMarkers.forEach(marker => marker.remove());
     endpointMarkers = [];
@@ -144,7 +175,11 @@
       .build();
     connection = current;
     current.on('sharedRideLocationUpdated', updateDriverLocation);
-    current.on('sharedRideStatusUpdated', payload => showRideStatus(payload?.rideStatus));
+    current.on('sharedRideStatusUpdated', async payload => {
+      showRideStatus(payload?.rideStatus);
+      if (stopped) return;
+      try { await loadSnapshot(); } catch (error) { setMessage(error.message); }
+    });
     current.on('sharedRideRevoked', () => {
       setStatus('تم إيقاف مشاركة الرحلة');
       setMessage('ألغى صاحب الرحلة رابط المشاركة.');

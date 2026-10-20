@@ -14,6 +14,9 @@ public sealed class PricingRuleReport(
             .OrderByDescending(x => x.CreatedAtUtc)
             .Select(x => new
             {
+                x.RouteChangeFee,
+                x.WaitingFreeMinutes, x.WaitingPricePerMinute, x.WaitingMaxFee,
+                x.MaxPriceDecreasePercent, x.MaxPriceIncreasePercent,
                 x.Id, x.ServiceKindId, x.ServiceCatalogItemId,
                 serviceKindCode = x.ServiceKind.Code, serviceKindNameAr = x.ServiceKind.NameAr,
                 serviceCode = x.ServiceCatalogItem.Code, serviceNameAr = x.ServiceCatalogItem.NameAr, x.BaseFare,

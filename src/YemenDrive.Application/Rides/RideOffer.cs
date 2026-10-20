@@ -6,6 +6,7 @@ using YemenDrive.Database.Entities;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
+using YemenDrive.Application.Pricing;
 using RideOfferEntity = YemenDrive.Database.Entities.RideOffer;
 
 namespace YemenDrive.Application.Rides;
@@ -43,6 +44,7 @@ public sealed class RideOffer(
         var ride = await dbContext.Rides.SingleOrDefaultAsync(x => x.Id == model.RideId, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
         var statusBeforeOffer = ride.Status;
+        if (ride.QuotedPrice is not null) RidePricingPolicy.ValidateCustomerPrice(ride, model.Amount);
         if (ride.Status == RideStatus.Cancelled)
             throw new ServiceException(
                 "ride_search_cancelled",
@@ -80,7 +82,8 @@ public sealed class RideOffer(
             {
                 existing.Amount = model.Amount;
                 existing.Note = model.Note;
-                existing.ExpiresAtUtc = DateTime.UtcNow.AddSeconds(Math.Clamp(model.ValidForSeconds, 5, 300));
+                existing.CreatedAtUtc = DateTime.UtcNow;
+                existing.ExpiresAtUtc = existing.CreatedAtUtc.AddSeconds(60);
                 existing.UpdatedAtUtc = DateTime.UtcNow;
                 ride.Status = RideStatus.Negotiating;
                 ride.UpdatedAtUtc = DateTime.UtcNow;
@@ -106,7 +109,7 @@ public sealed class RideOffer(
             DriverId = driverId.Value,
             Amount = model.Amount,
             Note = model.Note,
-            ExpiresAtUtc = DateTime.UtcNow.AddSeconds(Math.Clamp(model.ValidForSeconds, 5, 300))
+            ExpiresAtUtc = DateTime.UtcNow.AddSeconds(60)
         };
         ride.Status = RideStatus.Negotiating;
         ride.UpdatedAtUtc = DateTime.UtcNow;
@@ -138,13 +141,19 @@ public sealed class RideOffer(
 
     protected override async Task<object?> UpdateAsync(RideOfferModel model, CancellationToken cancellationToken)
     {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken);
         var entity = await FindAsync(model.Id, cancellationToken);
+        var customerId = await dbContext.Rides.Where(x => x.Id == entity.RideId)
+            .Select(x => x.CustomerId).SingleAsync(cancellationToken);
+        await EnsureCustomerOrAdminAsync(customerId, cancellationToken);
         if (entity.Status != OfferStatus.Pending)
             throw new ServiceException("offer_not_pending", "لا يمكن تغيير عرض تمت معالجته مسبقاً.");
         if (entity.ExpiresAtUtc <= DateTime.UtcNow)
         {
             entity.Status = OfferStatus.Expired;
             await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
             throw new ServiceException("offer_expired", "انتهت صلاحية العرض.");
         }
 
@@ -153,14 +162,23 @@ public sealed class RideOffer(
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
         if (ride.Status is not (RideStatus.Searching or RideStatus.Negotiating))
             throw new ServiceException("ride_not_open_for_offers", "الرحلة لا يمكن قبول عرض لها في حالتها الحالية.");
+        if (ride.DriverId is not null || await dbContext.Rides.AnyAsync(x => x.DriverId == entity.DriverId && x.Id != ride.Id &&
+            (x.Status == RideStatus.DriverAssigned || x.Status == RideStatus.DriverEnRoute || x.Status == RideStatus.InProgress), cancellationToken))
+            throw new ServiceException("driver_not_available", "ارتبط السائق برحلة أخرى. اختر عرضًا آخر.");
 
         var requestedStatus = model.Status ?? OfferStatus.Accepted;
         if (requestedStatus == OfferStatus.Accepted)
+        {
+            await transaction.DisposeAsync();
             return await AcceptAsync(model, cancellationToken);
+        }
+        if (requestedStatus != OfferStatus.Rejected)
+            throw new ServiceException("invalid_offer_status", "يمكن قبول العرض أو رفضه فقط.");
 
         entity.Status = requestedStatus;
         entity.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         if (realtimePublisher is not null)
         {
             var updated = await RideRealtimeEventFactory.LoadOffersAsync(
@@ -203,27 +221,7 @@ public sealed class RideOffer(
         var acceptedFare = RoundYemeniRial(entity.Amount);
         entity.Amount = acceptedFare;
         ride.DriverId = entity.DriverId;
-        ride.ServerPrice = acceptedFare;
-        ride.CustomerPrice = acceptedFare;
-        var pricingRule = await dbContext.PricingRules.AsNoTracking().SingleOrDefaultAsync(
-            x => x.IsActive && x.ServiceKindId == ride.ServiceKindId &&
-                 x.ServiceCatalogItemId == ride.ServiceCatalogItemId,
-            cancellationToken);
-        ride.ServiceFee = RoundYemeniRial(pricingRule?.ServiceFee ?? 0m);
-        ride.CancellationFee = RoundYemeniRial(pricingRule?.CancellationFee ?? 0m);
-        ride.TotalAmount = ride.CustomerPrice + ride.ServiceFee;
-        var commissionRate = pricingRule?.DriverCommissionRate ?? 0m;
-        var commissionFixed = pricingRule?.DriverCommissionFixed ?? 0m;
-        ride.DriverCommissionAmount = decimal.Round(
-            ride.CustomerPrice.Value * commissionRate + commissionFixed,
-            0,
-            MidpointRounding.AwayFromZero);
-        if (ride.DriverCommissionAmount > ride.CustomerPrice)
-            throw new ServiceException("invalid_driver_commission", "عمولة السائق لا يمكن أن تتجاوز أجرة الرحلة.");
-        // The service fee is paid by the customer to the platform. The driver
-        // earns the agreed fare after their own commission is deducted.
-        ride.DriverShare = ride.CustomerPrice - ride.DriverCommissionAmount;
-        ride.PlatformShare = ride.ServiceFee + ride.DriverCommissionAmount;
+        await RidePricingPolicy.AcceptFareAsync(dbContext, ride, acceptedFare, cancellationToken);
         ride.Status = RideStatus.DriverAssigned;
         ride.UpdatedAtUtc = DateTime.UtcNow;
         entity.UpdatedAtUtc = DateTime.UtcNow;

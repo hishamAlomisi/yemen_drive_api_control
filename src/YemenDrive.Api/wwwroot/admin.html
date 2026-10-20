@@ -6,7 +6,7 @@
   <title>YemenDrive | لوحة التحكم</title>
   <link rel="icon" type="image/png" href="/yemen-drive-page-icon.png?v=20261015">
   <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/admin.css?v=20261015-topbar-theme">
+  <link rel="stylesheet" href="/admin.css?v=20261019-ride-reports-2">
 </head>
 <body>
   <div class="admin-login" id="admin-login">
@@ -71,6 +71,8 @@
           <div class="nav-submenu">
             <button class="nav-item nav-sub-item" data-view="ledger"><span class="nav-icon">≡</span><span>كشف الحساب</span></button>
             <button class="nav-item nav-sub-item" data-view="history"><span class="nav-icon">◷</span><span>سجل الرحلات</span></button>
+            <button class="nav-item nav-sub-item" data-view="waiting-report"><span class="nav-icon">◴</span><span>تقرير تأخيرات الرحلات</span></button>
+            <button class="nav-item nav-sub-item" data-view="route-change-report"><span class="nav-icon">↪</span><span>سجل تغييرات المسار</span></button>
           </div>
         </details>
         <details class="nav-group" data-nav-group="financial-reports">
@@ -210,8 +212,8 @@
         </section>
 
         <section class="view" id="view-pricing">
-          <div class="section-toolbar"><div><h2>قواعد التسعير</h2><p>الأجرة ورسوم الخدمة وعمولة السائق والإلغاء</p></div><div class="command-row"><button class="button" data-form="quote">تجربة تسعير</button><button class="button primary" data-form="pricingRule">إضافة قاعدة</button></div></div>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>نوع الخدمة</th><th>الخدمة</th><th>الأساسي</th><th>لكل كم</th><th>لكل دقيقة</th><th>رسوم الخدمة</th><th>عمولة %</th><th>عمولة ثابتة</th><th>رسم الإلغاء</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="pricing-body"></tbody></table></div><div class="empty-state hidden" id="pricing-empty">لا توجد قواعد تسعير.</div></section>
+          <div class="section-toolbar"><div><h2>قواعد التسعير</h2><p>الأجرة ورسوم الخدمة وعمولة السائق والإلغاء وتغيير المسار</p></div><div class="command-row"><button class="button" data-form="quote">تجربة تسعير</button><button class="button primary" data-form="pricingRule">إضافة قاعدة</button></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>نوع الخدمة</th><th>الخدمة</th><th>الأساسي</th><th>لكل كم</th><th>لكل دقيقة</th><th>رسوم الخدمة</th><th>عمولة %</th><th>عمولة ثابتة</th><th>رسم الإلغاء</th><th>تغيير المسار</th><th>انتظار مجاني</th><th>دقيقة الانتظار</th><th>سقف الانتظار</th><th>خفض %</th><th>رفع %</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="pricing-body"></tbody></table></div><div class="empty-state hidden" id="pricing-empty">لا توجد قواعد تسعير.</div></section>
         </section>
 
         <section class="view" id="view-wallet">
@@ -317,6 +319,41 @@
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>العميل</th><th>المسار</th><th>الحالة</th><th>السعر</th><th>التاريخ</th></tr></thead><tbody id="history-body"></tbody></table></div><div class="empty-state hidden" id="history-empty">لا توجد رحلات في السجل.</div></section>
         </section>
 
+        <section class="view" id="view-route-change-report">
+          <div class="section-toolbar"><div><h2>سجل تغييرات المسار</h2><p>كل صف يمثل طلب تغيير وجهة وفاتورته المحفوظة؛ تُثبت رسوم التغيير عند قبول الطلب.</p></div><button class="button" id="route-change-report-refresh" type="button">تحديث السجل</button></div>
+          <form id="route-change-report-filters" class="admin-report-filters">
+            <label>من تاريخ الطلب<input id="route-change-report-from" type="date"></label>
+            <label>إلى تاريخ الطلب<input id="route-change-report-to" type="date"></label>
+            <label>رقم الرحلة<input id="route-change-report-ride" type="number" min="1" step="1" placeholder="كل الرحلات"></label>
+            <label>الراكب أو السائق<input id="route-change-report-search" maxlength="100" placeholder="الاسم أو الهاتف"></label>
+            <label>حالة الطلب<select id="route-change-report-status"><option value="">كل الحالات</option><option value="quoted">عرض أجرة</option><option value="pending">بانتظار الموافقة</option><option value="accepted">مقبول</option><option value="rejected">مرفوض</option><option value="cancelled">ملغى</option><option value="expired">انتهت المهلة</option></select></label>
+            <div class="admin-report-actions"><button class="button primary" type="submit">عرض السجل</button><button class="button" type="reset">مسح التصفية</button></div>
+          </form>
+          <p class="admin-report-note">الفترة حسب تاريخ طلب التغيير، وتشمل يوم النهاية كاملًا بتوقيت اليمن (UTC+3). الإجمالي يحسب رسوم كل تغيير مقبول مرة واحدة، ولا يعني تحصيلها من الراكب.</p>
+          <div class="admin-report-summary" id="route-change-report-summary"></div>
+          <p id="route-change-report-feedback" role="status" aria-live="polite"></p>
+          <section class="data-section"><div class="table-wrap" tabindex="0" role="region" aria-label="جدول تغييرات المسار؛ مرر أفقيًا لعرض جميع الأعمدة"><table class="admin-report-table route-change-report-table"><thead><tr><th>الطلب والرحلة</th><th>تغيير الوجهة</th><th>مكان التغيير</th><th>الحالة والتوقيت</th><th>رسوم هذا التغيير</th><th>فاتورة الطلب</th></tr></thead><tbody id="route-change-report-body"></tbody></table></div><div class="empty-state hidden" id="route-change-report-empty">لا توجد تغييرات مسار تطابق التصفية.</div></section>
+          <div class="admin-report-pagination"><button class="button" id="route-change-report-prev" type="button" disabled>السابق</button><span id="route-change-report-page"></span><button class="button" id="route-change-report-next" type="button" disabled>التالي</button></div>
+        </section>
+
+        <section class="view" id="view-waiting-report">
+          <div class="section-toolbar"><div><h2>تقرير تأخيرات الرحلات</h2><p>كل صف يمثل طلب توقف؛ الرسوم المثبتة مضافة إلى أجرة الراكب ولا تعني تحصيلها.</p></div><button class="button" id="waiting-report-refresh" type="button">تحديث التقرير</button></div>
+          <form id="waiting-report-filters" class="admin-report-filters">
+            <label>من تاريخ الطلب<input id="waiting-report-from" type="date"></label>
+            <label>إلى تاريخ الطلب<input id="waiting-report-to" type="date"></label>
+            <label>رقم الرحلة<input id="waiting-report-ride" type="number" min="1" step="1" placeholder="كل الرحلات"></label>
+            <label>الراكب أو السائق<input id="waiting-report-search" maxlength="100" placeholder="الاسم أو الهاتف"></label>
+            <label>حالة الانتظار<select id="waiting-report-status"><option value="">كل الحالات</option><option value="active">انتظار جارٍ</option><option value="ended">انتظار منتهٍ</option><option value="pending">بانتظار الموافقة</option><option value="unstarted">طلب لم يبدأ</option></select></label>
+            <label class="check-field"><input id="waiting-report-charged" type="checkbox">رسوم مثبتة أكبر من صفر</label>
+            <div class="admin-report-actions"><button class="button primary" type="submit">عرض التقرير</button><button class="button" type="reset">مسح التصفية</button></div>
+          </form>
+          <p class="admin-report-note">الفترة حسب تاريخ طلب التوقف، وتشمل يوم النهاية كاملًا بتوقيت اليمن (UTC+3). يُعرض موقع التوقف عند الموافقة؛ وللطلب الذي لم يبدأ يُعرض موقع تقديمه.</p>
+          <div class="admin-report-summary" id="waiting-report-summary"></div>
+          <p id="waiting-report-feedback" role="status" aria-live="polite"></p>
+          <section class="data-section"><div class="table-wrap" tabindex="0" role="region" aria-label="جدول تأخيرات الرحلات؛ مرر أفقيًا لعرض جميع الأعمدة"><table class="admin-report-table"><thead><tr><th>الرحلة والمسار</th><th>الراكب والسائق</th><th>مكان التأخير</th><th>الطلب والانتظار</th><th>المدة</th><th>التعرفة المعتمدة</th><th>الرسوم المضافة للراكب</th></tr></thead><tbody id="waiting-report-body"></tbody></table></div><div class="empty-state hidden" id="waiting-report-empty">لا توجد تأخيرات تطابق التصفية.</div></section>
+          <div class="admin-report-pagination"><button class="button" id="waiting-report-prev" type="button" disabled>السابق</button><span id="waiting-report-page"></span><button class="button" id="waiting-report-next" type="button" disabled>التالي</button></div>
+        </section>
+
         <section class="view" id="view-console">
           <div class="section-toolbar"><div><h2>محطة API</h2><p>تنفيذ أي مودل وعملية عبر المسار الموحد</p></div></div>
           <div class="console-layout">
@@ -345,8 +382,14 @@
 
   <button class="page-scroll-jump" id="page-scroll-jump" type="button" aria-label="الانتقال إلى نهاية الصفحة" title="الانتقال إلى نهاية الصفحة" hidden>↓</button>
   <div class="toast-region" id="toast-region" aria-live="polite"></div>
+  <dialog id="route-change-invoice-dialog" class="route-change-invoice-dialog" aria-labelledby="route-change-invoice-title">
+    <div class="route-change-invoice-heading"><h2 id="route-change-invoice-title">فاتورة تغيير المسار</h2><form method="dialog"><button class="button" type="submit" aria-label="إغلاق تفاصيل الفاتورة">إغلاق</button></form></div>
+    <div id="route-change-invoice-content"></div>
+  </dialog>
   <script src="/vendor/signalr/signalr.min.js" defer></script>
   <script src="/vendor/leaflet/leaflet.js" defer></script>
-  <script src="/admin.js?v=20261015-topbar-theme" defer></script>
+  <script src="/admin.js?v=20261019-ride-reports-2" defer></script>
+  <script src="/admin-waiting-report.js?v=20261019-ride-reports-2" defer></script>
+  <script src="/admin-route-change-report.js?v=20261019-ride-reports-2" defer></script>
 </body>
 </html>

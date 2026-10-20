@@ -174,6 +174,10 @@ public sealed class TrackingHub(
             observedAtUtc - location.ObservedAtUtc < TimeSpan.FromMilliseconds(750))
             return;
 
+        if (location is not null && HaversineMeters(location.Latitude, location.Longitude, sample.Latitude, sample.Longitude) >
+            75 * (observedAtUtc - location.ObservedAtUtc).TotalSeconds + Math.Max(50, sample.Accuracy * 2))
+            throw new HubException("قفزة موقع السائق لا تتوافق مع سرعة حركة ممكنة.");
+
         if (location is null)
         {
             location = new DriverLiveLocation { DriverId = driverId };
@@ -186,6 +190,10 @@ public sealed class TrackingHub(
         location.IsOnline = true;
         location.ObservedAtUtc = observedAtUtc;
         location.UpdatedAtUtc = now;
+        if (activeRide?.Status == RideStatus.InProgress)
+            db.LocationUpdates.Add(new LocationUpdate { RideId = activeRide.Id, ActorId = driverId,
+                Latitude = sample.Latitude, Longitude = sample.Longitude, Bearing = sample.Bearing,
+                Speed = sample.Speed, Accuracy = sample.Accuracy, ObservedAtUtc = observedAtUtc });
         await db.SaveChangesAsync(Context.ConnectionAborted);
 
         var realtimeLocation = new DriverLocationRealtimeEvent(

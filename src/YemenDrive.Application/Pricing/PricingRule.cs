@@ -3,16 +3,20 @@ using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
+using YemenDrive.Shared.Security;
+using YemenDrive.Database.Entities;
 using PricingRuleEntity = YemenDrive.Database.Entities.PricingRule;
 
 namespace YemenDrive.Application.Pricing;
 
 public sealed class PricingRule(
     YemenDriveDbContext dbContext,
-    DatabaseConfigurationStore configurationStore) : OperationsService<PricingRuleModel>(configurationStore)
+    DatabaseConfigurationStore configurationStore,
+    ICurrentUserContext currentUser) : OperationsService<PricingRuleModel>(configurationStore)
 {
     protected override async Task<object?> AddAsync(PricingRuleModel model, CancellationToken cancellationToken)
     {
+        await RequireAdminAsync(cancellationToken);
         Validate(model);
         await EnsureSelectionAsync(model, cancellationToken);
         var entity = new PricingRuleEntity();
@@ -24,6 +28,7 @@ public sealed class PricingRule(
 
     protected override async Task<object?> UpdateAsync(PricingRuleModel model, CancellationToken cancellationToken)
     {
+        await RequireAdminAsync(cancellationToken);
         var entity = await FindAsync(model.Id, cancellationToken);
         Validate(model);
         await EnsureSelectionAsync(model, cancellationToken);
@@ -35,6 +40,7 @@ public sealed class PricingRule(
 
     protected override async Task<object?> DeleteAsync(PricingRuleModel model, CancellationToken cancellationToken)
     {
+        await RequireAdminAsync(cancellationToken);
         var entity = await FindAsync(model.Id, cancellationToken);
         dbContext.PricingRules.Remove(entity);
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -55,6 +61,15 @@ public sealed class PricingRule(
 
     private static void Validate(PricingRuleModel model)
     {
+        if (model.RouteChangeFee < 0 || model.RouteChangeFee > 999999999 || model.RouteChangeFee != decimal.Truncate(model.RouteChangeFee))
+            throw new ServiceException("invalid_route_change_fee", "رسوم تغيير المسار يجب أن تكون مبلغًا صحيحًا غير سالب.");
+        if (model.BaseFare < 0 || model.PerKilometer < 0 || model.PerMinute < 0)
+            throw new ServiceException("invalid_fare", "مكونات الأجرة لا يمكن أن تكون سالبة.");
+        if (model.WaitingFreeMinutes is < 0 or > 120 || model.WaitingPricePerMinute < 0 || model.WaitingMaxFee < 0 || model.WaitingMaxFee != decimal.Truncate(model.WaitingMaxFee) ||
+            (model.WaitingPricePerMinute > 0 && model.WaitingMaxFee <= 0))
+            throw new ServiceException("invalid_waiting_policy", "حدد مهلة من 0 إلى 120 دقيقة، ورسومًا غير سالبة، وسقفًا موجبًا عند تفعيل الانتظار المدفوع.");
+        if (model.MaxPriceDecreasePercent is < 0 or > 100 || model.MaxPriceIncreasePercent is < 0 or > 1000)
+            throw new ServiceException("invalid_negotiation_limits", "نسبة الخفض بين 0 و100% ونسبة الرفع بين 0 و1000%.");
         if (model.ServiceKindId is null || model.ServiceCatalogItemId is null)
             throw new ServiceException("invalid_pricing_rule", "نوع الخدمة والخدمة المختارة مطلوبان.");
         if (model.DriverShareRate is < 0 or > 1)
@@ -69,6 +84,12 @@ public sealed class PricingRule(
 
     private static void Apply(PricingRuleEntity x, PricingRuleModel model)
     {
+        x.RouteChangeFee = model.RouteChangeFee;
+        x.WaitingFreeMinutes = model.WaitingFreeMinutes;
+        x.WaitingPricePerMinute = model.WaitingPricePerMinute;
+        x.WaitingMaxFee = model.WaitingMaxFee;
+        x.MaxPriceDecreasePercent = model.MaxPriceDecreasePercent;
+        x.MaxPriceIncreasePercent = model.MaxPriceIncreasePercent;
         x.ServiceKindId = model.ServiceKindId!.Value;
         x.ServiceCatalogItemId = model.ServiceCatalogItemId!.Value;
         x.BaseFare = model.BaseFare;
@@ -84,11 +105,20 @@ public sealed class PricingRule(
 
     private static object ToResult(PricingRuleEntity x) => new
     {
+        x.RouteChangeFee,
+        x.WaitingFreeMinutes, x.WaitingPricePerMinute, x.WaitingMaxFee,
+        x.MaxPriceDecreasePercent, x.MaxPriceIncreasePercent,
         x.Id, x.ServiceKindId, x.ServiceCatalogItemId, x.BaseFare,
         x.PerKilometer, x.PerMinute, x.ServiceFee, x.DriverCommissionRate,
         x.DriverCommissionFixed, x.CancellationFee, x.DriverShareRate, x.IsActive,
         x.CreatedAtUtc, x.UpdatedAtUtc
     };
+
+    private async Task RequireAdminAsync(CancellationToken token)
+    {
+        if (currentUser.UserId is not int id || !await dbContext.Users.AnyAsync(x => x.Id == id && x.IsActive && x.Role == UserRole.Admin, token))
+            throw new ServiceException("admin_required", "تعديل قواعد التسعير متاح للإدارة فقط.");
+    }
 
     private async Task EnsureSelectionAsync(PricingRuleModel model, CancellationToken cancellationToken)
     {

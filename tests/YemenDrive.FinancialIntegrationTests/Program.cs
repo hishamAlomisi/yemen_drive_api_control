@@ -64,6 +64,9 @@ try
     await InsufficientCashShortageRollsBackAsync(db, configuration, fixture);
     await AdministrativeApprovalSettlesPaidCashCancellationAsync(db, configuration, fixture);
     await RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(db, configuration, fixture);
+    await PricingWaitingScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+    await WaitingReportScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+    await RouteChangeScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
 
     Console.WriteLine("PASS: financial integration scenarios completed on an isolated temporary database.");
 }
@@ -137,6 +140,14 @@ static async Task RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(
     await db.SaveChangesAsync();
 
     var publisher = new RecordingRideRealtimePublisher();
+    var pricingQuote = new RidePricingQuote
+    {
+        CustomerId = fixture.CustomerId, ServiceKindId = fixture.ServiceKindId, ServiceCatalogItemId = fixture.ServiceCatalogItemId,
+        PickupLatitude = latitude, PickupLongitude = longitude, DestinationLatitude = latitude + .02, DestinationLongitude = longitude + .02,
+        Amount = 1000, MinPrice = 800, MaxPrice = 2000, ExpiresAtUtc = DateTime.UtcNow.AddMinutes(10)
+    };
+    db.RidePricingQuotes.Add(pricingQuote);
+    await db.SaveChangesAsync();
     var rideService = new RideService(
         db, configuration, new TestCurrentUser(fixture.CustomerId), RideAccounting(db), publisher);
     var rideResult = await ExecuteAsync(rideService, "add", new RideModel(
@@ -151,7 +162,9 @@ static async Task RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(
         DestinationLatitude: latitude + 0.02,
         DestinationLongitude: longitude + 0.02,
         CustomerPrice: 1_000m,
-        IdempotencyKey: "realtime-event-ride"));
+        IdempotencyKey: "realtime-event-ride",
+        PricingQuoteToken: pricingQuote.Token,
+        MoreThanFourPassengers: true, PassengerNotes: "ملاحظة اختبار للركوب"));
     AssertSuccess(rideResult, "ride request before rideAvailable event");
     var rideId = Convert.ToInt32(rideResult.Data!.GetType().GetProperty("Id")!.GetValue(rideResult.Data));
     Assert(publisher.AvailableRecipients.Count == 1, "rideAvailable targets the matched driver only");
@@ -160,6 +173,41 @@ static async Task RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(
     AssertEqual(rideId, Convert.ToInt32(available.Ride["id"]), "rideAvailable contains the saved ride id");
     Assert(Equals(false, available.Ride["destinationAvailable"]), "rideAvailable hides the exact destination from an unassigned driver");
     Assert(available.Ride["destinationLatitude"] is null, "rideAvailable omits destination coordinates");
+    Assert(Equals(true, available.Ride["moreThanFourPassengers"]), "riding options reach eligible drivers before offers");
+    Assert(Equals("ملاحظة اختبار للركوب", available.Ride["passengerNotes"]), "passenger notes reach drivers");
+    var savedOptions = await db.Rides.AsNoTracking().SingleAsync(x => x.Id == rideId);
+    Assert(savedOptions.MoreThanFourPassengers && savedOptions.PassengerNotes == "ملاحظة اختبار للركوب", "riding options persist in the database");
+
+    var driverViews = new YemenDrive.Application.Rides.RideSearchView(
+        db, configuration, new TestCurrentUser(candidateDriver.Id), publisher);
+    var customerViews = new YemenDrive.Application.Rides.RideSearchView(
+        db, configuration, new TestCurrentUser(fixture.CustomerId), publisher);
+    Assert(!(await ExecuteAsync(customerViews, "update", new RideSearchViewModel(rideId, 1_000m))).Success,
+        "a customer cannot fabricate a driver view");
+    AssertSuccess(await ExecuteAsync(driverViews, "update", new RideSearchViewModel(rideId, 1_000m)), "driver records an actual view");
+    AssertSuccess(await ExecuteAsync(driverViews, "update", new RideSearchViewModel(rideId, 1_000m)), "duplicate view is idempotent");
+    AssertEqual(1, await db.RideSearchViews.CountAsync(x => x.RideId == rideId), "one view per driver");
+    AssertSuccess(await ExecuteAsync(customerViews, "get", new RideSearchViewModel(rideId)), "owner reads real viewers");
+    Assert(!(await ExecuteAsync(driverViews, "get", new RideSearchViewModel(rideId))).Success,
+        "a driver cannot read the customer's viewers");
+
+    var priceSearch = new RideSearchAction(db, configuration, new TestCurrentUser(fixture.CustomerId), publisher);
+    var preliminaryOffer = new RideOfferService(db, configuration, new TestCurrentUser(candidateDriver.Id), publisher);
+    AssertSuccess(await ExecuteAsync(preliminaryOffer, "add", new RideOfferModel(RideId: rideId, Amount: 950m)),
+        "pending offer exists before price amendment");
+    AssertSuccess(await ExecuteAsync(priceSearch, "update", new RideSearchActionModel(rideId, CustomerPrice: 1_200m)),
+        "price change restarts the same ride atomically");
+    AssertEqual(1_200m, (await db.Rides.AsNoTracking().SingleAsync(x => x.Id == rideId)).CustomerPrice!.Value,
+        "new price is persisted");
+    AssertEqual(0, await db.RideSearchViews.CountAsync(x => x.RideId == rideId), "new search clears old views");
+    Assert(!await db.RideOffers.AnyAsync(x => x.RideId == rideId && x.Status == OfferStatus.Pending),
+        "offers for the previous search are expired");
+    var noticeCount = await db.Notifications.CountAsync();
+    AssertSuccess(await ExecuteAsync(priceSearch, "update", new RideSearchActionModel(rideId, CustomerPrice: 1_200m)),
+        "retry of saved price is idempotent");
+    AssertEqual(noticeCount, await db.Notifications.CountAsync(), "same price retry does not notify twice");
+    Assert(!(await ExecuteAsync(driverViews, "update", new RideSearchViewModel(rideId, 1_000m))).Success,
+        "stale price view is rejected");
 
     var offerService = new RideOfferService(
         db, configuration, new TestCurrentUser(candidateDriver.Id), publisher);
@@ -169,6 +217,19 @@ static async Task RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(
     Assert(publisher.OfferReceivedCustomerId == fixture.CustomerId, "offerReceived targets the ride customer");
     AssertEqual(rideId, publisher.ReceivedOffer!.RideId, "offerReceived contains the saved offer's ride id");
     AssertEqual(OfferStatus.Pending, publisher.ReceivedOffer.Status, "offerReceived carries the persisted pending status");
+    Assert(Math.Abs((publisher.ReceivedOffer.ExpiresAtUtc - publisher.ReceivedOffer.CreatedAtUtc).TotalSeconds - 60) < 1,
+        "server enforces a one-minute offer lifetime regardless of the requested duration");
+    var offerToExpire = await db.RideOffers.SingleAsync(x => x.Id == publisher.ReceivedOffer.Id);
+    offerToExpire.ExpiresAtUtc = DateTime.UtcNow.AddSeconds(-1);
+    await db.SaveChangesAsync();
+    var expiration = new RideOfferExpiration(db, publisher);
+    AssertEqual(1, await expiration.ExpireAsync(CancellationToken.None), "server expires an overdue offer without an open passenger screen");
+    AssertEqual(0, await expiration.ExpireAsync(CancellationToken.None), "expiration is idempotent");
+    Assert(publisher.UpdatedOffers.Any(x => x.Id == offerToExpire.Id && x.Status == OfferStatus.Expired), "expiration is broadcast");
+    var expiredAction = new RideOfferAction(db, configuration, new TestCurrentUser(fixture.CustomerId), publisher);
+    Assert(!(await ExecuteAsync(expiredAction, "accept", new RideOfferActionModel(RideId: rideId, OfferId: offerToExpire.Id))).Success,
+        "an expired offer cannot be accepted");
+    AssertSuccess(await ExecuteAsync(offerService, "add", new RideOfferModel(RideId: rideId, Amount: 950m)), "driver sends another offer");
 
     var offerAction = new RideOfferAction(
         db, configuration, new TestCurrentUser(fixture.CustomerId), publisher);
@@ -180,6 +241,8 @@ static async Task RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(
         ?? throw new InvalidOperationException("The winning driver must receive the assigned ride snapshot.");
     Assert(Equals(true, assignedRideSnapshot["destinationAvailable"]),
         "the assigned driver receives destination details after acceptance");
+    Assert(!(await ExecuteAsync(priceSearch, "update", new RideSearchActionModel(rideId, CustomerPrice: 1_500m))).Success,
+        "assigned ride cannot have its price changed or search restarted");
 
     var secondRideResult = await ExecuteAsync(rideService, "add", new RideModel(
         ServiceKindId: fixture.ServiceKindId,
@@ -193,7 +256,7 @@ static async Task RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(
         DestinationLatitude: latitude + 0.02,
         DestinationLongitude: longitude + 0.02,
         CustomerPrice: 1_000m,
-        IdempotencyKey: "realtime-event-cancel"));
+        IdempotencyKey: "realtime-event-cancel", PricingQuoteToken: pricingQuote.Token));
     AssertSuccess(secondRideResult, "second ride request before rideUnavailable event");
     var secondRideId = Convert.ToInt32(
         secondRideResult.Data!.GetType().GetProperty("Id")!.GetValue(secondRideResult.Data));
@@ -205,6 +268,11 @@ static async Task RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(
     Assert(publisher.RideUnavailableRideId == secondRideId &&
            publisher.RideUnavailableCustomerId == fixture.CustomerId,
         "rideUnavailable targets the customer session after the search is closed");
+    AssertSuccess(await ExecuteAsync(searchAction, "cancel", new RideSearchActionModel(RideId: secondRideId, Reason: "ارتفاع الأجرة")),
+        "cancellation reason can be recorded after the search deadline");
+    AssertSuccess(await ExecuteAsync(searchAction, "cancel", new RideSearchActionModel(RideId: secondRideId, Reason: "ارتفاع الأجرة")),
+        "retrying cancellation does not create a duplicate reason");
+    AssertEqual(1, await db.RideCancellationRequests.CountAsync(x => x.RideId == secondRideId && x.Reason == "ارتفاع الأجرة"), "one persisted cancellation reason");
 }
 
 static async Task TrackingHubRequiresAuthenticatedRideMembershipAsync(
@@ -625,11 +693,11 @@ static void OtpChallengesAreConsoleOnlyInDevelopmentAndLimitedToFiveAttempts()
     try
     {
         Console.SetOut(capturedOutput);
-        var productionStore = new OtpChallengeStore(isDevelopment: false);
+        var productionStore = new OtpChallengeStore(consoleOtpEnabled: false);
         Assert(productionStore.TryCreate("700000001", "signIn") is null, "OTP cannot be created outside Development while no SMS provider is configured");
         Assert(capturedOutput.ToString().Length == 0, "production OTP requests must not print to the console");
 
-        var developmentStore = new OtpChallengeStore(isDevelopment: true);
+        var developmentStore = new OtpChallengeStore(consoleOtpEnabled: true);
         var firstChallenge = developmentStore.TryCreate("700000001", "signIn")!.Value;
         var firstCode = ExtractLastOtp(capturedOutput.ToString());
         Assert(firstCode.Length == 6, "development OTP must be printed for local testing");

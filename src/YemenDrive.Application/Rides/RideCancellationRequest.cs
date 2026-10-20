@@ -87,6 +87,9 @@ public sealed class RideCancellationRequest(
             }
         }
 
+        var waiting = new RideWaitingCoordinator(db);
+        var stop = await waiting.ReconcileAsync(ride, DateTime.UtcNow, token);
+        if (stop?.IsOpen == true) waiting.Close(ride, stop, DateTime.UtcNow, "ride_cancelled");
         ride.Status = directEnRouteCancellation ? RideStatus.Cancelled : RideStatus.CancellationPending;
         ride.UpdatedAtUtc = DateTime.UtcNow;
         db.RideCancellationRequests.Add(request);

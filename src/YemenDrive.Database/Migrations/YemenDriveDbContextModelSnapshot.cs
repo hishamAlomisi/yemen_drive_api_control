@@ -1002,6 +1002,9 @@ namespace YemenDrive.Database.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<double?>("Accuracy")
+                        .HasColumnType("float");
+
                     b.Property<int>("ActorId")
                         .HasColumnType("int");
 
@@ -1031,7 +1034,7 @@ namespace YemenDrive.Database.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("RideId");
+                    b.HasIndex("RideId", "ActorId", "ObservedAtUtc");
 
                     b.ToTable("LocationUpdates");
                 });
@@ -1382,11 +1385,23 @@ namespace YemenDrive.Database.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
 
+                    b.Property<decimal>("MaxPriceDecreasePercent")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("MaxPriceIncreasePercent")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<decimal>("PerKilometer")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<decimal>("PerMinute")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("RouteChangeFee")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
@@ -1402,6 +1417,17 @@ namespace YemenDrive.Database.Migrations
 
                     b.Property<DateTime?>("UpdatedAtUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<int>("WaitingFreeMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("WaitingMaxFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("WaitingPricePerMinute")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
 
                     b.HasKey("Id");
 
@@ -1511,6 +1537,14 @@ namespace YemenDrive.Database.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<decimal>("AppliedDriverCommissionFixed")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("AppliedDriverCommissionRate")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<decimal>("CancellationFee")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
@@ -1556,9 +1590,27 @@ namespace YemenDrive.Database.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<bool>("HasRoutePricingSnapshot")
+                        .HasColumnType("bit");
+
                     b.Property<string>("IdempotencyKey")
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
+
+                    b.Property<decimal?>("MaxCustomerPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("MinCustomerPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<bool>("MoreThanFourPassengers")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("PassengerNotes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
 
                     b.Property<string>("PickupAddress")
                         .IsRequired()
@@ -1578,8 +1630,64 @@ namespace YemenDrive.Database.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<int?>("PricingRuleId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("QuotedPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("RouteBaseFare")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("RouteChangeFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("RouteChangeFees")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<double>("RouteCompletedDistanceMeters")
+                        .HasColumnType("float");
+
+                    b.Property<decimal>("RouteCompletedFare")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("RouteOriginalFare")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("RoutePerKilometer")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("RoutePerMinute")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<string>("RoutePolyline")
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<double>("RouteQuotedDistanceMeters")
+                        .HasColumnType("float");
+
+                    b.Property<double>("RouteQuotedDurationSeconds")
+                        .HasColumnType("float");
+
+                    b.Property<double>("RouteSegmentLatitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("RouteSegmentLongitude")
+                        .HasColumnType("float");
+
+                    b.Property<DateTime?>("RouteSegmentStartedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("RouteVersion")
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
@@ -1613,6 +1721,21 @@ namespace YemenDrive.Database.Migrations
 
                     b.Property<DateTime?>("UpdatedAtUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<decimal>("WaitingFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("WaitingFreeMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("WaitingMaxFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("WaitingPricePerMinute")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
 
                     b.HasKey("Id");
 
@@ -1772,11 +1895,267 @@ namespace YemenDrive.Database.Migrations
 
                     b.HasIndex("DriverId");
 
+                    b.HasIndex("Status", "ExpiresAtUtc");
+
                     b.HasIndex("RideId", "DriverId", "Status")
                         .IsUnique()
                         .HasFilter("[Status] = 0");
 
                     b.ToTable("RideOffers");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RidePricingQuote", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("BaseFare")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("CancellationFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("CustomerId")
+                        .HasColumnType("int");
+
+                    b.Property<double>("DestinationLatitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("DestinationLongitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("DistanceMeters")
+                        .HasColumnType("float");
+
+                    b.Property<decimal>("DriverCommissionFixed")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("DriverCommissionRate")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<double>("DurationSeconds")
+                        .HasColumnType("float");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("HasRoutePricingSnapshot")
+                        .HasColumnType("bit");
+
+                    b.Property<decimal>("MaxPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("MinPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("PerKilometer")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("PerMinute")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<double>("PickupLatitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("PickupLongitude")
+                        .HasColumnType("float");
+
+                    b.Property<int>("PricingRuleId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("RouteChangeFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("ServiceCatalogItemId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("ServiceFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("ServiceKindId")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("Token")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("WaitingFreeMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("WaitingMaxFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("WaitingPricePerMinute")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAtUtc");
+
+                    b.HasIndex("Token")
+                        .IsUnique();
+
+                    b.ToTable("RidePricingQuotes");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideRouteChange", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("ApprovedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<double>("ChangeLatitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("ChangeLongitude")
+                        .HasColumnType("float");
+
+                    b.Property<DateTime>("ChangeObservedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<double>("CompletedDistanceMeters")
+                        .HasColumnType("float");
+
+                    b.Property<double>("CompletedDurationSeconds")
+                        .HasColumnType("float");
+
+                    b.Property<decimal>("CompletedFare")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DecidedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsOpen")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("NewDestinationLabel")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<double>("NewDestinationLatitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("NewDestinationLongitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("NewDistanceMeters")
+                        .HasColumnType("float");
+
+                    b.Property<double>("NewDurationSeconds")
+                        .HasColumnType("float");
+
+                    b.Property<decimal>("NewRouteFare")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("NewRoutePolyline")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<decimal>("NewTotal")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("OldDestinationLabel")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<double>("OldDestinationLatitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("OldDestinationLongitude")
+                        .HasColumnType("float");
+
+                    b.Property<decimal>("OriginalServiceFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("PreviousRouteChangeFees")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("PreviousTotal")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<Guid>("RequestKey")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("RequestedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("RideId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("RouteChangeFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("RouteVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal>("WaitingFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RideId")
+                        .IsUnique()
+                        .HasFilter("[IsOpen] = 1");
+
+                    b.HasIndex("CreatedAtUtc", "Id");
+
+                    b.HasIndex("RideId", "RequestKey")
+                        .IsUnique();
+
+                    b.ToTable("RideRouteChanges");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.RideSafetyShare", b =>
@@ -1818,6 +2197,24 @@ namespace YemenDrive.Database.Migrations
                     b.HasIndex("RideId", "ExpiresAtUtc");
 
                     b.ToTable("RideSafetyShares");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideSearchView", b =>
+                {
+                    b.Property<int>("RideId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("DriverId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("ViewedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("RideId", "DriverId");
+
+                    b.HasIndex("DriverId");
+
+                    b.ToTable("RideSearchViews");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.RideServiceCatalogItem", b =>
@@ -1887,6 +2284,92 @@ namespace YemenDrive.Database.Migrations
                     b.HasIndex("ServiceKindId", "IsActive", "SortOrder");
 
                     b.ToTable("RideServiceCatalogItems", (string)null);
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideWaitingSession", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("ApprovedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("BillingNoticeSent")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("EndReason")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<DateTime?>("EndedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal>("Fee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("FreeMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("GraceWarningSent")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsOpen")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("LastMotionObservedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<double>("Latitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("Longitude")
+                        .HasColumnType("float");
+
+                    b.Property<decimal>("MaxFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime?>("MotionStartedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal>("PricePerMinute")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<Guid>("RequestKey")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("RequestedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("RideId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("StartedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RideId")
+                        .IsUnique()
+                        .HasFilter("[IsOpen] = 1");
+
+                    b.HasIndex("CreatedAtUtc", "Id");
+
+                    b.HasIndex("RideId", "RequestKey")
+                        .IsUnique();
+
+                    b.ToTable("RideWaitingSessions");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.SafetyIncident", b =>
@@ -2637,6 +3120,36 @@ namespace YemenDrive.Database.Migrations
                     b.Navigation("Ride");
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideRouteChange", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.Ride", "Ride")
+                        .WithMany()
+                        .HasForeignKey("RideId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Ride");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideSearchView", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.User", "Driver")
+                        .WithMany()
+                        .HasForeignKey("DriverId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("YemenDrive.Database.Entities.Ride", "Ride")
+                        .WithMany()
+                        .HasForeignKey("RideId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Driver");
+
+                    b.Navigation("Ride");
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.RideServiceCatalogItem", b =>
                 {
                     b.HasOne("YemenDrive.Database.Entities.ServiceKind", "ServiceKind")
@@ -2646,6 +3159,17 @@ namespace YemenDrive.Database.Migrations
                         .IsRequired();
 
                     b.Navigation("ServiceKind");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideWaitingSession", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.Ride", "Ride")
+                        .WithMany()
+                        .HasForeignKey("RideId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Ride");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.SavedPlace", b =>

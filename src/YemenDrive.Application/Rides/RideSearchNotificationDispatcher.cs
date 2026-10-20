@@ -13,7 +13,8 @@ internal static class RideSearchNotificationDispatcher
     public static async Task<IReadOnlyCollection<RideAvailableRecipient>> NotifyAvailableDriversAsync(
         YemenDriveDbContext db,
         RideEntity ride,
-        CancellationToken token)
+        CancellationToken token,
+        bool priceChanged = false)
     {
         var radiusMeters = RideDriverProximity.RadiusMeters(ride, DateTime.UtcNow);
         var locationFreshAfter = DateTime.UtcNow.AddMinutes(-5);
@@ -88,8 +89,8 @@ internal static class RideSearchNotificationDispatcher
             {
                 UserId = candidate.UserId,
                 Type = NotificationType.RideOffer,
-                Title = "طلب رحلة جديد",
-                Body = $"يوجد طلب جديد {routeSummary}.",
+                Title = priceChanged ? "تغير سعر طلب الرحلة" : "طلب رحلة جديد",
+                Body = priceChanged ? $"أصبح سعر الطلب {ride.CustomerPrice:0.##} ر.ي. {routeSummary}." : $"يوجد طلب جديد {routeSummary}.",
                 DataJson = RideData(ride.Id)
             });
 
@@ -122,17 +123,23 @@ internal static class RideSearchNotificationDispatcher
                 ["destinationLatitude"] = null,
                 ["destinationLongitude"] = null,
                 ["destinationAvailable"] = false,
+                ["moreThanFourPassengers"] = ride.MoreThanFourPassengers,
+                ["passengerNotes"] = ride.PassengerNotes,
                 ["pickupDistanceMeters"] = candidate.PickupDistanceMeters,
                 ["driverLatitude"] = candidate.Latitude,
                 ["driverLongitude"] = candidate.Longitude,
                 ["driverLocationObservedAtUtc"] = candidate.ObservedAtUtc,
                 ["customerPrice"] = ride.CustomerPrice,
+                ["quotedPrice"] = ride.QuotedPrice,
+                ["minCustomerPrice"] = ride.MinCustomerPrice,
+                ["maxCustomerPrice"] = ride.MaxCustomerPrice,
                 ["serviceFee"] = ride.ServiceFee,
                 ["totalAmount"] = ride.TotalAmount,
                 ["driverCommissionAmount"] = ride.DriverCommissionAmount,
                 ["driverShare"] = ride.DriverShare,
                 ["platformShare"] = ride.PlatformShare,
                 ["createdAtUtc"] = ride.CreatedAtUtc,
+                ["updatedAtUtc"] = ride.UpdatedAtUtc,
                 ["customerPaymentEnabled"] = ride.CustomerPaymentEnabled,
                 ["paymentCompleted"] = false,
                 ["driverOfferAmount"] = latestOffer?.Amount,

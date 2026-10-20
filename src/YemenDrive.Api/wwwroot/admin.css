@@ -18,6 +18,38 @@
   --shadow: 0 12px 30px rgba(29, 43, 52, .10);
 }
 
+.admin-report-filters { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 16px; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.admin-report-filters label { display: flex; flex-direction: row; gap: 0; min-width: 0; }
+.admin-report-filters .check-field { flex-direction: row; align-items: center; }
+.admin-report-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.admin-report-note, #waiting-report-feedback, #route-change-report-feedback { color: var(--muted); line-height: 1.8; }
+.admin-report-summary { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; margin: 18px 0; }
+.admin-report-summary > div { display: flex; flex-direction: column; gap: 10px; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.admin-report-summary span { color: var(--muted); }
+.admin-report-summary strong { color: var(--primary-dark); font-size: 22px; }
+.admin-report-table { min-width: 1380px; }
+.admin-report-table td { vertical-align: top; white-space: normal; max-width: 260px; }
+.admin-report-table .cell-sub { margin-top: 6px; line-height: 1.6; }
+.admin-report-pagination { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 18px; }
+.route-change-report-table { min-width: 1200px; }
+.route-change-report-table .button { margin-top: 8px; }
+.route-change-invoice-dialog { width: min(680px, calc(100% - 28px)); max-height: calc(100dvh - 28px); padding: 22px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--surface); box-shadow: var(--shadow); overflow: auto; }
+.route-change-invoice-dialog::backdrop { background: rgba(12, 29, 33, .55); }
+.route-change-invoice-heading { display: flex; align-items: start; justify-content: space-between; gap: 14px; }
+.route-change-invoice-heading h2 { margin: 0; font-size: 20px; line-height: 1.6; }
+.route-change-invoice-amounts { margin: 20px 0; }
+.route-change-invoice-amounts > div { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.route-change-invoice-amounts dd { margin: 0; white-space: nowrap; font-weight: 700; }
+.route-change-invoice-amounts > div:nth-last-child(2) { color: var(--primary-dark); background: var(--surface-soft); font-weight: 700; }
+@media (max-width: 760px) {
+  .admin-report-filters, .admin-report-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-report-summary strong { font-size: 18px; }
+}
+@media (max-width: 430px) {
+  .admin-report-filters { grid-template-columns: minmax(0, 1fr); }
+  .admin-report-pagination { flex-wrap: wrap; }
+}
+
 * { box-sizing: border-box; }
 html, body { min-height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px "Segoe UI", Tahoma, Arial, sans-serif; }

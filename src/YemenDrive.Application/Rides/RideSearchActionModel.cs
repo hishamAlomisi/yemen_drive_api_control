@@ -4,12 +4,13 @@ using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
 using YemenDrive.Services.Operations;
+using YemenDrive.Application.Pricing;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
 
 namespace YemenDrive.Application.Rides;
 
-public sealed record RideSearchActionModel(int? RideId = null, bool Exhausted = false);
+public sealed record RideSearchActionModel(int? RideId = null, bool Exhausted = false, decimal? CustomerPrice = null, string? Reason = null);
 
 public sealed class RideSearchAction(
     YemenDriveDbContext db,
@@ -34,6 +35,16 @@ public sealed class RideSearchAction(
                 "لا يمكن إعادة البحث لأن الرحلة أُسندت إلى سائق أو أُغلقت نهائياً.");
 
         var now = DateTime.UtcNow;
+        if (model.CustomerPrice is not null)
+        {
+            RidePricingPolicy.ValidateCustomerPrice(ride, model.CustomerPrice);
+            if (model.CustomerPrice <= 0 || model.CustomerPrice != decimal.Truncate(model.CustomerPrice.Value))
+                throw new ServiceException("invalid_customer_price", "أدخل أجرة صحيحة أكبر من صفر.");
+            // Retrying a response lost in transit must not resend or expire offers twice.
+            if (model.CustomerPrice == ride.CustomerPrice && ride.Status == RideStatus.Searching)
+                return new { rideId = ride.Id, ride.Status, ride.CustomerPrice, notifiedDriverCount = 0 };
+            ride.CustomerPrice = model.CustomerPrice;
+        }
         var pendingOffers = await db.RideOffers
             .Where(x => x.RideId == ride.Id && x.Status == OfferStatus.Pending)
             .ToListAsync(token);
@@ -47,8 +58,9 @@ public sealed class RideSearchAction(
         // currently online, available, nearby, and not assigned to a trip.
         ride.Status = RideStatus.Searching;
         ride.UpdatedAtUtc = now;
+        await db.RideSearchViews.Where(x => x.RideId == ride.Id).ExecuteDeleteAsync(token);
         var recipients = await RideSearchNotificationDispatcher
-            .NotifyAvailableDriversAsync(db, ride, token);
+            .NotifyAvailableDriversAsync(db, ride, token, priceChanged: model.CustomerPrice is not null);
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
         if (realtimePublisher is not null)
@@ -61,7 +73,7 @@ public sealed class RideSearchAction(
             await realtimePublisher.PublishRideStatusUpdatedAsync(
                 RideRealtimeEventFactory.Status(ride), token);
         }
-        return new { rideId = ride.Id, ride.Status, notifiedDriverCount = recipients.Count };
+        return new { rideId = ride.Id, ride.Status, ride.CustomerPrice, notifiedDriverCount = recipients.Count };
     }
 
     protected override async Task<object?> CancelAsync(
@@ -76,8 +88,25 @@ public sealed class RideSearchAction(
             throw new ServiceException(
                 "assigned_ride_cancellation_required",
                 "الرحلة مرتبطة بسائق؛ استخدم طلب الإلغاء الرسمي.");
+        if (!string.IsNullOrWhiteSpace(model.Reason))
+        {
+            var reason = model.Reason.Trim();
+            if (reason.Length is < 3 or > 1000)
+                throw new ServiceException("invalid_cancellation_reason", "حدد سبب الإلغاء بين 3 و1000 حرف.");
+            if (!await db.RideCancellationRequests.AnyAsync(x => x.RideId == ride.Id, token))
+                db.RideCancellationRequests.Add(new YemenDrive.Database.Entities.RideCancellationRequest
+                {
+                    RideId = ride.Id, CustomerId = ride.CustomerId,
+                    RideStatusAtRequest = ride.Status, Reason = reason,
+                    Status = RideCancellationStatus.AdminApproved
+                });
+        }
         if (ride.Status == RideStatus.Cancelled)
+        {
+            await db.SaveChangesAsync(token);
+            await transaction.CommitAsync(token);
             return new { rideId = ride.Id, ride.Status };
+        }
         if (ride.Status is not (RideStatus.Searching or RideStatus.Negotiating))
             throw new ServiceException(
                 "ride_search_not_open",

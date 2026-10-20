@@ -6,6 +6,7 @@ using YemenDrive.Database.Entities;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
+using YemenDrive.Application.Pricing;
 
 namespace YemenDrive.Application.Rides;
 
@@ -30,6 +31,11 @@ public sealed class RideOfferAction(
             .SingleOrDefaultAsync(x => x.Id == offer.RideId, token)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
         await EnsureCustomerOrAdminAsync(ride.CustomerId, token);
+        if (ride.DriverId is not null || ride.Status is not (RideStatus.Searching or RideStatus.Negotiating))
+            throw new ServiceException("ride_not_open_for_offers", "الرحلة لم تعد تستقبل عروضًا.");
+        if (await db.Rides.AnyAsync(x => x.DriverId == offer.DriverId && x.Id != ride.Id &&
+            (x.Status == RideStatus.DriverAssigned || x.Status == RideStatus.DriverEnRoute || x.Status == RideStatus.InProgress), token))
+            throw new ServiceException("driver_not_available", "ارتبط السائق برحلة أخرى. اختر عرضًا آخر.");
         if (offer.Status != OfferStatus.Pending)
             throw new ServiceException("offer_not_pending", "لا يمكن قبول عرض تمت معالجته مسبقاً.");
         if (offer.ExpiresAtUtc <= DateTime.UtcNow)
@@ -39,8 +45,7 @@ public sealed class RideOfferAction(
         foreach (var other in ride.Offers.Where(x => x.Id != offer.Id && x.Status == OfferStatus.Pending))
             other.Status = OfferStatus.Rejected;
         ride.DriverId = offer.DriverId;
-        ride.ServerPrice = offer.Amount;
-        ride.CustomerPrice = offer.Amount;
+        await RidePricingPolicy.AcceptFareAsync(db, ride, offer.Amount, token);
         ride.Status = RideStatus.DriverAssigned;
         ride.UpdatedAtUtc = DateTime.UtcNow;
         offer.UpdatedAtUtc = DateTime.UtcNow;
@@ -71,15 +76,17 @@ public sealed class RideOfferAction(
 
     protected override async Task<object?> RejectAsync(RideOfferActionModel model, CancellationToken token)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         var offer = await FindOfferAsync(model, token);
         var ride = await db.Rides.AsNoTracking().SingleOrDefaultAsync(x => x.Id == offer.RideId, token)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
         await EnsureCustomerOrAdminAsync(ride.CustomerId, token);
         if (offer.Status != OfferStatus.Pending)
             throw new ServiceException("offer_not_pending", "لا يمكن رفض عرض تمت معالجته مسبقاً.");
-        offer.Status = OfferStatus.Rejected;
+        offer.Status = offer.ExpiresAtUtc <= DateTime.UtcNow ? OfferStatus.Expired : OfferStatus.Rejected;
         offer.UpdatedAtUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(token);
+        await transaction.CommitAsync(token);
         if (realtimePublisher is not null)
         {
             var updated = await RideRealtimeEventFactory.LoadOffersAsync(

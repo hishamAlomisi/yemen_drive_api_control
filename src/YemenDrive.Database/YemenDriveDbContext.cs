@@ -16,6 +16,7 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<ServiceArea> ServiceAreas => Set<ServiceArea>();
     public DbSet<Ride> Rides => Set<Ride>();
     public DbSet<RideOffer> RideOffers => Set<RideOffer>();
+    public DbSet<RideSearchView> RideSearchViews => Set<RideSearchView>();
     public DbSet<Wallet> Wallets => Set<Wallet>();
     public DbSet<WalletTransaction> WalletTransactions => Set<WalletTransaction>();
     public DbSet<LocationUpdate> LocationUpdates => Set<LocationUpdate>();
@@ -34,6 +35,9 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<SupportTicket> SupportTickets => Set<SupportTicket>();
     public DbSet<ReferralRedemption> ReferralRedemptions => Set<ReferralRedemption>();
     public DbSet<PricingRule> PricingRules => Set<PricingRule>();
+    public DbSet<RidePricingQuote> RidePricingQuotes => Set<RidePricingQuote>();
+    public DbSet<RideWaitingSession> RideWaitingSessions => Set<RideWaitingSession>();
+    public DbSet<RideRouteChange> RideRouteChanges => Set<RideRouteChange>();
     public DbSet<FinancialParty> FinancialParties => Set<FinancialParty>();
     public DbSet<LedgerAccount> LedgerAccounts => Set<LedgerAccount>();
     public DbSet<JournalEntry> JournalEntries => Set<JournalEntry>();
@@ -86,6 +90,27 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<RideRouteChange>().HasIndex(x => x.RideId).IsUnique().HasFilter("[IsOpen] = 1");
+        modelBuilder.Entity<RideRouteChange>().HasIndex(x => new { x.RideId, x.RequestKey }).IsUnique();
+        modelBuilder.Entity<RideRouteChange>().HasIndex(x => new { x.CreatedAtUtc, x.Id });
+        modelBuilder.Entity<RideRouteChange>().HasOne(x => x.Ride).WithMany().HasForeignKey(x => x.RideId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<RideRouteChange>().Property(x => x.Status).HasMaxLength(20);
+        modelBuilder.Entity<RideRouteChange>().Property(x => x.OldDestinationLabel).HasMaxLength(500);
+        modelBuilder.Entity<RideRouteChange>().Property(x => x.NewDestinationLabel).HasMaxLength(500);
+        modelBuilder.Entity<LocationUpdate>().HasIndex(x => new { x.RideId, x.ActorId, x.ObservedAtUtc });
+        modelBuilder.Entity<RidePricingQuote>().HasIndex(x => x.Token).IsUnique();
+        modelBuilder.Entity<RidePricingQuote>().HasIndex(x => x.ExpiresAtUtc);
+        modelBuilder.Entity<RideWaitingSession>().HasIndex(x => x.RideId).IsUnique().HasFilter("[IsOpen] = 1");
+        modelBuilder.Entity<RideWaitingSession>().HasIndex(x => new { x.RideId, x.RequestKey }).IsUnique();
+        modelBuilder.Entity<RideWaitingSession>().HasIndex(x => new { x.CreatedAtUtc, x.Id });
+        modelBuilder.Entity<RideWaitingSession>().HasOne(x => x.Ride).WithMany()
+            .HasForeignKey(x => x.RideId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<RideWaitingSession>().Property(x => x.EndReason).HasMaxLength(40);
+        modelBuilder.Entity<RideSearchView>().HasKey(x => new { x.RideId, x.DriverId });
+        modelBuilder.Entity<RideSearchView>().HasOne(x => x.Ride).WithMany()
+            .HasForeignKey(x => x.RideId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<RideSearchView>().HasOne(x => x.Driver).WithMany()
+            .HasForeignKey(x => x.DriverId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<User>().HasIndex(x => x.PhoneNumber).IsUnique();
         modelBuilder.Entity<User>().Property(x => x.PhoneNumber).HasMaxLength(30).IsRequired();
         modelBuilder.Entity<User>().Property(x => x.DisplayName).HasMaxLength(150);
@@ -352,6 +377,7 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<RideOffer>().HasIndex(x => new { x.RideId, x.DriverId, x.Status })
             .IsUnique().HasFilter("[Status] = 0");
         modelBuilder.Entity<RideOffer>().Property(x => x.Note).HasMaxLength(1000);
+        modelBuilder.Entity<RideOffer>().HasIndex(x => new { x.Status, x.ExpiresAtUtc });
         modelBuilder.Entity<PricingRule>().HasIndex(x => new { x.ServiceKindId, x.ServiceCatalogItemId, x.IsActive });
 
         modelBuilder.Entity<User>()

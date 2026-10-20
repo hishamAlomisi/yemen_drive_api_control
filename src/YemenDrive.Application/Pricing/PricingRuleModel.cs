@@ -12,4 +12,10 @@ public sealed record PricingRuleModel(
     decimal DriverCommissionFixed = 0,
     decimal CancellationFee = 0,
     decimal DriverShareRate = 0,
-    bool IsActive = true);
+    bool IsActive = true,
+    int WaitingFreeMinutes = 0,
+    decimal WaitingPricePerMinute = 0,
+    decimal WaitingMaxFee = 0,
+    decimal MaxPriceDecreasePercent = 0,
+    decimal MaxPriceIncreasePercent = 0,
+    decimal RouteChangeFee = 0);

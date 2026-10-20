@@ -77,6 +77,9 @@ internal static class DeletionGuards
         EnsureNoRelatedRecordsAsync("الرحلة", new (string Relationship, Func<CancellationToken, Task<bool>> Exists)[]
         {
             ("عروض سائقين", ct => db.RideOffers.AnyAsync(x => x.RideId == rideId, ct)),
+            ("انتظار أو تغييرات مسار", ct => HasAnyAsync(ct,
+                inner => db.RideWaitingSessions.AnyAsync(x => x.RideId == rideId, inner),
+                inner => db.RideRouteChanges.AnyAsync(x => x.RideId == rideId, inner))),
             ("حركات محفظة", ct => db.WalletTransactions.AnyAsync(x => x.RideId == rideId, ct)),
             ("حركات دفع", ct => db.PaymentTransactions.AnyAsync(x => x.RideId == rideId, ct)),
             ("طلبات دفع نقدي", ct => HasAnyAsync(ct,
@@ -108,6 +111,7 @@ internal static class DeletionGuards
         int userId,
         CancellationToken token)
     {
+        await db.RideSearchViews.Where(x => x.DriverId == userId).ExecuteDeleteAsync(token);
         var wallet = await db.Wallets.SingleOrDefaultAsync(x => x.UserId == userId, token);
         if (wallet is not null)
         {

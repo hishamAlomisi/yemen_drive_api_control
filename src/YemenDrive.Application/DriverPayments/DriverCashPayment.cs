@@ -60,8 +60,9 @@ public sealed class DriverCashPayment(
                 throw new ServiceException("cash_confirmation_required", "يلزم تأكيد طلب العميل للدفع النقدي أولاً.");
         }
 
-        var fare = ride.CustomerPrice ?? ride.ServerPrice
-            ?? throw new ServiceException("fare_not_set", "لا يوجد مبلغ متفق عليه لهذه الرحلة.");
+        await new RideWaitingCoordinator(db).EnsureSettledAsync(ride, token);
+        var fare = (ride.CustomerPrice ?? ride.ServerPrice
+            ?? throw new ServiceException("fare_not_set", "لا يوجد مبلغ متفق عليه لهذه الرحلة.")) + ride.WaitingFee;
         var totalDue = ride.TotalAmount ?? fare + ride.ServiceFee;
         var wallet = await db.Wallets.SingleOrDefaultAsync(x => x.UserId == ride.CustomerId, token)
             ?? throw new ServiceException("wallet_not_found", "محفظة العميل غير موجودة.");

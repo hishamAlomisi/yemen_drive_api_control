@@ -42,8 +42,9 @@ public sealed class Payment(
         if (ride.CustomerId != userId)
             throw new ServiceException("invalid_payment_user", "المستخدم لا يطابق عميل الرحلة.");
 
-        var fare = ride.CustomerPrice ?? ride.ServerPrice
-            ?? throw new ServiceException("fare_not_set", "لا يوجد مبلغ متفق عليه لهذه الرحلة.");
+        await new RideWaitingCoordinator(dbContext).EnsureSettledAsync(ride, cancellationToken);
+        var fare = (ride.CustomerPrice ?? ride.ServerPrice
+            ?? throw new ServiceException("fare_not_set", "لا يوجد مبلغ متفق عليه لهذه الرحلة.")) + ride.WaitingFee;
         var totalDue = ride.TotalAmount ?? fare + ride.ServiceFee;
         if (model.Amount != totalDue)
             throw new ServiceException("invalid_payment_amount", "مبلغ الدفع لا يطابق إجمالي الرحلة المستحق.");

@@ -95,6 +95,9 @@ public sealed record NotificationRealtimeEvent(
 
 public interface IRideRealtimePublisher
 {
+    Task PublishRideRequestViewedAsync(int customerUserId, RideSearchViewer viewer,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+
     Task PublishRideAvailableAsync(
         IReadOnlyCollection<RideAvailableRecipient> recipients,
         CancellationToken cancellationToken);
@@ -241,7 +244,17 @@ internal static class RideRealtimeEventFactory
             ["destinationLatitude"] = ride.DestinationLatitude,
             ["destinationLongitude"] = ride.DestinationLongitude,
             ["destinationAvailable"] = true,
+            ["moreThanFourPassengers"] = ride.MoreThanFourPassengers,
+            ["passengerNotes"] = ride.PassengerNotes,
             ["customerPrice"] = ride.CustomerPrice,
+            ["quotedPrice"] = ride.QuotedPrice,
+            ["routeVersion"] = ride.RouteVersion,
+            ["routeChangeFee"] = ride.RouteChangeFee,
+            ["routeChangeFees"] = ride.RouteChangeFees,
+            ["routeCompletedFare"] = ride.RouteCompletedFare,
+            ["minCustomerPrice"] = ride.MinCustomerPrice,
+            ["maxCustomerPrice"] = ride.MaxCustomerPrice,
+            ["waitingFee"] = ride.WaitingFee,
             ["serviceFee"] = ride.ServiceFee,
             ["totalAmount"] = ride.TotalAmount,
             ["driverCommissionAmount"] = ride.DriverCommissionAmount,

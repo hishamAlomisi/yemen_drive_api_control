@@ -7,6 +7,6 @@ public sealed record RideOfferModel(
     int? RideId = null,
     int? DriverId = null,
     decimal Amount = 0,
-    int ValidForSeconds = 20,
+    int ValidForSeconds = 60,
     string? Note = null,
     OfferStatus? Status = null);

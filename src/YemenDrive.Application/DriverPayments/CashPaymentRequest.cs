@@ -37,7 +37,8 @@ public sealed class CashPaymentRequest(
         if (ride.DriverId is null) throw new ServiceException("driver_not_assigned", "السائق غير محدد لهذه الرحلة.");
         if (await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid, token))
             throw new ServiceException("ride_already_paid", "هذه الرحلة مسددة بالفعل.");
-        var amount = ride.TotalAmount ?? (ride.CustomerPrice ?? ride.ServerPrice ?? 0m) + ride.ServiceFee;
+        await new RideWaitingCoordinator(db).EnsureSettledAsync(ride, token);
+        var amount = ride.TotalAmount ?? (ride.CustomerPrice ?? ride.ServerPrice ?? 0m) + ride.ServiceFee + ride.WaitingFee;
         if (amount <= 0) throw new ServiceException("fare_not_set", "لا يوجد إجمالي صالح للرحلة.");
         var open = await db.CashPaymentRequests.SingleOrDefaultAsync(x => x.RideId == ride.Id && (x.Status == CashPaymentRequestStatus.Pending || x.Status == CashPaymentRequestStatus.DriverConfirmed), token);
         if (open is not null) return ToResult(open);

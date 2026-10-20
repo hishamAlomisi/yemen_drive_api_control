@@ -175,8 +175,8 @@ public sealed class RideAccountingPostingService(
             .Select(x => (int?)x.Id).SingleOrDefaultAsync(token)
         ?? throw new ServiceException("financial_party_not_found", "إحدى الجهات المالية للرحلة غير مجهزة.");
 
-    private static decimal Fare(Ride ride) => ride.CustomerPrice ?? ride.ServerPrice
-        ?? throw new ServiceException("fare_not_set", "لا يمكن ترحيل قيد رحلة بلا سعر مثبت.");
+    private static decimal Fare(Ride ride) => (ride.CustomerPrice ?? ride.ServerPrice
+        ?? throw new ServiceException("fare_not_set", "لا يمكن ترحيل قيد رحلة بلا سعر مثبت.")) + ride.WaitingFee;
 
     private static void AddDebit(List<AccountingPostingLine> lines, int accountId, decimal amount,
         int? partyId, int? userId, int rideId, string description)
