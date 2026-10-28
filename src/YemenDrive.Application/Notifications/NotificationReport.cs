@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using YemenDrive.Application.Rides;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Services.Reports;
@@ -16,10 +17,15 @@ public sealed class NotificationReport(
     {
         var userId = currentUser.UserId ?? model.UserId
             ?? throw new ServiceException("authentication_required", "يجب تسجيل الدخول.");
-        return await db.Notifications.AsNoTracking()
+        var notifications = await db.Notifications.AsNoTracking()
             .Where(x => x.UserId == userId && (model.IsRead == null || x.IsRead == model.IsRead))
             .OrderByDescending(x => x.CreatedAtUtc).Take(200)
-            .Select(x => new { x.Id, x.UserId, x.Type, x.Title, x.Body, x.DataJson, x.IsRead, x.CreatedAtUtc })
             .ToListAsync(token);
+        var eligible = await RideRequestNotificationPolicy.EligibleRideIdsAsync(db, userId,
+            notifications.Select(RideRequestNotificationPolicy.RequestRideId).OfType<int>(), token);
+        return notifications.Where(notification => RideRequestNotificationPolicy.RequestRideId(notification) is not int rideId ||
+                eligible.Contains(rideId))
+            .Select(x => new { x.Id, x.UserId, x.Type, x.Title, x.Body, x.DataJson, x.IsRead, x.CreatedAtUtc })
+            .ToArray();
     }
 }

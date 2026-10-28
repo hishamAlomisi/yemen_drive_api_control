@@ -35,6 +35,7 @@ public sealed class NearbyDriverReport(
                 ride.DriverId == item.profile.UserId &&
                 (ride.Status == RideStatus.DriverAssigned ||
                  ride.Status == RideStatus.DriverEnRoute ||
+                 ride.Status == RideStatus.DriverArrived ||
                  ride.Status == RideStatus.InProgress ||
                  ride.Status == RideStatus.CancellationPending)));
 

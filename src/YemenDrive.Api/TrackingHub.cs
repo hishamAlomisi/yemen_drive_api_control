@@ -18,6 +18,7 @@ public sealed class TrackingHub(
     [
         RideStatus.DriverAssigned,
         RideStatus.DriverEnRoute,
+        RideStatus.DriverArrived,
         RideStatus.InProgress,
         RideStatus.CancellationPending
     ];
@@ -450,6 +451,7 @@ public sealed class TrackingHubAccessPolicy(YemenDriveDbContext db)
         RideStatus.Negotiating,
         RideStatus.DriverAssigned,
         RideStatus.DriverEnRoute,
+        RideStatus.DriverArrived,
         RideStatus.InProgress,
         RideStatus.CancellationPending
     ];

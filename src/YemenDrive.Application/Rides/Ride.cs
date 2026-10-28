@@ -26,6 +26,7 @@ public sealed class Ride(
     public override IReadOnlyCollection<string> Operations { get; } = ["add", "create", "update", "delete", "get", "cancel"];
     protected override async Task<object?> AddAsync(RideModel model, CancellationToken cancellationToken)
     {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         if (model.PassengerNotes?.Trim().Length > 1000)
             throw new ServiceException("passenger_notes_too_long", "الملاحظات لا تتجاوز 1000 حرف.");
         // A signed-in client is always bound to the token. The explicit id is
@@ -61,6 +62,7 @@ public sealed class Ride(
             }
         }
 
+        await PendingRideRating.EnsureCompletedAsync(dbContext, customerId.Value, cancellationToken);
         var selectedService = await dbContext.ServiceCatalogItems.AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == model.ServiceCatalogItemId && x.ServiceKindId == model.ServiceKindId && x.IsActive, cancellationToken)
             ?? throw new ServiceException("service_not_found", "الخدمة المختارة غير موجودة أو غير متاحة لهذا النوع.");
@@ -94,6 +96,7 @@ public sealed class Ride(
             : [];
         if (recipients.Count > 0)
             await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         if (realtimePublisher is not null && recipients.Count > 0)
             await realtimePublisher.PublishRideAvailableAsync(recipients, cancellationToken);
         return ToResult(entity, recipients.Count);
@@ -130,10 +133,14 @@ public sealed class Ride(
         }
         if (model.Status is not null)
         {
+            if (model.Status.Value == RideStatus.Cancelled && entity.Status != RideStatus.Cancelled)
+                throw new ServiceException("cancellation_request_required", "استخدم طلب الإلغاء الرسمي مع سبب واضح.");
             ValidateStatusTransition(entity.Status, model.Status.Value);
-            if (model.Status.Value is RideStatus.DriverEnRoute or RideStatus.InProgress or RideStatus.Completed &&
-                (currentUser.UserId != entity.DriverId && !isAdmin))
+            if (model.Status.Value is RideStatus.DriverEnRoute or RideStatus.DriverArrived or RideStatus.InProgress or RideStatus.Completed &&
+                currentUser.UserId != entity.DriverId)
                 throw new ServiceException("driver_action_required", "تغيير حالة الرحلة التشغيلية متاح للسائق المسند فقط.");
+            if (model.Status.Value == RideStatus.Searching && entity.Status != RideStatus.Searching)
+                await PendingRideRating.EnsureCompletedAsync(dbContext, entity.CustomerId, cancellationToken);
             if (model.Status.Value == RideStatus.Completed &&
                 !await dbContext.PaymentTransactions.AnyAsync(x => x.RideId == entity.Id && x.Status == PaymentStatus.Paid, cancellationToken))
                 throw new ServiceException("payment_required", "لا يمكن إنهاء الرحلة قبل تسجيل تحصيل المبلغ.");
@@ -177,6 +184,8 @@ public sealed class Ride(
             await RideRouteChangePolicy.StartTrackingAsync(dbContext, entity, entity.StartedAtUtc.Value, cancellationToken);
         }
         if (entity.Status == RideStatus.Completed && entity.CompletedAtUtc is null) entity.CompletedAtUtc = DateTime.UtcNow;
+        if (statusChanged && entity.Status is RideStatus.Completed or RideStatus.Cancelled)
+            await RideDriverAvailability.ReleaseAsync(dbContext, entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
         if (statusChanged)
             await NotifyRideStatusRecipientsAsync(entity, "تحديث حالة الرحلة", StatusMessage(entity.Status), cancellationToken);
@@ -449,6 +458,8 @@ public sealed class Ride(
         return new
         {
             ride = ToResult(entity),
+            requiresRating = entity.Status == RideStatus.Completed && entity.DriverId != null &&
+                await PendingRideRating.Pending(dbContext, entity.CustomerId).AnyAsync(x => x.Id == entity.Id, cancellationToken),
             driver = entity.Driver is null ? null : new
             {
                 entity.Driver.Id,
@@ -591,8 +602,9 @@ public sealed class Ride(
     private static string StatusMessage(RideStatus status) => status switch
     {
         RideStatus.DriverEnRoute => "السائق في طريقه إليك.",
+        RideStatus.DriverArrived => "وصل السائق إلى نقطة الانطلاق. يرجى التوجه إليه.",
         RideStatus.InProgress => "بدأت الرحلة الآن.",
-        RideStatus.Completed => "وصلت الرحلة إلى مرحلة الدفع.",
+        RideStatus.Completed => "اكتملت الرحلة. يرجى تقييم السائق لاستكمال رحلتك.",
         RideStatus.DriverAssigned => "تم تعيين سائق للرحلة.",
         _ => "تم تحديث حالة الرحلة."
     };
@@ -676,8 +688,9 @@ public sealed class Ride(
             RideStatus.Draft => next is RideStatus.Searching or RideStatus.Cancelled,
             RideStatus.Searching => next is RideStatus.Negotiating or RideStatus.DriverAssigned or RideStatus.Cancelled,
             RideStatus.Negotiating => next is RideStatus.DriverAssigned or RideStatus.Cancelled,
-            RideStatus.DriverAssigned => next is RideStatus.DriverEnRoute or RideStatus.Cancelled,
-            RideStatus.DriverEnRoute => next is RideStatus.InProgress or RideStatus.Cancelled,
+            RideStatus.DriverAssigned => next is RideStatus.DriverEnRoute or RideStatus.DriverArrived or RideStatus.Cancelled,
+            RideStatus.DriverEnRoute => next is RideStatus.DriverArrived or RideStatus.Cancelled,
+            RideStatus.DriverArrived => next is RideStatus.InProgress or RideStatus.Cancelled,
             RideStatus.InProgress => next is RideStatus.Completed or RideStatus.Cancelled,
             RideStatus.Completed or RideStatus.Cancelled => false,
             _ => false

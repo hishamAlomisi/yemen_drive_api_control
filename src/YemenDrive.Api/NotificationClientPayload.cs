@@ -27,6 +27,8 @@ internal static class NotificationClientPayload
         "cashCollectionApprovalId",
         "cashPaymentRequestId",
         "cancellationRequestId",
+        "routeChangeId",
+        "waitingSessionId",
         "messageId",
         "safetyIncidentId",
         "safetyRecordingId",

@@ -60,6 +60,7 @@ public sealed class RideOffer(
                          activeRide.DriverId == driverId && activeRide.Id != ride.Id &&
                          (activeRide.Status == RideStatus.DriverAssigned ||
                           activeRide.Status == RideStatus.DriverEnRoute ||
+                          activeRide.Status == RideStatus.DriverArrived ||
                           activeRide.Status == RideStatus.InProgress)),
                 cancellationToken))
             throw new ServiceException("driver_not_available", "السائق غير متاح لإرسال عرض جديد حالياً.");
@@ -163,7 +164,7 @@ public sealed class RideOffer(
         if (ride.Status is not (RideStatus.Searching or RideStatus.Negotiating))
             throw new ServiceException("ride_not_open_for_offers", "الرحلة لا يمكن قبول عرض لها في حالتها الحالية.");
         if (ride.DriverId is not null || await dbContext.Rides.AnyAsync(x => x.DriverId == entity.DriverId && x.Id != ride.Id &&
-            (x.Status == RideStatus.DriverAssigned || x.Status == RideStatus.DriverEnRoute || x.Status == RideStatus.InProgress), cancellationToken))
+            (x.Status == RideStatus.DriverAssigned || x.Status == RideStatus.DriverEnRoute || x.Status == RideStatus.DriverArrived || x.Status == RideStatus.InProgress || x.Status == RideStatus.CancellationPending), cancellationToken))
             throw new ServiceException("driver_not_available", "ارتبط السائق برحلة أخرى. اختر عرضًا آخر.");
 
         var requestedStatus = model.Status ?? OfferStatus.Accepted;
@@ -214,6 +215,10 @@ public sealed class RideOffer(
         if (ride.Status is not (RideStatus.Searching or RideStatus.Negotiating))
             throw new ServiceException("ride_not_open_for_offers", "الرحلة لا يمكن قبول عرض لها في حالتها الحالية.");
 
+        if (ride.DriverId != null)
+            throw new ServiceException("ride_not_open_for_offers", "أُسندت هذه الرحلة بالفعل إلى سائق.");
+        await PendingRideRating.EnsureCompletedAsync(dbContext, ride.CustomerId, cancellationToken);
+        await RideDriverAvailability.RequireAvailableAsync(dbContext, entity.DriverId, ride.Id, cancellationToken);
         entity.Status = OfferStatus.Accepted;
         foreach (var other in ride.Offers.Where(x => x.Id != entity.Id && x.Status == OfferStatus.Pending))
             other.Status = OfferStatus.Rejected;

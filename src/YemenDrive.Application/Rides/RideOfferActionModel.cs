@@ -34,13 +34,15 @@ public sealed class RideOfferAction(
         if (ride.DriverId is not null || ride.Status is not (RideStatus.Searching or RideStatus.Negotiating))
             throw new ServiceException("ride_not_open_for_offers", "الرحلة لم تعد تستقبل عروضًا.");
         if (await db.Rides.AnyAsync(x => x.DriverId == offer.DriverId && x.Id != ride.Id &&
-            (x.Status == RideStatus.DriverAssigned || x.Status == RideStatus.DriverEnRoute || x.Status == RideStatus.InProgress), token))
+            (x.Status == RideStatus.DriverAssigned || x.Status == RideStatus.DriverEnRoute || x.Status == RideStatus.DriverArrived || x.Status == RideStatus.InProgress || x.Status == RideStatus.CancellationPending), token))
             throw new ServiceException("driver_not_available", "ارتبط السائق برحلة أخرى. اختر عرضًا آخر.");
         if (offer.Status != OfferStatus.Pending)
             throw new ServiceException("offer_not_pending", "لا يمكن قبول عرض تمت معالجته مسبقاً.");
         if (offer.ExpiresAtUtc <= DateTime.UtcNow)
             throw new ServiceException("offer_expired", "انتهت صلاحية العرض.");
 
+        await PendingRideRating.EnsureCompletedAsync(db, ride.CustomerId, token);
+        await RideDriverAvailability.RequireAvailableAsync(db, offer.DriverId, ride.Id, token);
         offer.Status = OfferStatus.Accepted;
         foreach (var other in ride.Offers.Where(x => x.Id != offer.Id && x.Status == OfferStatus.Pending))
             other.Status = OfferStatus.Rejected;

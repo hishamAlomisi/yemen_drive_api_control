@@ -61,7 +61,7 @@ public sealed class RideWaiting(
                         Latitude = location.Latitude, Longitude = location.Longitude
                     };
                     db.RideWaitingSessions.Add(session);
-                    waiting.Notify(ride, "طلب توقف أثناء الرحلة", "راجع مهلة الانتظار المجانية ورسوم الدقيقة والسقف ثم وافق أو ارفض. لم يبدأ احتساب رسوم بعد.");
+                    waiting.Notify(ride, "طلب توقف أثناء الرحلة", "راجع مهلة الانتظار المجانية ورسوم الدقيقة والسقف ثم وافق أو ارفض. لم يبدأ احتساب رسوم بعد.", action: "review_waiting");
                     changed = true;
                 }
             }

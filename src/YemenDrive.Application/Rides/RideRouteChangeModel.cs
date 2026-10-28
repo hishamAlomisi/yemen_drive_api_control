@@ -31,6 +31,10 @@ public sealed class RideRouteChangeService(YemenDriveDbContext db, DatabaseConfi
         var admin = operation == "get" && await db.Users.AnyAsync(x => x.Id == userId && x.Role == UserRole.Admin && x.IsActive, ct);
         if (userId != ride.CustomerId && userId != ride.DriverId && !admin)
             throw new ServiceException("ride_access_denied", "هذه الرحلة لا تخصك.");
+        if (operation is "quote" or "add" or "cancel" && userId != ride.CustomerId)
+            throw new ServiceException("route_customer_required", "طلب تغيير الوجهة ومراجعة الفاتورة متاحان للراكب فقط.");
+        if (operation is "accept" or "reject" && userId != ride.DriverId)
+            throw new ServiceException("route_driver_required", "الموافقة على تغيير الوجهة أو رفضه متاحان للسائق المسند فقط.");
         var now = DateTime.UtcNow;
         var open = await db.RideRouteChanges.SingleOrDefaultAsync(x => x.RideId == ride.Id && x.IsOpen, ct);
         var location = await db.DriverLiveLocations.AsNoTracking().SingleOrDefaultAsync(x => x.DriverId == ride.DriverId, ct);
@@ -40,7 +44,7 @@ public sealed class RideRouteChangeService(YemenDriveDbContext db, DatabaseConfi
         {
             var notified = open.Status == "pending";
             Finish(open, "expired", now);
-            if (notified) Notify(ride, "انتهى عرض تغيير المسار", "بقي المسار الحالي. اطلب عرضًا جديدًا لمراجعة السعر والموقع الحاليين.");
+            if (notified) Notify(ride, open.Id, "انتهى عرض تغيير المسار", "بقي المسار الحالي. اطلب عرضًا جديدًا لمراجعة السعر والموقع الحاليين.");
             await db.SaveChangesAsync(ct); // release the filtered index before another quote
         }
 
@@ -122,7 +126,7 @@ public sealed class RideRouteChangeService(YemenDriveDbContext db, DatabaseConfi
                 if (operation == "add" && requested.Status == "quoted")
                 {
                     requested.Status = "pending";
-                    Notify(ride, "طلب تغيير مسار الرحلة", $"الوجهة: {requested.NewDestinationLabel}. المنفذ {requested.CompletedFare:0} + رسوم الرحلة {requested.OriginalServiceFee:0} + رسوم التغيير {requested.RouteChangeFee:0} + المسار الجديد {requested.NewRouteFare:0} ر.ي. الإجمالي {requested.NewTotal:0} ر.ي. راجع الفاتورة للموافقة أو الرفض.");
+                    Notify(ride, requested.Id, "طلب تغيير مسار الرحلة", $"الوجهة: {requested.NewDestinationLabel}. المنفذ {requested.CompletedFare:0} + رسوم الرحلة {requested.OriginalServiceFee:0} + رسوم التغيير {requested.RouteChangeFee:0} + المسار الجديد {requested.NewRouteFare:0} ر.ي. الإجمالي {requested.NewTotal:0} ر.ي. راجع الفاتورة للموافقة أو الرفض.");
                 }
                 else if (operation == "accept")
                 {
@@ -144,14 +148,14 @@ public sealed class RideRouteChangeService(YemenDriveDbContext db, DatabaseConfi
                     ride.CustomerPrice = requested.CompletedFare + requested.NewRouteFare + ride.RouteChangeFees;
                     ride.ServerPrice = ride.CustomerPrice;
                     RidePricingPolicy.UpdateTotals(ride);
-                    Notify(ride, "تم اعتماد المسار الجديد", $"الوجهة: {requested.NewDestinationLabel}. الأجرة الجديدة {ride.TotalAmount:0} ر.ي شاملة الرسوم المعتمدة.");
+                    Notify(ride, requested.Id, "تم اعتماد المسار الجديد", $"الوجهة: {requested.NewDestinationLabel}. الأجرة الجديدة {ride.TotalAmount:0} ر.ي شاملة الرسوم المعتمدة.");
                 }
                 else if (operation == "reject" || operation == "cancel")
                 {
                     if (operation == "reject" && requested.Status != "pending") throw new ServiceException("route_not_confirmed", "الطلب لم يُرسل بعد.");
                     var wasSent = requested.Status == "pending";
                     Finish(requested, operation == "reject" ? "rejected" : "cancelled", now);
-                    if (wasSent) Notify(ride, "بقي مسار الرحلة الحالي", "لم يُعتمد طلب تغيير المسار ولم تُضف رسوم تغيير.");
+                    if (wasSent) Notify(ride, requested.Id, "بقي مسار الرحلة الحالي", "لم يُعتمد طلب تغيير المسار ولم تُضف رسوم تغيير.");
                 }
             }
         }
@@ -179,7 +183,15 @@ public sealed class RideRouteChangeService(YemenDriveDbContext db, DatabaseConfi
     }
     private static void Finish(RideRouteChange request, string status, DateTime now)
     { request.IsOpen = false; request.Status = status; request.DecidedAtUtc = now; request.UpdatedAtUtc = now; }
-    private void Notify(RideEntity ride, string title, string message) => new RideWaitingCoordinator(db).Notify(ride, title, message);
+    private void Notify(RideEntity ride, int requestId, string title, string message)
+    {
+        foreach (var userId in new[] { ride.CustomerId, ride.DriverId ?? ride.CustomerId }.Distinct())
+            db.Notifications.Add(new Notification
+            {
+                UserId = userId, Type = NotificationType.RideStatus, Title = title, Body = message,
+                DataJson = $"{{\"action\":\"open_active_ride\",\"rideId\":{ride.Id},\"routeChangeId\":{requestId}}}"
+            });
+    }
 
     private async Task<object> SnapshotAsync(RideEntity ride, int userId, bool admin, RideRouteChange? requested, CancellationToken ct)
     {
@@ -198,15 +210,15 @@ public sealed class RideRouteChangeService(YemenDriveDbContext db, DatabaseConfi
         var blocked = await db.RideWaitingSessions.AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct) ||
             await db.RideRouteChanges.AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct);
         return new { rideId = ride.Id, serverNowUtc = DateTime.UtcNow, ride.RouteVersion,
-            canRequest = unavailable == null && !blocked, unavailableReason = unavailable,
-            request = current == null ? null : View(current, userId), history = history.Select(x => View(x, userId)) };
+            canRequest = userId == ride.CustomerId && unavailable == null && !blocked, unavailableReason = unavailable,
+            request = current == null ? null : View(current, userId, ride.DriverId), history = history.Select(x => View(x, userId, ride.DriverId)) };
     }
     public static object Invoice(RideRouteChange x) => new { x.PreviousTotal, x.CompletedDistanceMeters, x.CompletedDurationSeconds,
         x.CompletedFare, x.OriginalServiceFee, x.RouteChangeFee, x.PreviousRouteChangeFees, x.NewDistanceMeters, x.NewDurationSeconds,
         x.NewRouteFare, x.WaitingFee, x.NewTotal, difference = x.NewTotal - x.PreviousTotal };
-    public static object View(RideRouteChange x, int userId) => new { x.Id, x.Status, requestedByMe = x.RequestedByUserId == userId,
+    public static object View(RideRouteChange x, int userId, int? assignedDriverId = null) => new { x.Id, x.Status, requestedByMe = x.RequestedByUserId == userId,
         canConfirm = x.IsOpen && x.Status == "quoted" && x.RequestedByUserId == userId,
-        canDecide = x.IsOpen && x.Status == "pending" && x.RequestedByUserId != userId,
+        canDecide = x.IsOpen && x.Status == "pending" && assignedDriverId == userId && x.RequestedByUserId != userId,
         x.ExpiresAtUtc, x.CreatedAtUtc, x.DecidedAtUtc, x.NewDestinationLabel, x.NewDestinationLatitude, x.NewDestinationLongitude,
         x.ChangeLatitude, x.ChangeLongitude, invoice = Invoice(x) };
 }

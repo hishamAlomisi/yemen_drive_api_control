@@ -3,7 +3,7 @@ namespace YemenDrive.Database.Entities;
 public enum UserRole { Customer, Driver, Admin }
 public enum DriverRatingSource { Customer, Administrator }
 public enum NotificationCampaignTarget { Customers, Drivers, Everyone }
-public enum RideStatus { Draft, Searching, Negotiating, DriverAssigned, DriverEnRoute, InProgress, Completed, Cancelled, CancellationPending }
+public enum RideStatus { Draft, Searching, Negotiating, DriverAssigned, DriverEnRoute, InProgress, Completed, Cancelled, CancellationPending, DriverArrived }
 public enum OfferStatus { Pending, Accepted, Rejected, Expired }
 public enum WalletTransactionType { Credit, Debit, Hold, Release, Refund, Commission }
 public enum NotificationType { RideOffer, RideStatus, Payment, Safety, System }
@@ -35,7 +35,7 @@ public enum CashPaymentRequestStatus { Pending, DriverConfirmed, DriverRejected,
 /// </summary>
 public enum CashCancellationRefundMethod { ReturnFromDriver = 1, CreditCustomerWallet = 2 }
 /// <summary>Lifecycle of a cancellation case.  Financial reversal is only possible after administration approves it.</summary>
-public enum RideCancellationStatus { DriverReviewPending, DriverRejected, AdminReviewPending, AdminApproved, AdminRejected }
+public enum RideCancellationStatus { DriverReviewPending, DriverRejected, AdminReviewPending, AdminApproved, AdminRejected, CustomerReviewPending, CustomerApproved, CustomerRejected, DriverCancelled }
 public enum RideCancellationDriverDecision { None, Accepted, Rejected, ReferredToAdmin }
 public enum PaymentStatus { Pending, Authorized, Paid, Failed, Refunded, Cancelled }
 public enum PaymentMethodKind { ExternalWallet, Card, BankTransfer }

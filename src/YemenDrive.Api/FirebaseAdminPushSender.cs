@@ -2,6 +2,7 @@ using FirebaseAdmin;
 using FirebaseAdmin.Messaging;
 using Google.Apis.Auth.OAuth2;
 using Microsoft.Extensions.Configuration;
+using YemenDrive.Application.Rides;
 using YemenDrive.Database.Entities;
 
 namespace YemenDrive.Api;
@@ -15,20 +16,35 @@ public sealed class FirebaseAdminPushSender(IConfiguration configuration)
         DevicePushInstallation installation,
         YemenDrive.Database.Entities.Notification notification,
         CancellationToken cancellationToken)
+        => GetMessaging().SendAsync(CreateMessage(installation, notification), cancellationToken);
+
+    public static Message CreateMessage(DevicePushInstallation installation,
+        YemenDrive.Database.Entities.Notification notification)
     {
-        var message = new Message
+        var isRideRequest = RideRequestNotificationPolicy.RequestRideId(notification) is not null;
+        var data = NotificationClientPayload.CreateFirebaseData(notification);
+        if (isRideRequest)
+        {
+            // The driver app verifies availability before displaying data messages.
+            // Android must not display an obsolete request directly from its tray.
+            data["title"] = Truncate(notification.Title, 100);
+            data["body"] = Truncate(notification.Body, 700);
+            data["createdAtUtc"] = notification.CreatedAtUtc.ToUniversalTime().ToString("O");
+        }
+        return new Message
         {
             Token = installation.FcmToken,
-            Notification = new FirebaseAdmin.Messaging.Notification
+            Notification = isRideRequest ? null : new FirebaseAdmin.Messaging.Notification
             {
                 Title = Truncate(notification.Title, 100),
                 Body = Truncate(notification.Body, 700)
             },
-            Data = NotificationClientPayload.CreateFirebaseData(notification),
+            Data = data,
             Android = new AndroidConfig
             {
                 Priority = Priority.High,
-                Notification = new AndroidNotification
+                TimeToLive = isRideRequest ? TimeSpan.Zero : null,
+                Notification = isRideRequest ? null : new AndroidNotification
                 {
                     ChannelId = "yemendrive_alerts",
                     Icon = "ic_launcher",
@@ -38,7 +54,6 @@ public sealed class FirebaseAdminPushSender(IConfiguration configuration)
             }
         };
 
-        return GetMessaging().SendAsync(message, cancellationToken);
     }
 
     private static string Truncate(string value, int maxLength)

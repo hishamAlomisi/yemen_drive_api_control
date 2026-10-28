@@ -82,8 +82,8 @@ const financialOperationDefinitions = {
   accountTransfer: ['قيد مالي', 'تسجيل قيد مالي متوازن من حساب إلى حساب.', 'أدخل الحساب المدين والدائن والمبلغ والتاريخ والملاحظة.']
 };
 
-const rideStatuses = ['مسودة', 'جاري البحث', 'تفاوض', 'تم تعيين سائق', 'السائق في الطريق', 'قيد التنفيذ', 'مكتملة', 'ملغاة', 'الإلغاء قيد المراجعة'];
-const cancellationStatuses = ['بانتظار قرار السائق', 'رفض السائق', 'قيد مراجعة الإدارة', 'وافقت الإدارة', 'رفضت الإدارة'];
+const rideStatuses = ['مسودة', 'جاري البحث', 'تفاوض', 'تم تعيين سائق', 'السائق في الطريق', 'قيد التنفيذ', 'مكتملة', 'ملغاة', 'الإلغاء قيد المراجعة', 'وصل السائق إلى نقطة الانطلاق'];
+const cancellationStatuses = ['بانتظار قرار السائق', 'رفض السائق', 'قيد مراجعة الإدارة', 'وافقت الإدارة', 'رفضت الإدارة', 'بانتظار موافقة الراكب', 'وافق الراكب', 'رفض الراكب', 'ألغى السائق قبل البدء'];
 const cancellationDriverDecisions = ['—', 'وافق السائق', 'رفض السائق', 'أحال السائق للإدارة'];
 const cancellationRefundMethods = { 1: 'استرداد نقدي مباشر من السائق', 2: 'إضافة الاسترداد إلى محفظة العميل' };
 const safetyStatuses = ['جديد', 'تم الاستلام', 'مغلق'];
@@ -789,7 +789,7 @@ async function loadRides() {
   toggleEmpty('#rides-body', '#rides-empty', rows);
 }
 
-const LIVE_RIDE_STATUSES = new Set([3, 4, 5, 8]);
+const LIVE_RIDE_STATUSES = new Set([3, 4, 5, 8, 9]);
 const isLiveRide = ride => LIVE_RIDE_STATUSES.has(Number(ride?.status));
 
 function setLiveConnectionStatus(label, connected = false) {
@@ -1206,7 +1206,7 @@ async function loadCancellations() {
   const result = await execute('RideCancellationReportModel', 'list', data);
   state.cancellations = result.data || [];
   const rows = state.cancellations.map(item => {
-    const isAdminReview = Number(item.status) === 2;
+    const isAdminReview = item.canAdminReview === true || Number(item.status) === 2;
     const decision = `${cancellationStatuses[item.status] || item.status}${item.driverDecision ? ` · ${cancellationDriverDecisions[item.driverDecision] || item.driverDecision}` : ''}`;
     const payment = item.paymentProvider ? `${item.paymentProvider} · ${number(item.paymentAmount)} YER` : 'لا توجد دفعة مسجلة';
     const refundRoute = item.requestedRefundMethod ? (cancellationRefundMethods[item.requestedRefundMethod] || 'مسار استرداد غير معروف') : 'لا يوجد مسار استرداد مطلوب';
@@ -1383,7 +1383,7 @@ window.openSafetyMap = async id => {
         const latest = (refreshed.data || []).find(row => Number(row.id) === safetyMapIncidentId);
         if (!latest) { clearInterval(safetyMapTimer); return; }
         updateSafetyMap(latest);
-        if (![3, 4, 5, 8].includes(Number(latest.rideStatus))) clearInterval(safetyMapTimer);
+        if (![3, 4, 5, 8, 9].includes(Number(latest.rideStatus))) clearInterval(safetyMapTimer);
       } catch (error) { console.warn('تعذر تحديث موقع الرحلة:', error); }
     }, 12000);
   } catch (error) { toast(error.message, true); $('#safety-map-modal').close(); }

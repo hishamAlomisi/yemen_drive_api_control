@@ -26,6 +26,7 @@ internal static class RideSearchNotificationDispatcher
                                   activeRide.DriverId == profile.UserId &&
                                   (activeRide.Status == RideStatus.DriverAssigned ||
                                    activeRide.Status == RideStatus.DriverEnRoute ||
+                                   activeRide.Status == RideStatus.DriverArrived ||
                                    activeRide.Status == RideStatus.InProgress ||
                                    activeRide.Status == RideStatus.CancellationPending)))
             .Join(db.DriverLiveLocations.AsNoTracking()

@@ -44,7 +44,8 @@ public sealed class RideReport(
                          activeRide.DriverId == userId &&
                          (activeRide.Status == RideStatus.DriverAssigned ||
                           activeRide.Status == RideStatus.DriverEnRoute ||
-                          activeRide.Status == RideStatus.InProgress))));
+                          activeRide.Status == RideStatus.DriverArrived ||
+                          activeRide.Status == RideStatus.InProgress || activeRide.Status == RideStatus.CancellationPending))));
             }
         }
         if (!isAdmin && currentUserId is null && model.CustomerId is not null)
@@ -52,6 +53,7 @@ public sealed class RideReport(
         if (model.ActiveOnly)
             query = query.Where(x => x.Status == RideStatus.DriverAssigned ||
                                      x.Status == RideStatus.DriverEnRoute ||
+                                     x.Status == RideStatus.DriverArrived ||
                                      x.Status == RideStatus.InProgress ||
                                      x.Status == RideStatus.CancellationPending);
         if (model.Status is not null) query = query.Where(x => x.Status == model.Status);
@@ -82,7 +84,7 @@ public sealed class RideReport(
         var rideIds = rides.Select(x => x.Id).ToArray();
         var activeDriverIds = rides
             .Where(x => x.DriverId is not null &&
-                        x.Status is RideStatus.DriverAssigned or RideStatus.DriverEnRoute or
+                        x.Status is RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.DriverArrived or
                             RideStatus.InProgress or RideStatus.CancellationPending)
             .Select(x => x.DriverId!.Value)
             .Distinct()

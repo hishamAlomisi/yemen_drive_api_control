@@ -954,6 +954,34 @@
           }
         },
         {
+          "name": "Driver Arrived at Pickup",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driverAuthToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideModel\",\n  \"operation\": \"update\",\n  \"data\": {\n    \"id\": {{rideId}},\n    \"status\": 9\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "يؤكد السائق الوصول من الحالة 3 أو 4. تبقى الرحلة غير مبدوءة حتى الانتقال من الحالة 9 إلى 5."
+          }
+        },
+        {
           "name": "Start Ride",
           "request": {
             "method": "POST",
@@ -1676,6 +1704,376 @@
             "url": "{{baseUrl}}/api/execute"
           },
           "description": "كشف قراءة فقط للقيود المنشورة. احذف year وmonth لعرض كل الفترات، أو أرسل ledgerAccountId وentryType أو dateFromUtc/dateToUtc للتصفية."
+        }
+      ]
+    },
+    {
+      "name": "Workflow acceptance - rider and driver consent",
+      "description": "أمثلة يدوية بديلة على بيانات اختبار. ليست سلسلة لتشغيل الموافقة والرفض معًا. استخدم authToken للراكب وdriverAuthToken للسائق المسند، وعرّف routeChangeRequestId من نتيجة التسعيرة. الوصول 9 يسبق البدء 5. لا تنفذ على رحلة مستخدم فعلية.",
+      "item": [
+        {
+          "name": "Rider - actual request recipients",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideSearchRecipientModel\",\n  \"operation\": \"get\",\n  \"data\": {\n    \"rideId\": {{rideId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "يعيد فقط مستلمي الدعوات المحفوظة مع وقت الإرسال والمشاهدة؛ يتحدث العميل عند rideSearchRecipientsUpdated."
+          }
+        },
+        {
+          "name": "Driver - check request before alert",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driverAuthToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideRequestAvailabilityModel\",\n  \"operation\": \"get\",\n  \"data\": {\n    \"rideId\": {{rideId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "يعيد available=false للطلب الملغى أو المسند أو المنتهي، أو للسائق غير المتاح أو غير المتصل."
+          }
+        },
+        {
+          "name": "Rider - pending required rating",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"PendingRideRatingModel\",\n  \"operation\": \"get\",\n  \"data\": {}\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "يرجع أقدم رحلة مكتملة دون تقييم، أو null. يمنع إنشاء أو استئناف البحث قبل استكمال التقييم."
+          }
+        },
+        {
+          "name": "Rider - submit required rating",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"DriverRatingModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"driverUserId\": {{driverUserId}},\n    \"score\": 5,\n    \"comment\": \"وصلنا بسلام\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": ""
+          }
+        },
+        {
+          "name": "Driver - request cancellation",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driverAuthToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideCancellationRequestModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"reason\": \"عطل في المركبة\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "قبل البدء: إلغاء فوري. أثناء الرحلة: يبقى status=5 إلى أن يوافق الراكب؛ احفظ data.id في cancellationRequestId."
+          }
+        },
+        {
+          "name": "Rider - inspect driver cancellation",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideCancellationRequestModel\",\n  \"operation\": \"get\",\n  \"data\": {\n    \"rideId\": {{rideId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "تظهر إجراءات القرار عند requestedByDriver=true وcanDecide=true."
+          }
+        },
+        {
+          "name": "Rider - accept driver cancellation",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideCancellationRequestModel\",\n  \"operation\": \"accept\",\n  \"data\": {\n    \"id\": {{cancellationRequestId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "بديل عن الرفض. يلغي الرحلة بعد موافقة راكبها فقط ويعيد توفر السائق."
+          }
+        },
+        {
+          "name": "Rider - reject driver cancellation",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideCancellationRequestModel\",\n  \"operation\": \"reject\",\n  \"data\": {\n    \"id\": {{cancellationRequestId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "بديل عن الموافقة. تستمر الرحلة دون تغيير حالتها."
+          }
+        },
+        {
+          "name": "Rider - route invoice quote",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideRouteChangeModel\",\n  \"operation\": \"quote\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"requestKey\": \"{{$guid}}\",\n    \"newDestinationLatitude\": 15.476,\n    \"newDestinationLongitude\": 44.219,\n    \"newDestinationLabel\": \"مطار صنعاء\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "يطلب الراكب الفاتورة أولًا. احفظ data.request.id في routeChangeRequestId، وراجعها قبل add."
+          }
+        },
+        {
+          "name": "Rider - confirm route invoice",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideRouteChangeModel\",\n  \"operation\": \"add\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"requestId\": {{routeChangeRequestId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "يرسل الفاتورة للسائق؛ لا تتغير الوجهة قبل موافقته."
+          }
+        },
+        {
+          "name": "Driver - route request and invoice",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driverAuthToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideRouteChangeModel\",\n  \"operation\": \"get\",\n  \"data\": {\n    \"rideId\": {{rideId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": ""
+          }
+        },
+        {
+          "name": "Driver - accept route change",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driverAuthToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideRouteChangeModel\",\n  \"operation\": \"accept\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"requestId\": {{routeChangeRequestId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "بديل عن الرفض؛ موافقة السائق المسند فقط."
+          }
+        },
+        {
+          "name": "Driver - reject route change",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{driverAuthToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"RideRouteChangeModel\",\n  \"operation\": \"reject\",\n  \"data\": {\n    \"rideId\": {{rideId}},\n    \"requestId\": {{routeChangeRequestId}}\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/execute",
+            "description": "بديل عن الموافقة؛ يبقى المسار والفاتورة السابقة."
+          }
         }
       ]
     }

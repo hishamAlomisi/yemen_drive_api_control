@@ -43,6 +43,8 @@ public sealed class RideCancellationReport(
             return new
             {
                 x.Id, x.RideId, x.Status, x.DriverDecision, x.RideStatusAtRequest,
+                canAdminReview = x.Status == RideCancellationStatus.AdminReviewPending ||
+                    (x.Status == RideCancellationStatus.CustomerApproved && x.AdminDecidedAtUtc == null && payment?.Status == PaymentStatus.Paid),
                 customerName = x.Ride.Customer.DisplayName,
                 customerPhone = x.Ride.Customer.PhoneNumber,
                 driverName = x.Ride.Driver?.DisplayName,

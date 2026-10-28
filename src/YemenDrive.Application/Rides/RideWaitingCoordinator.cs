@@ -96,13 +96,13 @@ public sealed class RideWaitingCoordinator(YemenDriveDbContext db, IRideRealtime
             throw new ServiceException("waiting_must_end", "أوقف الانتظار بزر استئناف الرحلة قبل فتح الدفع أو إنهاء الرحلة.");
     }
 
-    public void Notify(RideEntity ride, string title, string body)
+    public void Notify(RideEntity ride, string title, string body, string action = "open_active_ride")
     {
         foreach (var userId in new[] { ride.CustomerId, ride.DriverId ?? ride.CustomerId }.Distinct())
             db.Notifications.Add(new Notification
             {
                 UserId = userId, Type = NotificationType.RideStatus, Title = title, Body = body,
-                DataJson = $"{{\"action\":\"open_active_ride\",\"rideId\":{ride.Id}}}"
+                DataJson = $"{{\"action\":\"{action}\",\"rideId\":{ride.Id}}}"
             });
     }
 

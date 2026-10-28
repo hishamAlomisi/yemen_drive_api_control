@@ -1,5 +1,6 @@
 using FirebaseAdmin.Messaging;
 using Microsoft.EntityFrameworkCore;
+using YemenDrive.Application.Rides;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 
@@ -148,6 +149,12 @@ public sealed class NotificationPushWorker(
                     .ThenInclude(item => item.Notification)
                 .SingleOrDefaultAsync(item => item.Id == id && item.LeaseId == leaseId, cancellationToken);
             if (delivery is null) continue;
+
+            if (!await RideRequestNotificationPolicy.CanAlertAsync(db, delivery.Outbox.Notification, cancellationToken))
+            {
+                await AbandonAsync(db, id, leaseId, "ride_request_no_longer_available", cancellationToken);
+                continue;
+            }
 
             var sessionIsActive = await db.AuthSessions.AsNoTracking().AnyAsync(session =>
                 session.UserId == delivery.Installation.UserId &&

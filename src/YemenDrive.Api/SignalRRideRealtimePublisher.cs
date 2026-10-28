@@ -38,6 +38,18 @@ public sealed class SignalRRideRealtimePublisher(
                         recipient.Ride.GetValueOrDefault("id"), recipient.UserId);
                 }
             });
+
+        // Initial load and reconnect use the same persisted recipient list. This
+        // invalidation also covers a price change/retry that dispatches to new drivers.
+        foreach (var ride in recipients.Select(recipient => recipient.Ride)
+                     .Where(ride => ride.GetValueOrDefault("id") is int && ride.GetValueOrDefault("customerId") is int)
+                     .GroupBy(ride => (int)ride["id"]!).Select(group => group.First()))
+        {
+            var rideId = (int)ride["id"]!;
+            await TrySendAsync(hub.Clients.Group(TrackingHub.UserGroup((int)ride["customerId"]!)),
+                "rideSearchRecipientsUpdated", new { rideId },
+                "Could not publish search recipients for ride {RideId}.", rideId);
+        }
     }
 
     public async Task PublishRideUnavailableAsync(
@@ -134,7 +146,12 @@ public sealed class SignalRRideRealtimePublisher(
             rideStatus.UpdatedAtUtc
         };
         await TrySendAsync(
-            hub.Clients.Group(TrackingHub.RideGroup(rideStatus.RideId)),
+            hub.Clients.Groups(new[]
+                {
+                    TrackingHub.RideGroup(rideStatus.RideId),
+                    TrackingHub.UserGroup(rideStatus.CustomerId),
+                    rideStatus.DriverId is int driverId ? TrackingHub.UserGroup(driverId) : null
+                }.OfType<string>().ToArray()),
             "rideStatusUpdated", payload,
             "Could not publish rideStatusUpdated for ride {RideId}.",
             rideStatus.RideId);

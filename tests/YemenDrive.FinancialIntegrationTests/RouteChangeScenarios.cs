@@ -55,6 +55,12 @@ internal static class RouteChangeScenarios
         Is(otherView.GetProperty("history").GetArrayLength() == 0, "private preview stays private before send");
         Is(!(await Execute(driverService, "accept", action)).Success, "other participant cannot accept an unsent preview");
         Ok(await Execute(passenger, "add", action));
+        var routeNotice = await db.Notifications.Where(n => n.UserId == driver && n.Title == "طلب تغيير مسار الرحلة")
+            .OrderByDescending(n => n.Id).FirstAsync();
+        var routeNoticeData = JsonSerializer.Deserialize<JsonElement>(routeNotice.DataJson!);
+        Is(routeNoticeData.GetProperty("routeChangeId").GetInt32() == first.Id &&
+            routeNoticeData.GetProperty("rideId").GetInt32() == ride.Id,
+            "driver notification identifies the pending route approval");
         Is(!(await Execute(passenger, "accept", action)).Success, "requester cannot approve themselves");
         Is(!(await Execute(new RideRouteChangeService(db, config, new Actor(admin), maps), "accept", action)).Success, "admin cannot bypass participant consent");
         var accounting = new RideAccountingPostingService(db, new AccountingPostingService(db));
@@ -69,11 +75,12 @@ internal static class RouteChangeScenarios
         Is(ride.DriverShare + ride.PlatformShare == ride.TotalAmount && ride.RoutePolyline == "encoded-route", "financial shares and route updated together");
 
         routeStub.Distance = 1000; routeStub.Duration = 120;
-        Ok(await Execute(driverService, "quote", quote with { RequestKey = Guid.NewGuid(), NewDestinationLatitude = 15.4, NewDestinationLabel = "وجهة أقرب" }));
+        Is(!(await Execute(driverService, "quote", quote with { RequestKey = Guid.NewGuid() })).Success, "driver cannot request route changes");
+        Ok(await Execute(passenger, "quote", quote with { RequestKey = Guid.NewGuid(), NewDestinationLatitude = 15.4, NewDestinationLabel = "وجهة أقرب" }));
         var second = await db.RideRouteChanges.Where(x => x.RideId == ride.Id).OrderByDescending(x => x.Id).FirstAsync();
         var secondAction = new RideRouteChangeModel(ride.Id, second.Id);
-        Ok(await Execute(driverService, "add", secondAction));
-        Ok(await Execute(passenger, "accept", secondAction));
+        Ok(await Execute(passenger, "add", secondAction));
+        Ok(await Execute(driverService, "accept", secondAction));
         Is(ride.RouteVersion == 2 && ride.RouteCompletedFare == 617 && ride.RouteChangeFees == 400 && ride.TotalAmount == 1279, "successive shorter route preserves completed part; no duplicate base or old remaining fare");
         var report = Data(await Execute(new RideRouteChangeReport(db, config, new Actor(admin)), "report", new RideRouteChangeReportModel(RideId: ride.Id, PageSize: 1)));
         Is(report.GetProperty("totalCount").GetInt32() == 2 && report.GetProperty("summary").GetProperty("chargedFee").GetDecimal() == 400, "admin report aggregates accepted change fees across pages without duplication");

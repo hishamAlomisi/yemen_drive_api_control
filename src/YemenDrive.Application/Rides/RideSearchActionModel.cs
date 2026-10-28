@@ -28,6 +28,7 @@ public sealed class RideSearchAction(
             IsolationLevel.Serializable, token);
         var ride = await FindRideAsync(model.RideId, token);
         await EnsureCustomerOrAdminAsync(ride.CustomerId, token);
+        await PendingRideRating.EnsureCompletedAsync(db, ride.CustomerId, token);
         if (ride.DriverId is not null || ride.Status is not (
                 RideStatus.Cancelled or RideStatus.Searching or RideStatus.Negotiating))
             throw new ServiceException(

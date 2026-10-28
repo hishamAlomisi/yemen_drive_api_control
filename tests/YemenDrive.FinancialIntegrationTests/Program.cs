@@ -63,10 +63,17 @@ try
     await CustomerCashPaymentRequiresDriverConfirmationAsync(db, configuration, fixture);
     await InsufficientCashShortageRollsBackAsync(db, configuration, fixture);
     await AdministrativeApprovalSettlesPaidCashCancellationAsync(db, configuration, fixture);
+    // Earlier financial scenarios complete rides; finish their passenger reviews
+    // before exercising the independent new-booking contract.
+    var ratingService = new YemenDrive.Application.Drivers.DriverRating(db, configuration, new TestCurrentUser(fixture.CustomerId));
+    foreach (var completed in await db.Rides.AsNoTracking().Where(x => x.CustomerId == fixture.CustomerId && x.Status == RideStatus.Completed).ToListAsync())
+        AssertSuccess(await ratingService.ExecuteAsync("add", JsonSerializer.SerializeToElement(new YemenDrive.Application.Drivers.DriverRatingModel(RideId: completed.Id, Score: 5)), CancellationToken.None), "review completed fixture ride");
     await RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(db, configuration, fixture);
     await PricingWaitingScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
     await WaitingReportScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
     await RouteChangeScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+
+    await WorkflowAcceptanceScenarios.RunAsync(db, configuration, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
 
     Console.WriteLine("PASS: financial integration scenarios completed on an isolated temporary database.");
 }
