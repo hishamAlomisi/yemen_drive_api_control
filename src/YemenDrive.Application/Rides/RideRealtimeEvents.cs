@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Entities;
+using YemenDrive.Application.Payments;
 
 namespace YemenDrive.Application.Rides;
 
@@ -30,7 +31,9 @@ public sealed record RideStatusRealtimeEvent(
     int? DriverId,
     RideStatus Status,
     bool CustomerPaymentEnabled,
-    DateTime? UpdatedAtUtc);
+    DateTime? UpdatedAtUtc,
+    string PaymentMethodCode = "cash",
+    bool PaymentRequiredBeforeStart = false);
 
 public sealed record DriverLocationRealtimeEvent(
     int DriverId,
@@ -171,7 +174,9 @@ internal static class RideRealtimeEventFactory
             ride.DriverId,
             ride.Status,
             ride.CustomerPaymentEnabled,
-            ride.UpdatedAtUtc);
+            ride.UpdatedAtUtc,
+            ride.PaymentMethodCode,
+            RidePaymentPolicy.RequiresBeforeStart(ride));
 
     public static async Task<IReadOnlyList<RideOfferRealtimeEvent>> LoadOffersAsync(
         YemenDriveDbContext db,
@@ -262,6 +267,8 @@ internal static class RideRealtimeEventFactory
             ["platformShare"] = ride.PlatformShare,
             ["createdAtUtc"] = ride.CreatedAtUtc,
             ["customerPaymentEnabled"] = ride.CustomerPaymentEnabled,
+            ["paymentMethodCode"] = ride.PaymentMethodCode,
+            ["paymentRequiredBeforeStart"] = RidePaymentPolicy.RequiresBeforeStart(ride),
             ["paymentCompleted"] = false,
             ["driverOfferAmount"] = offer.Amount,
             ["driverOfferExpiresAtUtc"] = offer.ExpiresAtUtc,

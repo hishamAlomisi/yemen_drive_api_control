@@ -34,13 +34,16 @@ public sealed class Payment(
         }
 
         await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        await RidePaymentGuard.LockAsync(dbContext, model.RideId.Value, cancellationToken);
         var ride = await dbContext.Rides
             .SingleOrDefaultAsync(x => x.Id == model.RideId, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
-        if (ride.Status != RideStatus.Completed)
-            throw new ServiceException("ride_not_completed", "لا يمكن تسجيل الدفع قبل اكتمال الرحلة.");
         if (ride.CustomerId != userId)
             throw new ServiceException("invalid_payment_user", "المستخدم لا يطابق عميل الرحلة.");
+
+        RidePaymentPolicy.EnsureReady(ride, "wallet");
+        await RidePaymentGuard.EnsureAvailableAsync(dbContext, ride.Id, cancellationToken);
+        await RidePaymentPolicy.EnsureNoPendingDecisionAsync(dbContext, ride.Id, cancellationToken);
 
         await new RideWaitingCoordinator(dbContext).EnsureSettledAsync(ride, cancellationToken);
         var fare = (ride.CustomerPrice ?? ride.ServerPrice
@@ -97,6 +100,10 @@ public sealed class Payment(
             IdempotencyKey = idempotencyKey
         };
         dbContext.PaymentTransactions.Add(entity);
+        ride.PaymentMethodCode = "wallet";
+        ride.PaymentRequiredBeforeStart = false;
+        ride.CustomerPaymentEnabled = false;
+        ride.UpdatedAtUtc = DateTime.UtcNow;
         dbContext.DriverSettlements.Add(new DriverSettlement
         {
             DriverId = ride.DriverId.Value,
@@ -159,7 +166,8 @@ public sealed class Payment(
     {
         var entity = await FindAsync(model.Id, cancellationToken);
         EnsurePaymentAccess(entity);
-        if (entity.Status is PaymentStatus.Paid or PaymentStatus.Refunded or PaymentStatus.Cancelled)
+        if (entity.Status is PaymentStatus.Paid or PaymentStatus.Refunded or PaymentStatus.Cancelled ||
+            model.Status is not null || !string.Equals(entity.Provider, "YemenDriveWallet", StringComparison.OrdinalIgnoreCase))
             throw new ServiceException("payment_immutable", "لا يمكن تعديل عملية دفع معتمدة أو مستردة أو ملغاة؛ استخدم عملية مالية عكسية موثقة.");
         if (model.Status is not null) entity.Status = model.Status.Value;
         if (model.ProviderReference is not null) entity.ProviderReference = model.ProviderReference.Trim();
@@ -195,7 +203,7 @@ public sealed class Payment(
 
     private void EnsurePaymentAccess(PaymentTransaction payment)
     {
-        if (currentUser.UserId is int userId && payment.UserId != userId)
+        if (currentUser.UserId is not int userId || payment.UserId != userId)
             throw new ServiceException("payment_access_denied", "لا تملك صلاحية الوصول إلى عملية الدفع.");
     }
 

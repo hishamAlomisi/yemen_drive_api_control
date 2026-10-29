@@ -35,6 +35,12 @@ const ADMIN_REFRESH_TOKEN_KEY = 'yemendrive_admin_refresh_token';
 const ADMIN_TOPBAR_THEME_KEY = 'yemendrive_admin_topbar_theme';
 let adminRefreshInFlight = null;
 let adminHubConnection = null;
+const WALLET_LOGIN_REFRESH_MS = 3000;
+const walletLoginCellMarkup = new WeakMap();
+let walletLoginRefreshTimer = null;
+let walletLoginRefreshController = null;
+let walletLoginRefreshGeneration = 0;
+let paymentMethodsLoadGeneration = 0;
 let liveRidesMap = null;
 const liveRideMarkers = new Map();
 const liveRideAnimations = new Map();
@@ -153,7 +159,7 @@ const formConfigs = {
     fields: [['driverSettlementId','سجل المديونية','select',true,'openSettlements'],['amount','المبلغ المحصل','number',true,'0','0.01'],['currency','العملة','text',true,'YER'],['method','طريقة التحصيل','select',true,[['CashToPlatform','نقد إلى الإدارة'],['BankTransfer','تحويل بنكي'],['WalletTransfer','تحويل محفظة']]],['reference','مرجع الإيصال أو التحويل الخارجي','text',true],['note','ملاحظة','textarea']]
   }
   ,paymentMethod: {
-    title: 'إضافة طريقة دفع خارجية', subtitle: 'بيانات تعريف وتشغيل فقط؛ لا تضع مفاتيح API أو بيانات سرية هنا.', model: 'PaymentMethodModel', operation: 'add', refresh: 'payment-methods',
+    title: 'إضافة طريقة دفع خارجية', subtitle: 'اختر المحفظة وأدخل بيانات الدخول في JSON. تُحفظ مشفّرة في الخادم وتُستخدم لتسجيل الدخول تلقائياً.', model: 'PaymentMethodModel', operation: 'add', refresh: 'payment-methods',
     fields: [['code','رمز فريد','text',true],['nameAr','الاسم الظاهر للعميل','text',true],['descriptionAr','الوصف المختصر','textarea',true],['imageFile','الشعار أو الصورة','file'],['imageUrl','رابط الصورة (اختياري)','url'],['kind','النوع','select',true,[['0','محفظة خارجية'],['1','بطاقة'],['2','حساب/تحويل بنكي']]],['providerCode','رمز المزود غير السري','text',true],['publicInstructionsAr','تعليمات ظاهرة للعميل','textarea'],['sortOrder','الترتيب','number',false,'0'],['isAvailableForRidePayment','تظهر أثناء دفع الرحلة','checkbox',false,true],['isAvailableForWalletTopUp','تظهر أثناء شحن المحفظة','checkbox',false,true],['isActive','نشطة','checkbox',false,true]]
   }
   ,serviceArea: {
@@ -359,6 +365,11 @@ async function seedDevelopmentData() {
 }
 
 function showAdminLogin(message = '') {
+  paymentMethodsLoadGeneration++;
+  stopWalletLoginRefresh();
+  formOpenGeneration++;
+  const walletJson = $('#entity-form')?.elements.namedItem('providerOptionsJson');
+  if (walletJson) walletJson.value = '';
   stopAdminRealtime();
   clearAdminSession();
   $('.admin-login').classList.remove('hidden');
@@ -372,6 +383,7 @@ function showAdminLogin(message = '') {
 function showAdminApp() {
   $('.admin-login').classList.add('hidden');
   $('.app-shell').classList.remove('hidden');
+  if (state.view === 'payment-methods') void loadView('payment-methods', true);
 }
 
 async function adminLogin(phoneNumber, password) {
@@ -1189,16 +1201,143 @@ async function loadSettlements() {
 }
 
 async function loadPaymentMethods() {
-  const result = await execute('PaymentMethodModel', 'list', {});
+  const generation = ++paymentMethodsLoadGeneration;
+  stopWalletLoginRefresh();
+  let result;
+  try {
+    result = await execute('PaymentMethodModel', 'list', {});
+  } catch (error) {
+    if (generation === paymentMethodsLoadGeneration) scheduleWalletLoginRefresh();
+    throw error;
+  }
+  if (generation !== paymentMethodsLoadGeneration || state.view !== 'payment-methods' ||
+      !sessionStorage.getItem(ADMIN_TOKEN_KEY)) return;
   state.paymentMethods = result.data || [];
+  state.walletLoginStates = new Map();
+  renderPaymentMethods();
+  await refreshWalletLoginStates();
+}
+
+function shouldRefreshWalletLogins() {
+  return state.view === 'payment-methods' && state.databaseConfigured && !document.hidden &&
+    Boolean(sessionStorage.getItem(ADMIN_TOKEN_KEY));
+}
+
+function stopWalletLoginRefresh() {
+  clearTimeout(walletLoginRefreshTimer);
+  walletLoginRefreshTimer = null;
+  walletLoginRefreshGeneration++;
+  walletLoginRefreshController?.abort();
+  walletLoginRefreshController = null;
+}
+
+function scheduleWalletLoginRefresh() {
+  clearTimeout(walletLoginRefreshTimer);
+  walletLoginRefreshTimer = null;
+  if (shouldRefreshWalletLogins() && state.paymentMethods.some(item => Number(item.kind) === 0))
+    walletLoginRefreshTimer = setTimeout(() => { void refreshWalletLoginStates(); }, WALLET_LOGIN_REFRESH_MS);
+}
+
+async function refreshWalletLoginStates() {
+  if (!shouldRefreshWalletLogins() || walletLoginRefreshController) return;
+  clearTimeout(walletLoginRefreshTimer);
+  walletLoginRefreshTimer = null;
+  const items = state.paymentMethods;
+  const generation = walletLoginRefreshGeneration;
+  const controller = new AbortController();
+  walletLoginRefreshController = controller;
+  // A stalled request must not prevent later status updates after connectivity returns.
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  const isCurrent = () => generation === walletLoginRefreshGeneration &&
+    items === state.paymentMethods && shouldRefreshWalletLogins();
+  try {
+    await Promise.allSettled(items.filter(item => Number(item.kind) === 0).map(async item => {
+      let login;
+      try {
+        login = await walletAdminRequest(`/api/admin/payment-methods/${Number(item.id)}/wallet-login`,
+          { signal: controller.signal });
+      } catch {
+        login = { unavailable: true };
+      }
+      if (!isCurrent()) return;
+      state.walletLoginStates.set(Number(item.id), login);
+      updateWalletLoginCell(item, login);
+    }));
+  } finally {
+    clearTimeout(timeout);
+    if (walletLoginRefreshController === controller) {
+      walletLoginRefreshController = null;
+      scheduleWalletLoginRefresh();
+    }
+  }
+}
+
+function walletLoginCellHtml(item, login) {
+  if (Number(item.kind) !== 0) return '—';
+  const retry = login?.hasCredentials && login.isEnabled && item.isActive
+    ? iconActionButton('resend', 'إعادة محاولة تسجيل الدخول', `retryWalletLogin(${Number(item.id)})`, { tone: 'info' }) : '';
+  return `${walletLoginStatusHtml(login)}${retry}`;
+}
+
+function updateWalletLoginCell(item, login) {
+  const cell = $(`#payment-methods-body [data-wallet-login-id="${Number(item.id)}"]`);
+  if (!cell) return;
+  const html = walletLoginCellHtml(item, login);
+  // Preserve row actions, focus, and scroll when the displayed state has not changed.
+  if (walletLoginCellMarkup.get(cell) !== html) {
+    cell.innerHTML = html;
+    walletLoginCellMarkup.set(cell, html);
+  }
+}
+
+function renderPaymentMethods() {
   const kinds = ['محفظة خارجية','بطاقة','حساب/تحويل بنكي'];
   const rows = state.paymentMethods.map(item => {
     const image = item.imageUrl ? `<img class="payment-method-logo" src="${escapeHtml(item.imageUrl)}" alt="شعار ${escapeHtml(item.nameAr)}">` : '—';
     const visibility = [item.isAvailableForRidePayment ? 'دفع الرحلة' : '', item.isAvailableForWalletTopUp ? 'شحن المحفظة' : ''].filter(Boolean).join(' + ') || '—';
-    return `<tr><td>${image}</td><td><span class="cell-main">${escapeHtml(item.nameAr)}</span><span class="cell-sub">${escapeHtml(item.descriptionAr)}</span></td><td>${escapeHtml(kinds[item.kind] || item.kind)}</td><td>${escapeHtml(item.providerCode)}</td><td>${escapeHtml(visibility)}</td><td>${number(item.sortOrder)}</td><td>${badge(item.isActive ? 'نشطة' : 'موقوفه', item.isActive ? 'success' : 'danger')}</td><td>${recordActions('paymentMethod', item.id)}</td></tr>`;
+    const login = state.walletLoginStates?.get(Number(item.id));
+    return `<tr><td>${image}</td><td><span class="cell-main">${escapeHtml(item.nameAr)}</span><span class="cell-sub">${escapeHtml(item.descriptionAr)}</span></td><td>${escapeHtml(kinds[item.kind] || item.kind)}</td><td>${escapeHtml(item.providerCode)}</td><td>${escapeHtml(visibility)}</td><td>${number(item.sortOrder)}</td><td>${badge(item.isActive ? 'نشطة' : 'موقوفه', item.isActive ? 'success' : 'danger')}</td><td data-wallet-login-id="${Number(item.id)}">${walletLoginCellHtml(item, login)}</td><td>${recordActions('paymentMethod', item.id)}</td></tr>`;
   });
   toggleEmpty('#payment-methods-body', '#payment-methods-empty', rows);
 }
+
+async function walletAdminRequest(url, options = {}) {
+  const response = await adminFetch(url, { cache: 'no-store', ...options });
+  const result = await response.json().catch(() => null);
+  if (!response.ok || !result?.success) throw new Error(result?.message || 'تعذر تحميل إعدادات تسجيل دخول المحفظة.');
+  return result.data;
+}
+
+function walletLoginStatusHtml(login) {
+  if (!login) return badge('جارٍ تحميل الحالة');
+  if (login.unavailable) return badge('تعذر تحميل الحالة', 'danger');
+  if (!login.hasCredentials) return badge('لم تُضبط بيانات الدخول');
+  if (!login.isEnabled) return badge('تسجيل الدخول معطّل');
+  const status = String(login.status || '').replace(/[_ -]/g, '').toLowerCase();
+  const labels = {
+    connected: ['متصلة', 'success'], authenticated: ['متصلة', 'success'], loggedin: ['متصلة', 'success'],
+    ready: ['متصلة', 'success'], succeeded: ['متصلة', 'success'],
+    pending: ['بانتظار تسجيل الدخول', 'info'], loggingin: ['جارٍ تسجيل الدخول', 'info'],
+    failed: ['تعذر تسجيل الدخول', 'danger'], disabled: ['تسجيل الدخول معطّل', ''],
+    notconfigured: ['لم تُضبط بيانات الدخول', '']
+  };
+  const [label, tone] = labels[status] || ['بانتظار تسجيل الدخول', 'info'];
+  const lastLogin = login.lastLoginAtUtc ? `<span class="cell-sub">آخر نجاح: ${escapeHtml(date(login.lastLoginAtUtc))}</span>` : '';
+  return `${badge(label, tone)}${lastLogin}`;
+}
+
+const retryingWalletLogins = new Set();
+window.retryWalletLogin = async id => {
+  const methodId = Number(id);
+  if (!Number.isSafeInteger(methodId) || methodId <= 0 || retryingWalletLogins.has(methodId)) return;
+  retryingWalletLogins.add(methodId);
+  try {
+    await walletAdminRequest(`/api/admin/payment-methods/${methodId}/wallet-login/retry`, { method: 'POST' });
+    toast('تم طلب إعادة محاولة تسجيل الدخول. ستتحدث الحالة تلقائياً.');
+    await loadPaymentMethods();
+  } catch (error) { toast(error.message || 'تعذرت إعادة محاولة تسجيل الدخول.', true); }
+  finally { retryingWalletLogins.delete(methodId); }
+};
 
 async function loadCancellations() {
   const selected = $('#cancellation-filter').value;
@@ -2050,6 +2189,8 @@ async function loadHistory() {
 }
 
 function setView(view, financialReportType = null, financialOperationType = null) {
+  paymentMethodsLoadGeneration++;
+  stopWalletLoginRefresh();
   if (view === 'financial-reports' && financialReportDefinitions[financialReportType])
     state.financialReportType = financialReportType;
   if (view === 'financial-operations' && financialOperationDefinitions[financialOperationType])
@@ -2155,6 +2296,7 @@ function buildField(field) {
 }
 
 let activeForm = null;
+let formOpenGeneration = 0;
 const formEntityLabels = {
   user: 'المستخدم', driver: 'ملف السائق', ride: 'الرحلة', serviceKind: 'نوع الخدمة',
   serviceCatalog: 'الخدمة', pricingRule: 'قاعدة التسعير', paymentMethod: 'طريقة الدفع',
@@ -2220,11 +2362,188 @@ function populateFormValues(form, entity, fields) {
   }
 }
 
+function configureWalletLoginForm(form, entity, catalog, login, configuration, configurationError) {
+  const kind = form.elements.namedItem('kind');
+  const json = form.elements.namedItem('providerOptionsJson');
+  const enabled = form.elements.namedItem('providerLoginEnabled');
+  const providers = Array.isArray(catalog) ? catalog : [];
+  const originalProvider = String(entity?.providerCode || '');
+  const findProvider = code => providers.find(provider => String(provider.code).toLowerCase() === String(code).toLowerCase());
+  let rememberedProvider = originalProvider;
+  let manualProvider = Number(entity?.kind) === 0 ? '' : originalProvider;
+  const hasSavedJson = Number(entity?.kind) === 0 &&
+    String(configuration?.providerCode || '').toLowerCase() === originalProvider.toLowerCase() &&
+    typeof configuration?.providerOptionsJson === 'string';
+  json.value = hasSavedJson ? configuration.providerOptionsJson : '';
+  configuration = null;
+  json.dataset.walletJsonUnchanged = String(hasSavedJson);
+  json.addEventListener('input', () => { json.dataset.walletJsonUnchanged = 'false'; });
+  json.rows = 14;
+  json.maxLength = 64000;
+  json.dir = 'ltr';
+  json.autocomplete = 'off';
+  json.spellcheck = false;
+  json.classList.add('wallet-login-json');
+  json.closest('label')?.classList.add('wallet-login-field');
+  enabled.checked = login?.isEnabled === true;
+
+  const help = document.createElement('div');
+  help.className = 'wallet-login-help full';
+  const text = document.createElement('p');
+  text.textContent = entity
+    ? hasSavedJson
+      ? 'هذه بيانات الدخول المحفوظة. عدّل الحقول المطلوبة ثم احفظ. ترك JSON فارغاً يُبقي البيانات السابقة.'
+      : configurationError
+        ? `${configurationError} لم تُستبدل البيانات المحفوظة. أعد فتح التعديل لمحاولة تحميلها؛ ترك JSON فارغاً يُبقيها كما هي.`
+        : 'لم تُحفظ بيانات دخول لهذه المحفظة بعد. عبّئ القالب وأكمل بياناتك ثم احفظ.'
+    : 'اختر المحفظة لتعبئة قالب JSON بحقول تسجيل الدخول، ثم أكمل بياناتك.';
+  if (configurationError) text.setAttribute('role', 'alert');
+  const certificateHelp = document.createElement('p');
+  certificateHelp.className = 'wallet-certificate-help';
+  certificateHelp.append('مسار الشهادة على جهاز الخادم. داخل JSON اكتب مثلاً: ');
+  const certificateExample = document.createElement('code');
+  certificateExample.dir = 'ltr';
+  certificateExample.textContent = '"CertificatePath": "D:\\\\path\\\\sss.pfx"';
+  certificateHelp.append(certificateExample, ' أو ');
+  const certificateSlashExample = document.createElement('code');
+  certificateSlashExample.dir = 'ltr';
+  certificateSlashExample.textContent = '"CertificatePath": "D:/path/sss.pfx"';
+  certificateHelp.append(certificateSlashExample, '؛ لا تستخدم شرطة خلفية مفردة داخل النص.');
+  const templateButton = document.createElement('button');
+  templateButton.type = 'button';
+  templateButton.className = 'button';
+  templateButton.textContent = 'تعبئة قالب المحفظة';
+  const status = document.createElement('div');
+  status.className = 'wallet-login-form-status';
+  status.setAttribute('aria-live', 'polite');
+  if (entity) status.innerHTML = walletLoginStatusHtml(login || { unavailable: true });
+  help.append(text, certificateHelp, templateButton, status);
+  $('#modal-fields').append(help);
+
+  const fillTemplate = () => {
+    const provider = findProvider(form.elements.namedItem('providerCode').value);
+    if (!provider) return;
+    json.dataset.walletJsonUnchanged = 'false';
+    json.value = typeof provider.templateJson === 'string' ? provider.templateJson : JSON.stringify(provider.templateJson || {}, null, 2);
+    json.focus();
+  };
+  templateButton.addEventListener('click', fillTemplate);
+
+  const syncAvailability = () => {
+    const isWallet = Number(kind.value) === 0;
+    const provider = findProvider(form.elements.namedItem('providerCode').value);
+    const supported = isWallet && Boolean(provider);
+    json.disabled = !supported;
+    enabled.disabled = !supported || (entity && (!login || login.unavailable));
+    templateButton.disabled = !supported;
+    json.closest('label')?.classList.toggle('hidden', !isWallet);
+    enabled.closest('label')?.classList.toggle('hidden', !isWallet);
+    help.classList.toggle('hidden', !isWallet);
+    certificateHelp.classList.toggle('hidden', !isWallet || String(provider?.code).toLowerCase() !== 'jaib');
+    json.placeholder = supported && entity ? 'اتركه فارغاً للاحتفاظ ببيانات الدخول المحفوظة' : '';
+    if (isWallet && !providers.length) {
+      status.textContent = 'تعذر تحميل قائمة المحافظ. يمكنك تعديل البيانات العامة والمحاولة مجدداً لإعداد تسجيل الدخول.';
+    } else if (isWallet && !supported) {
+      status.textContent = originalProvider
+        ? 'اختر محفظة مدعومة من القائمة لتجهيز تسجيل الدخول، أو احتفظ بالمزود الحالي لتعديل البيانات العامة.'
+        : 'اختر المحفظة من القائمة.';
+    } else if (entity) status.innerHTML = walletLoginStatusHtml(login || { unavailable: true });
+    else status.textContent = 'يبدأ تسجيل الدخول بعد حفظ الإعدادات وتفعيل الخيار.';
+  };
+
+  const replaceProviderControl = () => {
+    const previous = form.elements.namedItem('providerCode');
+    const isWallet = Number(kind.value) === 0;
+    if (previous.tagName === 'SELECT') rememberedProvider = previous.value;
+    else if (previous.dataset.walletProvider !== 'true') manualProvider = previous.value;
+    let control;
+    if (isWallet && providers.length) {
+      control = document.createElement('select');
+      const choices = [['', 'اختر المحفظة'], ...providers.map(provider => [String(provider.code), provider.nameAr || provider.code])];
+      if (originalProvider && !findProvider(originalProvider)) choices.push([originalProvider, `${originalProvider} (المزود الحالي)`]);
+      for (const [value, label] of choices) {
+        const option = document.createElement('option'); option.value = value; option.textContent = label; control.append(option);
+      }
+      control.value = findProvider(rememberedProvider)?.code || rememberedProvider;
+      control.addEventListener('change', () => {
+        rememberedProvider = control.value;
+        json.value = '';
+        json.dataset.walletJsonUnchanged = 'false';
+        if (findProvider(control.value)) {
+          fillTemplate();
+          if (!entity || !login?.hasCredentials) enabled.checked = true;
+        }
+        syncAvailability();
+      });
+    } else {
+      control = document.createElement('input'); control.type = 'text';
+      control.value = isWallet ? rememberedProvider : manualProvider;
+      control.dataset.walletProvider = String(isWallet);
+      control.addEventListener('input', syncAvailability);
+    }
+    control.name = 'providerCode'; control.required = true;
+    previous.replaceWith(control);
+    syncAvailability();
+  };
+  // Saved credentials stay in this editor only and are cleared when it closes.
+  kind.addEventListener('change', () => {
+    json.value = '';
+    json.dataset.walletJsonUnchanged = 'false';
+    replaceProviderControl();
+  });
+  replaceProviderControl();
+}
+
+function prepareWalletLoginSubmission(form, data) {
+  const json = form.elements.namedItem('providerOptionsJson');
+  const enabled = form.elements.namedItem('providerLoginEnabled');
+  if (Number(data.kind) !== 0 || json.disabled) {
+    delete data.providerOptionsJson;
+    delete data.providerLoginEnabled;
+    return;
+  }
+  if (!json.value.trim() || json.dataset.walletJsonUnchanged === 'true') delete data.providerOptionsJson;
+  else {
+    let options;
+    try { options = JSON.parse(json.value); }
+    catch { throw new Error('صيغة JSON غير صحيحة. تحقق من علامات الاقتباس والفواصل، واستخدم / أو \\\\ في مسار الشهادة.'); }
+    if (!options || typeof options !== 'object' || Array.isArray(options))
+      throw new Error('بيانات دخول المحفظة يجب أن تكون كائن JSON يحتوي أسماء الحقول وقيمها.');
+    data.providerOptionsJson = json.value.trim();
+  }
+  if (enabled.disabled) delete data.providerLoginEnabled;
+}
+
 async function openForm(name, entity = null) {
   const config = formConfigs[name];
   if (!config) throw new Error('نموذج الإدارة غير متاح.');
+  const openGeneration = ++formOpenGeneration;
   const editing = entity !== null;
   let fields = config.fields.map(field => [...field]);
+  let walletCatalog = null;
+  let walletLogin = null;
+  let walletConfiguration = null;
+  let walletConfigurationError = '';
+  if (name === 'paymentMethod') {
+    const results = await Promise.allSettled([
+      walletAdminRequest('/api/admin/wallet-providers'),
+      editing ? walletAdminRequest(`/api/admin/payment-methods/${Number(entity.id)}/wallet-login`) : Promise.resolve(null),
+      editing && Number(entity.kind) === 0
+        ? walletAdminRequest(`/api/admin/payment-methods/${Number(entity.id)}/wallet-login/configuration`)
+        : Promise.resolve(null)
+    ]);
+    if (openGeneration !== formOpenGeneration) return;
+    if (results[0].status === 'fulfilled') walletCatalog = results[0].value;
+    if (results[1].status === 'fulfilled') walletLogin = results[1].value;
+    if (results[2].status === 'fulfilled') {
+      walletConfiguration = results[2].value;
+      if (walletConfiguration && String(walletConfiguration.providerCode || '').toLowerCase() !== String(entity.providerCode || '').toLowerCase()) {
+        walletConfiguration = null;
+        walletConfigurationError = 'تغيّر مزود المحفظة. حدّث قائمة طرق الدفع وأعد فتح التعديل.';
+      }
+    } else walletConfigurationError = results[2].reason?.message || 'تعذر تحميل بيانات الدخول المحفوظة.';
+    fields.push(['providerOptionsJson', 'إعدادات تسجيل الدخول JSON', 'textarea'], ['providerLoginEnabled', 'تسجيل الدخول تلقائياً', 'checkbox']);
+  }
   if (name === 'ride') {
     try {
       const result = await execute('UserModel', 'list', {});
@@ -2293,6 +2612,7 @@ async function openForm(name, entity = null) {
   if (editing && name === 'user') {
     fields = fields.map(field => field[0] === 'password' ? [field[0], 'كلمة المرور الجديدة (اختيارية)', field[2], false, '', field[5]] : field);
   }
+  if (openGeneration !== formOpenGeneration) return;
   activeForm = {
     ...config,
     name,
@@ -2304,7 +2624,7 @@ async function openForm(name, entity = null) {
   };
   $('#modal-title').textContent = editing ? `تعديل ${formEntityLabels[name] || config.title}` : config.title;
   $('#modal-subtitle').textContent = editing
-    ? 'عدّل البيانات ثم احفظ التغييرات. يبقى الحذف محمياً عند وجود سجلات مرتبطة.'
+    ? name === 'paymentMethod' ? 'عدّل البيانات العامة أو بيانات JSON المحفوظة ثم احفظ التغييرات.' : 'عدّل البيانات ثم احفظ التغييرات. يبقى الحذف محمياً عند وجود سجلات مرتبطة.'
     : config.subtitle;
   $('#modal-submit').textContent = name === 'notificationCampaign' ? 'إرسال الإشعار' : 'حفظ';
   $('#modal-fields').innerHTML = fields.map(buildField).join('');
@@ -2327,6 +2647,7 @@ async function openForm(name, entity = null) {
   }));
   const form = $('#entity-form');
   populateFormValues(form, entity, fields);
+  if (name === 'paymentMethod') configureWalletLoginForm(form, entity, walletCatalog, walletLogin, walletConfiguration, walletConfigurationError);
   if (editing && name === 'driver') {
     const userSelect = $('#modal-fields [name="userId"]');
     if (userSelect) {
@@ -2378,6 +2699,7 @@ async function submitEntityForm(event) {
   try {
     const form = event.currentTarget;
     const data = readForm(form, activeForm.fields);
+    if (activeForm.name === 'paymentMethod') prepareWalletLoginSubmission(form, data);
     if (activeForm.editing) data.id = activeForm.editId;
     if (activeForm.name === 'notificationCampaign' && activeForm.sourceCampaignId)
       data.sourceCampaignId = activeForm.sourceCampaignId;
@@ -2396,6 +2718,7 @@ async function submitEntityForm(event) {
       data.pricingQuoteToken = quote.data.pricingQuoteToken;
     }
     const result = await execute(activeForm.model, activeForm.operation, data, { confirmed: true });
+    if (activeForm.name === 'paymentMethod') form.elements.namedItem('providerOptionsJson').value = '';
     resultBox.className = 'inline-result success';
     const imageUrl = result.data?.imageUrl || result.data?.photoUrl;
     if (activeForm.name === 'notificationCampaign' && result.data?.recipientCount != null) {
@@ -2533,6 +2856,13 @@ function initializePageScrollJump() {
 }
 
 function bindEvents() {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopWalletLoginRefresh();
+    else void refreshWalletLoginStates();
+  });
+  window.addEventListener('online', () => { void refreshWalletLoginStates(); });
+  window.addEventListener('pagehide', stopWalletLoginRefresh);
+  window.addEventListener('pageshow', () => { void refreshWalletLoginStates(); });
   bindActionTooltips();
   initializePageScrollJump();
   initializeFinancialReportDates();
@@ -2564,6 +2894,11 @@ function bindEvents() {
   $('#menu-button').addEventListener('click', () => { $('#sidebar').classList.add('open'); $('#sidebar-backdrop').classList.add('open'); });
   $('#sidebar-backdrop').addEventListener('click', closeSidebar);
   $('#entity-form').addEventListener('submit', submitEntityForm);
+  $('#form-modal').addEventListener('close', () => {
+    formOpenGeneration++;
+    const walletJson = $('#entity-form').elements.namedItem('providerOptionsJson');
+    if (walletJson) walletJson.value = '';
+  });
   $('#ride-filter').addEventListener('change', loadRides);
   $('#cancellation-filter').addEventListener('change', () => loadCancellations().catch(error => toast(error.message, true)));
   $('#cancellations-refresh').addEventListener('click', () => loadCancellations().catch(error => toast(error.message, true)));
@@ -2728,6 +3063,7 @@ function bindEvents() {
 }
 
 window.addEventListener('beforeunload', () => {
+  stopWalletLoginRefresh();
   clearInterval(safetyMapTimer);
   for (const url of safetyAudioUrls.values()) URL.revokeObjectURL(url);
 });

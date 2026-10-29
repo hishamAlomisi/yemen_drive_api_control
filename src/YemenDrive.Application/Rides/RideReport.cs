@@ -4,6 +4,7 @@ using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
 using YemenDrive.Services.Reports;
 using YemenDrive.Shared.Security;
+using YemenDrive.Application.Payments;
 
 namespace YemenDrive.Application.Rides;
 
@@ -99,9 +100,10 @@ public sealed class RideReport(
             .Where(x => rideIds.Contains(x.RideId))
             .OrderByDescending(x => x.CreatedAtUtc)
             .ToListAsync(cancellationToken);
-        var paidRideIds = await dbContext.PaymentTransactions.AsNoTracking()
-            .Where(x => x.RideId.HasValue && rideIds.Contains(x.RideId.Value) && x.Status == PaymentStatus.Paid)
-            .Select(x => x.RideId!.Value).Distinct().ToListAsync(cancellationToken);
+        var paidMethods = await RidePaidMethod.LoadAsync(dbContext, rideIds, cancellationToken);
+        var pendingWalletRideIds = await dbContext.PaymentWalletOperations.AsNoTracking()
+            .Where(x => rideIds.Contains(x.RideId) && x.IsOpen && x.Status != "Succeeded")
+            .Select(x => x.RideId).Distinct().ToListAsync(cancellationToken);
 
         return rides.Select(x =>
         {
@@ -122,6 +124,7 @@ public sealed class RideReport(
                 ? (double?)null
                 : HaversineMeters(driverLocation.Latitude, driverLocation.Longitude, x.PickupLatitude, x.PickupLongitude);
             var cashRequest = cashRequests.FirstOrDefault(item => item.RideId == x.Id);
+            paidMethods.TryGetValue(x.Id, out var paidMethod);
             adminLiveLocations.TryGetValue(x.DriverId ?? 0, out var adminLocation);
 
             return new
@@ -155,7 +158,12 @@ public sealed class RideReport(
                 x.QuotedPrice, x.MinCustomerPrice, x.MaxCustomerPrice, x.WaitingFee,
                 x.RouteVersion, x.RouteChangeFee, x.RouteChangeFees, x.RouteCompletedFare, x.RouteSegmentStartedAtUtc,
                 x.WaitingFreeMinutes, x.WaitingPricePerMinute, x.WaitingMaxFee,
-                x.CustomerPaymentEnabled, paymentCompleted = paidRideIds.Contains(x.Id),
+                x.CustomerPaymentEnabled, paymentCompleted = paidMethod is not null,
+                paymentMethodNameAr = paidMethod?.PaymentMethodNameAr,
+                paymentProvider = paidMethod?.PaymentProvider,
+                x.PaymentMethodCode,
+                paymentRequiredBeforeStart = RidePaymentPolicy.RequiresBeforeStart(x),
+                walletPaymentPending = pendingWalletRideIds.Contains(x.Id),
                 driverOfferAmount = offer?.Amount,
                 driverOfferExpiresAtUtc = offer?.ExpiresAtUtc,
                 driverOfferStatus = offer?.Status,

@@ -214,6 +214,8 @@ public sealed class Ride : Entity
     public decimal? DriverShare { get; set; }
     public decimal? PlatformShare { get; set; }
     public bool CustomerPaymentEnabled { get; set; }
+    public string PaymentMethodCode { get; set; } = "cash";
+    public bool PaymentRequiredBeforeStart { get; set; }
     public string? RoutePolyline { get; set; }
     public DateTime? StartedAtUtc { get; set; }
     public DateTime? CompletedAtUtc { get; set; }

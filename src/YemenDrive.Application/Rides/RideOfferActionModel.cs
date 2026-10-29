@@ -7,6 +7,7 @@ using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
 using YemenDrive.Application.Pricing;
+using YemenDrive.Application.Payments;
 
 namespace YemenDrive.Application.Rides;
 
@@ -27,6 +28,7 @@ public sealed class RideOfferAction(
     {
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         var offer = await FindOfferAsync(model, token);
+        await RidePaymentGuard.LockAsync(db, offer.RideId, token);
         var ride = await db.Rides.Include(x => x.Offers)
             .SingleOrDefaultAsync(x => x.Id == offer.RideId, token)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
@@ -49,6 +51,7 @@ public sealed class RideOfferAction(
         ride.DriverId = offer.DriverId;
         await RidePricingPolicy.AcceptFareAsync(db, ride, offer.Amount, token);
         ride.Status = RideStatus.DriverAssigned;
+        RidePaymentPolicy.OnOfferAccepted(ride);
         ride.UpdatedAtUtc = DateTime.UtcNow;
         offer.UpdatedAtUtc = DateTime.UtcNow;
         db.Notifications.Add(new Notification
@@ -56,7 +59,9 @@ public sealed class RideOfferAction(
             UserId = offer.DriverId,
             Type = NotificationType.RideStatus,
             Title = "تم قبول عرضك",
-            Body = "تم تعيينك لهذه الرحلة. يمكنك التوجه إلى العميل.",
+            Body = ride.PaymentRequiredBeforeStart
+                ? "تم تعيينك لهذه الرحلة. يمكنك التوجه إلى العميل؛ يجب إتمام الدفع أو التحويل إلى النقد قبل بدء الرحلة."
+                : "تم تعيينك لهذه الرحلة. يمكنك التوجه إلى العميل.",
             DataJson = $"{{\"action\":\"open_active_ride\",\"rideId\":{ride.Id},\"status\":\"DriverAssigned\"}}"
         });
         await db.SaveChangesAsync(token);
@@ -70,7 +75,8 @@ public sealed class RideOfferAction(
             await realtimePublisher.PublishRideStatusUpdatedAsync(
                 RideRealtimeEventFactory.Status(ride), token);
         }
-        return new { offerId = offer.Id, rideId = ride.Id, driverId = ride.DriverId, agreedPrice = ride.CustomerPrice, rideStatus = ride.Status };
+        return new { offerId = offer.Id, rideId = ride.Id, driverId = ride.DriverId, agreedPrice = ride.CustomerPrice,
+            rideStatus = ride.Status, ride.PaymentMethodCode, ride.PaymentRequiredBeforeStart };
     }
 
     protected override async Task<object?> UpdateAsync(RideOfferActionModel model, CancellationToken token) =>

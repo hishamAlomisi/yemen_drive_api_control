@@ -1,5 +1,6 @@
 using System.Data;
 using Microsoft.EntityFrameworkCore;
+using YemenDrive.Application.Payments;
 using YemenDrive.Application.Maps;
 using YemenDrive.Application.Pricing;
 using YemenDrive.Database;
@@ -26,6 +27,7 @@ public sealed class RideRouteChangeService(YemenDriveDbContext db, DatabaseConfi
         if (!Operations.Contains(operation)) throw new ServiceException("operation_not_supported", "عملية تغيير المسار غير صحيحة.");
         var userId = user.UserId ?? throw new ServiceException("authentication_required", "سجّل الدخول لإدارة مسار الرحلة.");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        if (model.RideId is int rideId) await RidePaymentGuard.LockAsync(db, rideId, ct);
         var ride = await db.Rides.SingleOrDefaultAsync(x => x.Id == model.RideId, ct)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
         var admin = operation == "get" && await db.Users.AnyAsync(x => x.Id == userId && x.Role == UserRole.Admin && x.IsActive, ct);
@@ -176,7 +178,8 @@ public sealed class RideRouteChangeService(YemenDriveDbContext db, DatabaseConfi
             throw new ServiceException("route_pricing_unavailable", "هذه الرحلة سابقة لتحديث تسعير تغيير المسار؛ لا يمكن إعادة تسعيرها دون سياسة أصلية محفوظة.");
         if (await db.RideWaitingSessions.AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct))
             throw new ServiceException("waiting_must_end", "استأنف الرحلة وأغلق الانتظار قبل تغيير المسار.");
-        if (await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && (x.Status == PaymentStatus.Pending || x.Status == PaymentStatus.Authorized || x.Status == PaymentStatus.Paid), ct) ||
+        if (await db.PaymentWalletOperations.AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct) ||
+            await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && (x.Status == PaymentStatus.Pending || x.Status == PaymentStatus.Authorized || x.Status == PaymentStatus.Paid), ct) ||
             await db.CashPaymentRequests.AnyAsync(x => x.RideId == ride.Id && (x.Status == CashPaymentRequestStatus.Pending || x.Status == CashPaymentRequestStatus.DriverConfirmed), ct) ||
             await db.CashCollectionApprovals.AnyAsync(x => x.RideId == ride.Id && (x.Status == CashCollectionApprovalStatus.Pending || x.Status == CashCollectionApprovalStatus.Approved), ct))
             throw new ServiceException("payment_already_open", "لا يمكن تغيير المسار بعد فتح طلب دفع أو تحصيل.");
@@ -203,7 +206,8 @@ public sealed class RideRouteChangeService(YemenDriveDbContext db, DatabaseConfi
             ride.CustomerPaymentEnabled ? "بدأت مرحلة الدفع؛ تغيير الوجهة غير متاح." : null;
         if (unavailable == null && await db.RideWaitingSessions.AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct))
             unavailable = "استأنف الرحلة وأغلق الانتظار قبل تغيير الوجهة.";
-        if (unavailable == null && (await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && (x.Status == PaymentStatus.Pending || x.Status == PaymentStatus.Authorized || x.Status == PaymentStatus.Paid), ct) ||
+        if (unavailable == null && (await db.PaymentWalletOperations.AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct) ||
+            await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && (x.Status == PaymentStatus.Pending || x.Status == PaymentStatus.Authorized || x.Status == PaymentStatus.Paid), ct) ||
             await db.CashPaymentRequests.AnyAsync(x => x.RideId == ride.Id && (x.Status == CashPaymentRequestStatus.Pending || x.Status == CashPaymentRequestStatus.DriverConfirmed), ct) ||
             await db.CashCollectionApprovals.AnyAsync(x => x.RideId == ride.Id && (x.Status == CashCollectionApprovalStatus.Pending || x.Status == CashCollectionApprovalStatus.Approved), ct)))
             unavailable = "يوجد طلب دفع أو تحصيل لهذه الرحلة؛ تغيير الوجهة غير متاح.";

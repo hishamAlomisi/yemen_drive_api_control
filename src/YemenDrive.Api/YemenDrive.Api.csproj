@@ -12,6 +12,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Reference Include="lib\eqsWallets\eqsWallets*.dll">
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="run-api-with-console-otp.bat" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 

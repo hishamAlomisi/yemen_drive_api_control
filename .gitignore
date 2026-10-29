@@ -2,6 +2,7 @@
 **/obj/
 *.user
 src/YemenDrive.Api/data/database.settings.json
+src/YemenDrive.Api/security/wallet-keys/
 
 # Local build and investigation outputs.
 work/

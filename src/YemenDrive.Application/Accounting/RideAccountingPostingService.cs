@@ -96,6 +96,72 @@ public sealed class RideAccountingPostingService(
             CreatedByUserId: actorUserId), token);
     }
 
+    public async Task ValidateExternalWalletAccountsAsync(Ride ride, int paymentMethodId, CancellationToken token)
+    {
+        var accounts = await ResolveAsync(ride, token);
+        var ids = new[] { accounts.DriverCurrentAccountId, accounts.ServiceFeeAccountId,
+            accounts.ServiceCollectionAccountId, accounts.DriverCommissionAccountId };
+        if (await db.LedgerAccounts.AnyAsync(x => ids.Contains(x.Id) && x.Currency != "YER", token))
+            throw new ServiceException("ledger_currency_mismatch", "عملة أحد حسابات الرحلة ليست الريال اليمني.");
+        var partyId = await PartyIdAsync(FinancialPartyType.ExternalProvider, paymentMethodId, token);
+        if (!await db.LedgerAccounts.AnyAsync(x => x.FinancialPartyId == partyId &&
+            x.Purpose == LedgerAccountPurpose.ExternalWallet && x.IsActive && x.IsPosting && x.Currency == "YER", token))
+            throw new ServiceException("provider_ledger_not_found", "حساب تسوية طريقة الدفع غير مجهز بالريال اليمني.");
+        _ = await DriverWalletAccountAsync(ride, token);
+    }
+
+    public async Task PostExternalWalletPaymentAsync(
+        Ride ride,
+        PaymentTransaction payment,
+        int paymentMethodId,
+        int actorUserId,
+        CancellationToken token)
+    {
+        var accounts = await ResolveAsync(ride, token);
+        var providerPartyId = await PartyIdAsync(FinancialPartyType.ExternalProvider, paymentMethodId, token);
+        var providerAccountId = await db.LedgerAccounts.AsNoTracking()
+            .Where(x => x.FinancialPartyId == providerPartyId && x.Purpose == LedgerAccountPurpose.ExternalWallet &&
+                x.IsActive && x.IsPosting && x.Currency == payment.Currency)
+            .Select(x => (int?)x.Id).SingleOrDefaultAsync(token)
+            ?? throw new ServiceException("provider_ledger_not_found", "حساب تسوية طريقة الدفع غير مجهز.");
+        var fare = Fare(ride);
+        var totalDue = ride.TotalAmount ?? fare + ride.ServiceFee;
+        if (payment.Amount != totalDue)
+            throw new ServiceException("accounting_payment_amount_mismatch", "مبلغ المزود لا يطابق إجمالي الرحلة.");
+        var driverWalletAccount = await DriverWalletAccountAsync(ride, token);
+        var driverNet = ride.DriverShare ?? fare - ride.DriverCommissionAmount;
+
+        var lines = new List<AccountingPostingLine>();
+        AddDebit(lines, providerAccountId, totalDue, providerPartyId, ride.CustomerId, ride.Id,
+            "تحصيل إجمالي الرحلة في حساب طريقة الدفع الخارجية");
+        AddCredit(lines, accounts.ServiceFeeAccountId, ride.ServiceFee, accounts.ServiceKindPartyId, null, ride.Id,
+            "رسوم الخدمة المثبتة للرحلة");
+        AddCredit(lines, accounts.ServiceCollectionAccountId, fare, accounts.ServiceKindPartyId, null, ride.Id,
+            "تحصيل أجرة الخدمة المثبتة");
+        // The provider holds the collection; the driver has no cash receivable.
+        // Recognize the actual driver entitlement and reconcile the wallet liability to its credit.
+        AddDebit(lines, accounts.DriverCommissionAccountId, driverNet, null, ride.DriverId, ride.Id,
+            "إثبات صافي مستحق السائق من الرحلة المدفوعة إلكترونياً");
+        AddCredit(lines, driverWalletAccount.Id, driverNet, driverWalletAccount.FinancialPartyId, ride.DriverId, ride.Id,
+            "إضافة صافي مستحق السائق إلى التزام محفظته");
+        await posting.PostAsync(new AccountingPostingRequest(
+            JournalEntryType.RideWalletPayment, $"EXTERNAL-RIDE-{ride.Id}",
+            $"دفع الرحلة #{ride.Id} عبر {payment.Provider}", payment.Currency, lines,
+            SourceType: "RideExternalWalletPayment", SourceId: $"ride:{ride.Id}",
+            IdempotencyKey: payment.IdempotencyKey, CreatedByUserId: actorUserId), token);
+    }
+
+    private async Task<DbLedgerAccount> DriverWalletAccountAsync(Ride ride, CancellationToken token)
+    {
+        var walletId = await db.Wallets.Where(x => x.UserId == ride.DriverId)
+            .Select(x => (int?)x.Id).SingleOrDefaultAsync(token)
+            ?? throw new ServiceException("driver_wallet_not_found", "محفظة السائق غير موجودة.");
+        var partyId = await PartyIdAsync(FinancialPartyType.Wallet, walletId, token);
+        return await db.LedgerAccounts.AsNoTracking().SingleOrDefaultAsync(x => x.FinancialPartyId == partyId &&
+            x.Purpose == LedgerAccountPurpose.CustomerWallet && x.IsActive && x.IsPosting && x.Currency == "YER", token)
+            ?? throw new ServiceException("driver_wallet_ledger_not_found", "حساب محفظة السائق المحاسبي غير مجهز.");
+    }
+
     public async Task PostCancellationAsync(
         Ride ride,
         PaymentTransaction originalPayment,

@@ -24,4 +24,5 @@ public sealed record RideModel(
     bool ActiveOnly = false,
     bool? MoreThanFourPassengers = null,
     string? PassengerNotes = null,
-    Guid? PricingQuoteToken = null);
+    Guid? PricingQuoteToken = null,
+    string? PaymentMethodCode = null);

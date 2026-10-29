@@ -143,6 +143,8 @@ public sealed class SignalRRideRealtimePublisher(
             rideStatus = (int)rideStatus.Status,
             statusName = rideStatus.Status.ToString(),
             rideStatus.CustomerPaymentEnabled,
+            rideStatus.PaymentMethodCode,
+            rideStatus.PaymentRequiredBeforeStart,
             rideStatus.UpdatedAtUtc
         };
         await TrySendAsync(

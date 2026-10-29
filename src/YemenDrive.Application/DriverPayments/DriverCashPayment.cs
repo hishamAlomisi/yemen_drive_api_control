@@ -5,6 +5,7 @@ using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
 using YemenDrive.Application.Accounting;
 using YemenDrive.Application.Rides;
+using YemenDrive.Application.Payments;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -29,14 +30,19 @@ public sealed class DriverCashPayment(
 
         var idempotencyKey = NormalizeIdempotencyKey(model.IdempotencyKey);
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        await RidePaymentGuard.LockAsync(db, model.RideId.Value, token);
         var ride = await db.Rides.SingleOrDefaultAsync(x => x.Id == model.RideId.Value, token)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
+
+        if (ride.DriverId != driverId)
+            throw new ServiceException("ride_access_denied", "هذه الرحلة ليست مسندة إلى السائق الحالي.");
 
         var cashReference = $"cash:ride:{ride.Id}:driver:{driverId}";
         if (idempotencyKey is not null)
         {
             var existing = await db.PaymentTransactions.AsNoTracking()
-                .SingleOrDefaultAsync(x => x.UserId == ride.CustomerId && x.IdempotencyKey == idempotencyKey, token);
+                .SingleOrDefaultAsync(x => x.UserId == ride.CustomerId && x.RideId == ride.Id &&
+                    x.Provider == "Cash" && x.IdempotencyKey == idempotencyKey, token);
             if (existing is not null)
                 return await ToExistingResultAsync(existing, token);
         }
@@ -48,6 +54,7 @@ public sealed class DriverCashPayment(
 
         if (ride.DriverId != driverId)
             throw new ServiceException("ride_access_denied", "هذه الرحلة ليست مسندة إلى السائق الحالي.");
+        await RidePaymentGuard.EnsureAvailableAsync(db, ride.Id, token);
         CashPaymentRequestEntity? confirmedCustomerCashRequest = null;
         if (ride.Status != RideStatus.InProgress)
         {

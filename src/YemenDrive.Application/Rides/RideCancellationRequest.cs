@@ -1,6 +1,7 @@
 using System.Data;
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Application.Accounting;
+using YemenDrive.Application.Payments;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
@@ -33,10 +34,12 @@ public sealed class RideCancellationRequest(
         if (reason.Length > 1000) throw new ServiceException("invalid_cancellation_reason", "سبب الإلغاء أطول من الحد المسموح.");
 
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        await RidePaymentGuard.LockAsync(db, model.RideId.Value, token);
         var ride = await db.Rides.SingleOrDefaultAsync(x => x.Id == model.RideId, token)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
         if (ride.CustomerId != customerId && ride.DriverId != customerId)
             throw new ServiceException("ride_access_denied", "لا تملك صلاحية إلغاء هذه الرحلة.");
+        await EnsureWalletPaymentSettledAsync(ride.Id, token);
         if (ride.Status == RideStatus.Completed)
             throw new ServiceException("completed_ride_not_cancellable", "لا يمكن إلغاء رحلة مكتملة أو طلب استرداد لها.");
         if (ride.Status == RideStatus.Cancelled)
@@ -157,12 +160,14 @@ public sealed class RideCancellationRequest(
         if (model.Id is null) throw new ServiceException("id_required", "معرف طلب الإلغاء مطلوب.");
         var driverId = currentUser.UserId ?? throw new ServiceException("authentication_required", "يجب تسجيل الدخول كسائق.");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        await LockRequestRideAsync(model.Id, token);
         var request = await db.RideCancellationRequests.Include(x => x.Ride).SingleOrDefaultAsync(x => x.Id == model.Id, token)
             ?? throw new ServiceException("cancellation_request_not_found", "طلب الإلغاء غير موجود.");
         if (request.DriverId != driverId) throw new ServiceException("cancellation_driver_access_denied", "هذا الطلب ليس موجهاً للسائق الحالي.");
         if (IsDriverRequest(request))
             throw new ServiceException("cancellation_customer_access_denied", "قرار طلب الإلغاء الذي قدمه السائق متاح للراكب فقط.");
         if (request.Status != RideCancellationStatus.DriverReviewPending) return ToResult(request);
+        await EnsureWalletPaymentSettledAsync(request.RideId, token);
         var previousRideStatus = request.Ride.Status;
         request.DriverDecision = decision;
         request.DriverDecidedAtUtc = DateTime.UtcNow;
@@ -223,11 +228,13 @@ public sealed class RideCancellationRequest(
         var adminId = currentUser.UserId ?? throw new ServiceException("authentication_required", "يجب تسجيل الدخول كمدير.");
         if (!await IsAdminAsync(adminId, token)) throw new ServiceException("admin_required", "هذه العملية متاحة للإدارة فقط.");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        await LockRequestRideAsync(model.Id, token);
         var request = await db.RideCancellationRequests.Include(x => x.Ride).SingleOrDefaultAsync(x => x.Id == model.Id, token)
             ?? throw new ServiceException("cancellation_request_not_found", "طلب الإلغاء غير موجود.");
         var customerApprovedRefund = request.Status == RideCancellationStatus.CustomerApproved && request.AdminDecidedAtUtc == null &&
             await db.PaymentTransactions.AnyAsync(x => x.RideId == request.RideId && x.Status == PaymentStatus.Paid, token);
         if (request.Status != RideCancellationStatus.AdminReviewPending && !customerApprovedRefund) return ToResult(request);
+        await EnsureWalletPaymentSettledAsync(request.RideId, token);
         var previousRideStatus = request.Ride.Status;
         if (!customerApprovedRefund) request.Status = approve ? RideCancellationStatus.AdminApproved : RideCancellationStatus.AdminRejected;
         request.AdminUserId = adminId;
@@ -434,25 +441,31 @@ public sealed class RideCancellationRequest(
         var pending = ride.Status == RideStatus.InProgress;
         if (!pending && ride.Status is not (RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.DriverArrived))
             throw new ServiceException("ride_not_cancellable", "لا يمكن للسائق طلب الإلغاء في هذه المرحلة.");
+        var paidBeforeStart = !pending && await db.PaymentTransactions.AnyAsync(
+            x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid, token);
         var request = new YemenDrive.Database.Entities.RideCancellationRequest
         {
             RideId = ride.Id, Ride = ride, CustomerId = ride.CustomerId, DriverId = ride.DriverId,
             RideStatusAtRequest = ride.Status, Reason = reason,
-            Status = pending ? RideCancellationStatus.CustomerReviewPending : RideCancellationStatus.DriverCancelled
+            Status = pending ? RideCancellationStatus.CustomerReviewPending :
+                paidBeforeStart ? RideCancellationStatus.AdminReviewPending : RideCancellationStatus.DriverCancelled
         };
         db.RideCancellationRequests.Add(request);
         if (!pending)
         {
-            ride.Status = RideStatus.Cancelled;
-            await RideDriverAvailability.ReleaseAsync(db, ride, token);
+            ride.Status = paidBeforeStart ? RideStatus.CancellationPending : RideStatus.Cancelled;
+            if (!paidBeforeStart) await RideDriverAvailability.ReleaseAsync(db, ride, token);
         }
         ride.UpdatedAtUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(token);
+        if (paidBeforeStart)
+            await NotifyAdminsAsync(ride, request, "طلب السائق إلغاء رحلة مدفوعة قبل بدئها؛ يلزم قرار مالي موثق بشأن الاسترداد.", token);
         db.Notifications.Add(new Notification
         {
             UserId = ride.CustomerId, Type = NotificationType.RideStatus,
-            Title = pending ? "طلب السائق إلغاء الرحلة" : "ألغى السائق الرحلة",
-            Body = pending ? "يرجى مراجعة سبب الإلغاء والموافقة أو الرفض. تستمر الرحلة إلى أن توافق." : "ألغى السائق الرحلة قبل بدءها.",
+            Title = pending ? "طلب السائق إلغاء الرحلة" : paidBeforeStart ? "طلب الإلغاء قيد مراجعة الإدارة" : "ألغى السائق الرحلة",
+            Body = pending ? "يرجى مراجعة سبب الإلغاء والموافقة أو الرفض. تستمر الرحلة إلى أن توافق." :
+                paidBeforeStart ? "طلب السائق الإلغاء. أُوقفت الرحلة وأُحيلت الدفعة المحصلة للإدارة لمراجعة الاسترداد." : "ألغى السائق الرحلة قبل بدءها.",
             DataJson = $"{{\"action\":\"{(pending ? "review_cancellation_request" : "open_active_ride")}\",\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}"
         });
         return request;
@@ -470,10 +483,12 @@ public sealed class RideCancellationRequest(
     private async Task<object?> CustomerDecideAsync(RideCancellationRequestModel model, bool approve, CancellationToken token)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        await LockRequestRideAsync(model.Id, token);
         var request = await db.RideCancellationRequests.Include(x => x.Ride).SingleAsync(x => x.Id == model.Id, token);
         if (currentUser.UserId != request.CustomerId)
             throw new ServiceException("cancellation_customer_access_denied", "الموافقة على طلب السائق متاحة لراكب الرحلة فقط.");
         if (request.Status != RideCancellationStatus.CustomerReviewPending) return ToResult(request);
+        await EnsureWalletPaymentSettledAsync(request.RideId, token);
         var ride = request.Ride;
         if (ride.Status != RideStatus.InProgress)
             throw new ServiceException("ride_not_cancellable", "لم تعد الرحلة جارية؛ لا يمكن تطبيق طلب الإلغاء القديم.");
@@ -503,6 +518,20 @@ public sealed class RideCancellationRequest(
         await transaction.CommitAsync(token);
         if (realtimePublisher != null) await realtimePublisher.PublishRideStatusUpdatedAsync(RideRealtimeEventFactory.Status(ride), token);
         return ToResult(request);
+    }
+
+    private async Task LockRequestRideAsync(int? requestId, CancellationToken token)
+    {
+        var rideId = await db.RideCancellationRequests.AsNoTracking()
+            .Where(x => x.Id == requestId).Select(x => (int?)x.RideId).SingleOrDefaultAsync(token)
+            ?? throw new ServiceException("cancellation_request_not_found", "طلب الإلغاء غير موجود.");
+        await RidePaymentGuard.LockAsync(db, rideId, token);
+    }
+
+    private async Task EnsureWalletPaymentSettledAsync(int rideId, CancellationToken token)
+    {
+        if (await db.PaymentWalletOperations.AnyAsync(x => x.RideId == rideId && x.IsOpen && x.Status != "Succeeded", token))
+            throw new ServiceException("wallet_payment_in_progress", "يجب إكمال عملية دفع المحفظة أو التحقق من نتيجتها قبل إلغاء الرحلة.");
     }
 
     private sealed record CancellationSettlementResult(

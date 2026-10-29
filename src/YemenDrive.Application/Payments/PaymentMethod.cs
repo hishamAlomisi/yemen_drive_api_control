@@ -15,7 +15,8 @@ public sealed class PaymentMethod(
     YemenDriveDbContext db,
     DatabaseConfigurationStore config,
     ICurrentUserContext currentUser,
-    FinancialAccountProvisioningService financialAccounts)
+    FinancialAccountProvisioningService financialAccounts,
+    IWalletLoginConfiguration? walletLogin = null)
     : OperationsService<PaymentMethodModel>(config)
 {
     protected override async Task<object?> AddAsync(PaymentMethodModel model, CancellationToken token)
@@ -26,6 +27,7 @@ public sealed class PaymentMethod(
             throw new ServiceException("payment_method_exists", "رمز طريقة الدفع مستخدم مسبقاً.");
         var entity = new YemenDrive.Database.Entities.PaymentMethod();
         Apply(entity, model);
+        await ConfigureWalletAsync(entity, model, token);
         db.PaymentMethods.Add(entity);
         await db.SaveChangesAsync(token);
         await financialAccounts.ProvisionPaymentMethodAsync(entity, token);
@@ -43,7 +45,8 @@ public sealed class PaymentMethod(
             throw new ServiceException("payment_method_exists", "رمز طريقة الدفع مستخدم مسبقاً.");
         var existingCode = entity.Code.Trim().ToUpperInvariant();
         var existingProviderCode = entity.ProviderCode.Trim().ToUpperInvariant();
-        var hasRecordedPayments = await db.PaymentTransactions.AnyAsync(
+        var hasRecordedPayments = await db.PaymentWalletOperations.AnyAsync(x => x.PaymentMethodId == entity.Id, token) ||
+            await db.PaymentTransactions.AnyAsync(
             x => x.Provider.ToUpper() == existingCode || x.Provider.ToUpper() == existingProviderCode,
             token);
         if (hasRecordedPayments &&
@@ -54,6 +57,7 @@ public sealed class PaymentMethod(
                 "لا يمكن تغيير رمز طريقة الدفع أو رمز مزودها بعد تسجيل حركات دفع مرتبطة بها.");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         Apply(entity, model);
+        await ConfigureWalletAsync(entity, model, token);
         entity.UpdatedAtUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(token);
         await financialAccounts.ProvisionPaymentMethodAsync(entity, token);
@@ -68,12 +72,21 @@ public sealed class PaymentMethod(
         var entity = await db.PaymentMethods.SingleOrDefaultAsync(x => x.Id == model.Id, token)
             ?? throw new ServiceException("payment_method_not_found", "طريقة الدفع غير موجودة.");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        if (await db.PaymentWalletOperations.AnyAsync(x => x.PaymentMethodId == entity.Id, token))
+            throw new ServiceException("payment_method_in_use", "لا يمكن حذف طريقة دفع مرتبطة بعمليات محافظ؛ يمكن تعطيلها.");
         await DeletionGuards.EnsurePaymentMethodCanBeDeletedAsync(db, entity.Code, entity.ProviderCode, token);
         await financialAccounts.RemovePaymentMethodAccountsAsync(entity, token);
         db.PaymentMethods.Remove(entity);
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
         return new { entity.Id };
+    }
+    private Task ConfigureWalletAsync(YemenDrive.Database.Entities.PaymentMethod entity, PaymentMethodModel model, CancellationToken token)
+    {
+        if (walletLogin is not null) return walletLogin.ConfigureAsync(db, entity, model, token);
+        if (!string.IsNullOrWhiteSpace(model.ProviderOptionsJson) || model.ProviderLoginEnabled == true)
+            throw new ServiceException("wallet_login_unavailable", "خدمة تسجيل دخول المحافظ غير مهيأة.");
+        return Task.CompletedTask;
     }
     private async Task RequireAdminAsync(CancellationToken token) { var id=currentUser.RequireUserId(); if (!await db.Users.AnyAsync(x=>x.Id==id&&x.Role==UserRole.Admin&&x.IsActive,token)) throw new ServiceException("admin_required","هذه العملية للإدارة فقط."); }
     private static void Validate(PaymentMethodModel m) { if (string.IsNullOrWhiteSpace(m.Code)||string.IsNullOrWhiteSpace(m.NameAr)||string.IsNullOrWhiteSpace(m.DescriptionAr)||string.IsNullOrWhiteSpace(m.ProviderCode)) throw new ServiceException("invalid_payment_method","الرمز والاسم والوصف ورمز المزود مطلوبة."); if (!m.IsAvailableForRidePayment&&!m.IsAvailableForWalletTopUp) throw new ServiceException("invalid_payment_method","اختر موضع ظهور واحداً على الأقل."); }

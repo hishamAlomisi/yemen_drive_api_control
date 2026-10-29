@@ -1,5 +1,6 @@
 using System.Data;
 using Microsoft.EntityFrameworkCore;
+using YemenDrive.Application.Payments;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
@@ -30,6 +31,7 @@ public sealed class RideWaiting(
     {
         var id = user.UserId ?? throw new ServiceException("authentication_required", "سجّل الدخول لإدارة الانتظار.");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        if (m.RideId is int rideId) await RidePaymentGuard.LockAsync(db, rideId, ct);
         var ride = await db.Rides.SingleOrDefaultAsync(x => x.Id == m.RideId, ct)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
         var participant = id == ride.CustomerId || id == ride.DriverId;
@@ -115,7 +117,8 @@ public sealed class RideWaiting(
             throw new ServiceException("waiting_not_available", "الانتظار متاح أثناء الرحلة وقبل فتح الدفع فقط.");
         if (ride.WaitingPricePerMinute <= 0 || ride.WaitingMaxFee <= ride.WaitingFee)
             throw new ServiceException("waiting_not_configured", "الانتظار المدفوع غير مفعّل لهذه الرحلة أو وصل إلى سقف الرسوم.");
-        if (await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && (x.Status == PaymentStatus.Pending || x.Status == PaymentStatus.Paid), ct) ||
+        if (await db.PaymentWalletOperations.AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct) ||
+            await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && (x.Status == PaymentStatus.Pending || x.Status == PaymentStatus.Paid), ct) ||
             await db.CashCollectionApprovals.AnyAsync(x => x.RideId == ride.Id && (x.Status == CashCollectionApprovalStatus.Pending || x.Status == CashCollectionApprovalStatus.Approved), ct))
             throw new ServiceException("payment_already_open", "لا يمكن إضافة انتظار بعد فتح طلب تحصيل.");
     }
@@ -137,6 +140,8 @@ public sealed class RideWaiting(
         var locationTime = await db.DriverLiveLocations.AsNoTracking().Where(x => x.DriverId == ride.DriverId).Select(x => (DateTime?)x.ObservedAtUtc).FirstOrDefaultAsync(ct);
         var activeFee = open is null ? 0 : RideWaitingCoordinator.FeeAt(open, now);
         var fare = ride.CustomerPrice ?? ride.ServerPrice ?? 0;
+        var walletPaymentOpen = await db.PaymentWalletOperations.AsNoTracking()
+            .AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct);
         return new
         {
             rideId = ride.Id, serverNowUtc = now, ride.Status,
@@ -145,7 +150,7 @@ public sealed class RideWaiting(
             baseFare = fare, ride.ServiceFee, totalAmount = fare + ride.ServiceFee + ride.WaitingFee + activeFee,
             connectionGraceSeconds = RideWaitingCoordinator.ConnectionGraceSeconds,
             connectionDeadlineUtc = locationTime?.AddSeconds(RideWaitingCoordinator.ConnectionGraceSeconds),
-            canRequest = ride.Status == RideStatus.InProgress && !ride.CustomerPaymentEnabled && open is null && ride.WaitingPricePerMinute > 0 && ride.WaitingFee < ride.WaitingMaxFee,
+            canRequest = ride.Status == RideStatus.InProgress && !ride.CustomerPaymentEnabled && !walletPaymentOpen && open is null && ride.WaitingPricePerMinute > 0 && ride.WaitingFee < ride.WaitingMaxFee,
             canDecide = open is { StartedAtUtc: null } && open.RequestedByUserId != userId,
             requestedByMe = open?.RequestedByUserId == userId,
             session = session is null ? null : new { session.Id, session.IsOpen, session.StartedAtUtc, session.EndedAtUtc, session.EndReason, session.FreeMinutes, session.PricePerMinute, session.MaxFee, session.Fee },

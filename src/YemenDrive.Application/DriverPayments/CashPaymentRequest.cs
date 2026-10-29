@@ -7,6 +7,7 @@ using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
 using YemenDrive.Application.Rides;
+using YemenDrive.Application.Payments;
 using CashPaymentRequestEntity = YemenDrive.Database.Entities.CashPaymentRequest;
 
 namespace YemenDrive.Application.DriverPayments;
@@ -25,6 +26,7 @@ public sealed class CashPaymentRequest(
         if (model.RideId is null) throw new ServiceException("ride_id_required", "معرف الرحلة مطلوب.");
         var key = NormalizeKey(model.IdempotencyKey);
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        await RidePaymentGuard.LockAsync(db, model.RideId.Value, token);
         if (key is not null)
         {
             var existing = await db.CashPaymentRequests.SingleOrDefaultAsync(x => x.CustomerId == customerId && x.IdempotencyKey == key, token);
@@ -35,6 +37,7 @@ public sealed class CashPaymentRequest(
         if (ride.CustomerId != customerId) throw new ServiceException("ride_access_denied", "هذه الرحلة لا تخص العميل الحالي.");
         if (ride.Status != RideStatus.Completed) throw new ServiceException("ride_not_completed", "لا يمكن طلب الدفع النقدي قبل إكمال الرحلة.");
         if (ride.DriverId is null) throw new ServiceException("driver_not_assigned", "السائق غير محدد لهذه الرحلة.");
+        await RidePaymentGuard.EnsureAvailableAsync(db, ride.Id, token);
         if (await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid, token))
             throw new ServiceException("ride_already_paid", "هذه الرحلة مسددة بالفعل.");
         await new RideWaitingCoordinator(db).EnsureSettledAsync(ride, token);
@@ -79,11 +82,16 @@ public sealed class CashPaymentRequest(
     {
         var driverId = currentUser.UserId ?? throw new ServiceException("authentication_required", "يجب تسجيل الدخول كسائق.");
         if (model.Id is null) throw new ServiceException("id_required", "معرف طلب الدفع مطلوب.");
+        var rideId = await db.CashPaymentRequests.AsNoTracking().Where(x => x.Id == model.Id && x.DriverId == driverId)
+            .Select(x => (int?)x.RideId).SingleOrDefaultAsync(token)
+            ?? throw new ServiceException("cash_payment_request_not_found", "طلب الدفع النقدي غير موجود.");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        await RidePaymentGuard.LockAsync(db, rideId, token);
         var request = await db.CashPaymentRequests.SingleOrDefaultAsync(x => x.Id == model.Id, token)
             ?? throw new ServiceException("cash_payment_request_not_found", "طلب الدفع النقدي غير موجود.");
         if (request.DriverId != driverId) throw new ServiceException("cash_payment_request_access_denied", "الطلب ليس موجهاً للسائق الحالي.");
         if (request.Status != CashPaymentRequestStatus.Pending) return ToResult(request);
+        await RidePaymentGuard.EnsureAvailableAsync(db, request.RideId, token);
         request.Status = accept ? CashPaymentRequestStatus.DriverConfirmed : CashPaymentRequestStatus.DriverRejected;
         request.DecidedAtUtc = DateTime.UtcNow;
         request.DecisionNote = string.IsNullOrWhiteSpace(model.Note) ? null : model.Note.Trim();

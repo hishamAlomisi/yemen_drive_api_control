@@ -356,6 +356,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); outlin
 .form-grid label { min-width: 0; color: #36434c; font-weight: 650; }
 .form-grid label input, .form-grid label select, .form-grid label textarea { margin-top: 7px; font-weight: 400; }
 .form-grid .full { grid-column: 1 / -1; }
+.wallet-login-json { min-height: 300px; font-family: Consolas, monospace; font-size: 13px; text-align: left; white-space: pre; }
+.wallet-login-help { padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); }
+.wallet-login-help p { margin: 0 0 10px; color: var(--muted); line-height: 1.7; }
+.wallet-login-form-status { margin-top: 10px; color: var(--muted); }
 .check-field { min-height: 42px; display: flex; align-items: center; gap: 9px; }
 .check-field input { width: 18px; height: 18px; margin: 0; accent-color: var(--primary); }
 .form-actions { margin-top: 16px; display: flex; justify-content: flex-end; }

@@ -4,6 +4,7 @@ using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
 using YemenDrive.Application.Rides;
+using YemenDrive.Application.Payments;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
@@ -36,11 +37,16 @@ public sealed class CashCollectionApproval(
     {
         if (model.Id is null) throw new ServiceException("id_required", "معرف طلب الموافقة مطلوب.");
         var customerId = currentUser.UserId ?? throw new ServiceException("authentication_required", "يجب تسجيل الدخول كعميل.");
+        var rideId = await db.CashCollectionApprovals.AsNoTracking().Where(x => x.Id == model.Id && x.CustomerId == customerId)
+            .Select(x => (int?)x.RideId).SingleOrDefaultAsync(token)
+            ?? throw new ServiceException("cash_approval_not_found", "طلب الموافقة غير موجود.");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        await RidePaymentGuard.LockAsync(db, rideId, token);
         var approval = await db.CashCollectionApprovals.SingleOrDefaultAsync(x => x.Id == model.Id, token)
             ?? throw new ServiceException("cash_approval_not_found", "طلب الموافقة غير موجود.");
         if (approval.CustomerId != customerId) throw new ServiceException("cash_approval_access_denied", "لا تملك صلاحية اتخاذ هذا القرار.");
         if (approval.Status != CashCollectionApprovalStatus.Pending) return ToResult(approval);
+        await RidePaymentGuard.EnsureAvailableAsync(db, approval.RideId, token);
         if (!approve)
         {
             approval.Status = CashCollectionApprovalStatus.Rejected;

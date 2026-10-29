@@ -1,8 +1,12 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
 using YemenDrive.Api;
+using YemenDrive.Api.WalletLogin;
+using YemenDrive.Api.WalletPayments;
+using YemenDrive.Application.Payments;
 using YemenDrive.Application.Users;
 using YemenDrive.Application.Accounting;
 using YemenDrive.Application.Maps;
@@ -62,6 +66,25 @@ builder.Services.AddScoped<DevelopmentDataSeeder>();
 builder.Services.AddScoped<AccountingPostingService>();
 builder.Services.AddScoped<RideAccountingPostingService>();
 builder.Services.AddScoped<FinancialAccountProvisioningService>();
+// Keep this directory when deploying upgrades; encrypted wallet settings need
+// the same key ring after restarts. Windows protects persisted keys with DPAPI.
+var walletKeyRingPath = builder.Configuration["WalletLogin:KeyRingPath"];
+walletKeyRingPath = string.IsNullOrWhiteSpace(walletKeyRingPath)
+    ? Path.Combine(builder.Environment.ContentRootPath, "security", "wallet-keys")
+    : Path.GetFullPath(walletKeyRingPath, builder.Environment.ContentRootPath);
+var walletDataProtection = builder.Services.AddDataProtection()
+    .SetApplicationName("YemenDrive.WalletLogin")
+    .PersistKeysToFileSystem(new DirectoryInfo(walletKeyRingPath));
+if (OperatingSystem.IsWindows()) walletDataProtection.ProtectKeysWithDpapi();
+builder.Services.AddSingleton<WalletProviderCatalog>();
+builder.Services.AddSingleton<WalletCredentialsProtector>();
+builder.Services.AddScoped<IWalletLoginConfiguration, WalletLoginConfigurationService>();
+builder.Services.AddSingleton<IWalletLoginClientFactory, WalletLoginClientFactory>();
+builder.Services.AddSingleton<WalletLoginRuntime>();
+builder.Services.AddHostedService<WalletLoginWorker>();
+builder.Services.AddSingleton<IWalletPaymentGateway, WalletPaymentGateway>();
+builder.Services.AddScoped<WalletPaymentService>();
+builder.Services.AddScoped<ExternalWalletPaymentSettlement>();
 // Google provider keys are read only from server configuration (for example
 // environment variables or user-secrets). They are never persisted or sent
 // to Flutter clients.
@@ -501,6 +524,8 @@ app.MapPost("/api/admin/execute", async (
 
 app.MapAuthenticationEndpoints();
 app.MapDevicePushInstallationEndpoints();
+app.MapWalletLoginEndpoints();
+app.MapWalletPaymentEndpoints();
 
 app.Run();
 

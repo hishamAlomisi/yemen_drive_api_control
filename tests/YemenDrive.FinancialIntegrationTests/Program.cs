@@ -75,6 +75,11 @@ try
 
     await WorkflowAcceptanceScenarios.RunAsync(db, configuration, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
 
+    await WalletRideGuardScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+    await ExternalWalletPaymentPostsOnceAndLocksOtherTendersAsync(db, configuration, fixture);
+    await CustomerPaymentAccessChangesArePublishedAsync(db, configuration, fixture, options);
+    await PrestartPaymentScenarios.RunAsync(db, configuration, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+
     Console.WriteLine("PASS: financial integration scenarios completed on an isolated temporary database.");
 }
 finally
@@ -1153,6 +1158,188 @@ static async Task InsufficientCashShortageRollsBackAsync(YemenDriveDbContext db,
     AssertEqual("cashCollectionInsufficientBalance", realtime.Payments.Single().Change, "cash shortfall rejection realtime event");
 }
 
+static async Task ExternalWalletPaymentPostsOnceAndLocksOtherTendersAsync(
+    YemenDriveDbContext db, DatabaseConfigurationStore configuration, Fixture fixture)
+{
+    var method = new YemenDrive.Database.Entities.PaymentMethod
+    {
+        Code = "floosak-test", NameAr = "فلوسك اختبار", DescriptionAr = "اختبار", ProviderCode = "Floosak",
+        Kind = PaymentMethodKind.ExternalWallet, IsActive = true, IsAvailableForRidePayment = true
+    };
+    db.PaymentMethods.Add(method);
+    await db.SaveChangesAsync();
+    await new FinancialAccountProvisioningService(db).ProvisionPaymentMethodAsync(method, CancellationToken.None);
+    await db.SaveChangesAsync();
+    var ride = await AddRideAsync(db, fixture, RideStatus.Completed, 900m, 100m, 50m);
+    var operation = new PaymentWalletOperation
+    {
+        RideId = ride.Id, CustomerId = fixture.CustomerId, PaymentMethodId = method.Id,
+        RequestId = Guid.NewGuid().ToString("N"), Status = "AwaitingCode", IsOpen = true,
+        Amount = 1_000m, Mobile = "967777000001", CustomerName = "عميل اختبار", Fees = 10m,
+        FeesKnown = true, ProviderReference = "simulated-provider-reference"
+    };
+    db.PaymentWalletOperations.Add(operation);
+    await db.SaveChangesAsync();
+    var originalCustomer = await WalletBalanceAsync(db, fixture.CustomerId);
+    var originalDriver = await WalletBalanceAsync(db, fixture.DriverId);
+    var realtime = new RecordingRideRealtimePublisher();
+    var settlement = new ExternalWalletPaymentSettlement(db, RideAccounting(db), realtime);
+    await settlement.ValidateAsync(ride, method.Id, CancellationToken.None);
+    var rejected = false;
+    try { await settlement.SettleAsync(operation, CancellationToken.None); }
+    catch (ServiceException ex) when (ex.Code == "provider_payment_not_confirmed") { rejected = true; }
+    Assert(rejected, "step success must not be posted as financial success");
+    var cash = new DriverCashPayment(db, configuration, new TestCurrentUser(fixture.DriverId), RideAccounting(db));
+    var wallet = new Payment(db, configuration, new TestCurrentUser(fixture.CustomerId), RideAccounting(db));
+    Assert(!(await ExecuteAsync(cash, "add", new DriverCashPaymentModel(ride.Id, 1_000m))).Success,
+        "cash cannot bypass a provider operation awaiting OTP");
+    Assert(!(await ExecuteAsync(wallet, "add", new PaymentModel(RideId: ride.Id, Amount: 1_000m, Provider: "YemenDriveWallet"))).Success,
+        "internal wallet cannot bypass a provider operation awaiting OTP");
+    AssertEqual(0, await db.PaymentTransactions.CountAsync(x => x.RideId == ride.Id), "no payment before provider success");
+    operation.Status = "ProviderSucceeded";
+    operation.ProviderSucceededAtUtc = DateTime.UtcNow;
+    db.PaymentTransactions.Add(new PaymentTransaction
+    {
+        UserId = fixture.CustomerId, Amount = 1m, Provider = "DifferentProvider",
+        ProviderReference = operation.ProviderReference, Status = PaymentStatus.Pending
+    });
+    await db.SaveChangesAsync();
+
+    // A local accounting failure after provider success must roll back the local money effects,
+    // retain the durable success evidence, and permit posting without another withdrawal.
+    var providerAccount = await db.LedgerAccounts.SingleAsync(x => x.Code == $"1200-PM-{method.Id}");
+    providerAccount.IsActive = false;
+    await db.SaveChangesAsync();
+    try { await settlement.SettleAsync(operation, CancellationToken.None); throw new InvalidOperationException("disabled ledger accepted"); }
+    catch (ServiceException ex) when (ex.Code == "provider_ledger_not_found") { }
+    db.ChangeTracker.Clear();
+    AssertEqual(originalDriver, await WalletBalanceAsync(db, fixture.DriverId), "driver balance rolls back on accounting failure");
+    AssertEqual(0, await db.PaymentTransactions.CountAsync(x => x.RideId == ride.Id), "payment rolls back on accounting failure");
+    operation = await db.PaymentWalletOperations.SingleAsync(x => x.Id == operation.Id);
+    AssertEqual("ProviderSucceeded", operation.Status, "provider evidence survives local posting failure");
+    providerAccount = await db.LedgerAccounts.SingleAsync(x => x.Code == $"1200-PM-{method.Id}");
+    providerAccount.IsActive = true;
+    await db.SaveChangesAsync();
+    var payment = await settlement.SettleAsync(operation, CancellationToken.None);
+    var repeated = await settlement.SettleAsync(operation, CancellationToken.None);
+    AssertEqual(payment.Id, repeated.Id, "provider success retry returns same payment");
+    AssertEqual("Succeeded", operation.Status, "receipt is available only after accounting commits");
+    AssertEqual(originalCustomer, await WalletBalanceAsync(db, fixture.CustomerId), "external withdrawal never debits internal customer wallet");
+    AssertEqual(originalDriver + 850m, await WalletBalanceAsync(db, fixture.DriverId), "driver gets net share once");
+    AssertEqual(1, await db.PaymentTransactions.CountAsync(x => x.RideId == ride.Id), "one external payment");
+    AssertEqual(1, await db.WalletTransactions.CountAsync(x => x.RideId == ride.Id), "one driver credit");
+    var journal = await db.JournalEntries.Include(x => x.Lines).SingleAsync(x =>
+        x.SourceType == "RideExternalWalletPayment" && x.SourceId == $"ride:{ride.Id}");
+    AssertEqual(journal.TotalDebit, journal.TotalCredit, "external journal balances");
+    AssertEqual(1_000m, journal.Lines.Single(x => x.LedgerAccountId == providerAccount.Id).Debit,
+        "provider account records ride principal, provider fee is not platform revenue");
+    var driverWalletAccountId = await db.LedgerAccounts.Where(x => x.Code == $"2100-WLT-{fixture.DriverWalletId}")
+        .Select(x => x.Id).SingleAsync();
+    AssertEqual(850m, journal.Lines.Single(x => x.LedgerAccountId == driverWalletAccountId).Credit,
+        "driver wallet liability reconciles to the actual wallet credit");
+    AssertEqual("Floosak", payment.Provider, "catalog code cannot impersonate a built-in payment provider");
+    AssertEqual(1, realtime.Payments.Count, "successful payment broadcasts once");
+    Assert(!(await ExecuteAsync(cash, "add", new DriverCashPaymentModel(ride.Id, 1_000m))).Success,
+        "cash cannot collect a confirmed wallet payment");
+    Assert(!(await ExecuteAsync(wallet, "update", new PaymentModel(Id: payment.Id, Status: PaymentStatus.Failed))).Success,
+        "client cannot alter provider-confirmed payment");
+    var forged = new PaymentTransaction { UserId = fixture.CustomerId, RideId = null, Amount = 1m, Provider = "Floosak" };
+    db.PaymentTransactions.Add(forged);
+    await db.SaveChangesAsync();
+    Assert(!(await ExecuteAsync(wallet, "update", new PaymentModel(Id: forged.Id, Status: PaymentStatus.Paid))).Success,
+        "client cannot turn a pending provider record into paid");
+    var zeroNetRide = await AddRideAsync(db, fixture, RideStatus.Completed, 50m, 100m, 50m);
+    var zeroNetOperation = new PaymentWalletOperation
+    {
+        RideId = zeroNetRide.Id, CustomerId = fixture.CustomerId, PaymentMethodId = method.Id,
+        RequestId = Guid.NewGuid().ToString("N"), Status = "ProviderSucceeded", IsOpen = true,
+        Amount = 150m, Mobile = "967777000001", ProviderReference = "simulated-zero-net-reference",
+        ProviderSucceededAtUtc = DateTime.UtcNow
+    };
+    db.PaymentWalletOperations.Add(zeroNetOperation);
+    await db.SaveChangesAsync();
+    await settlement.ValidateAsync(zeroNetRide, method.Id, CancellationToken.None);
+    await settlement.SettleAsync(zeroNetOperation, CancellationToken.None);
+    AssertEqual("Succeeded", zeroNetOperation.Status, "zero driver entitlement does not strand an actual provider debit");
+    AssertEqual(0, await db.WalletTransactions.CountAsync(x => x.RideId == zeroNetRide.Id), "zero wallet movements are omitted");
+    AssertEqual(originalDriver + 850m, await WalletBalanceAsync(db, fixture.DriverId), "zero entitlement leaves driver balance unchanged");
+
+    var jaibMethod = new YemenDrive.Database.Entities.PaymentMethod
+    {
+        Code = "jaib-test", NameAr = "جيب اختبار", DescriptionAr = "اختبار", ProviderCode = "Jaib",
+        Kind = PaymentMethodKind.ExternalWallet, IsActive = true, IsAvailableForRidePayment = true
+    };
+    db.PaymentMethods.Add(jaibMethod);
+    await db.SaveChangesAsync();
+    await new FinancialAccountProvisioningService(db).ProvisionPaymentMethodAsync(jaibMethod, CancellationToken.None);
+    await db.SaveChangesAsync();
+    var jaibRide = await AddRideAsync(db, fixture, RideStatus.InProgress, 900m, 100m, 50m);
+    jaibRide.CustomerPaymentEnabled = true;
+    var jaibOperation = new PaymentWalletOperation
+    {
+        RideId = jaibRide.Id, CustomerId = fixture.CustomerId, PaymentMethodId = jaibMethod.Id,
+        ProviderCode = "Jaib", RequestId = Guid.NewGuid().ToString("N"), Status = "ProviderSucceeded",
+        Amount = 1000m, Mobile = "777000001", ProviderReference = "simulated-provider-reference",
+        ProviderSucceededAtUtc = DateTime.UtcNow
+    };
+    db.PaymentWalletOperations.Add(jaibOperation);
+    await db.SaveChangesAsync();
+    await settlement.ValidateAsync(jaibRide, jaibMethod.Id, CancellationToken.None);
+    var jaibPayment = await settlement.SettleAsync(jaibOperation, CancellationToken.None);
+    var jaibRetry = await settlement.SettleAsync(jaibOperation, CancellationToken.None);
+    AssertEqual(jaibPayment.Id, jaibRetry.Id, "Jaib posting remains idempotent");
+    AssertEqual("Jaib", jaibPayment.Provider, "Jaib keeps canonical provider identity");
+    Assert(jaibPayment.ProviderReference!.StartsWith($"Jaib:{jaibMethod.Id}:"), "Jaib references cannot collide with Floosak references");
+    AssertEqual(originalCustomer, await WalletBalanceAsync(db, fixture.CustomerId), "Jaib never debits the internal customer wallet");
+    AssertEqual(originalDriver + 1700m, await WalletBalanceAsync(db, fixture.DriverId), "Jaib credits driver share once");
+    var jaibAccountId = await db.LedgerAccounts.Where(x => x.Code == $"1200-PM-{jaibMethod.Id}").Select(x => x.Id).SingleAsync();
+    var jaibJournal = await db.JournalEntries.Include(x => x.Lines).SingleAsync(x =>
+        x.SourceType == "RideExternalWalletPayment" && x.SourceId == $"ride:{jaibRide.Id}");
+    AssertEqual(1000m, jaibJournal.Lines.Single(x => x.LedgerAccountId == jaibAccountId).Debit, "Jaib posts to its own provider account");
+    AssertEqual(jaibJournal.TotalDebit, jaibJournal.TotalCredit, "Jaib journal balances");
+    Assert(!(await ExecuteAsync(cash, "add", new DriverCashPaymentModel(jaibRide.Id, 1000m))).Success,
+        "driver cannot collect cash after Jaib success");
+}
+
+static async Task CustomerPaymentAccessChangesArePublishedAsync(YemenDriveDbContext db,
+    DatabaseConfigurationStore configuration, Fixture fixture, DbContextOptions<YemenDriveDbContext> observerOptions)
+{
+    var ride = await AddRideAsync(db, fixture, RideStatus.InProgress, 900m, 100m, 0m);
+    var publishedAfterCommit = 0;
+    var realtime = new RecordingRideRealtimePublisher
+    {
+        ObserveRideStatusAsync = async (change, token) =>
+        {
+            // A separate connection must already observe the change when a rider is notified.
+            // Publishing while the transaction still owns its write lock would time out here.
+            await using var observer = new YemenDriveDbContext(observerOptions);
+            observer.Database.SetCommandTimeout(5);
+            var saved = await observer.Rides.AsNoTracking().SingleAsync(x => x.Id == change.RideId, token);
+            AssertEqual(saved.CustomerPaymentEnabled, change.CustomerPaymentEnabled, "realtime payment access matches committed data");
+            publishedAfterCommit++;
+        }
+    };
+    var driver = new RideService(db, configuration, new TestCurrentUser(fixture.DriverId), RideAccounting(db), realtime);
+    AssertSuccess(await ExecuteAsync(driver, "update", new RideModel(Id: ride.Id, CustomerPaymentEnabled: true)), "driver enables rider payment");
+    AssertEqual(1, realtime.RideStatuses.Count, "enabling payment publishes even without a status or driver change");
+    var enabled = realtime.RideStatuses.Single();
+    Assert(enabled.CustomerPaymentEnabled && enabled.CustomerId == fixture.CustomerId && enabled.DriverId == fixture.DriverId &&
+        enabled.Status == RideStatus.InProgress && enabled.RideId == ride.Id, "rider receives enabled payment flag for the existing ride");
+
+    AssertSuccess(await ExecuteAsync(driver, "update", new RideModel(Id: ride.Id, CustomerPaymentEnabled: true)), "same-value payment access retry");
+    AssertEqual(1, realtime.RideStatuses.Count, "unchanged payment access does not duplicate the event");
+    var customer = new RideService(db, configuration, new TestCurrentUser(fixture.CustomerId), RideAccounting(db), realtime);
+    Assert(!(await ExecuteAsync(customer, "update", new RideModel(Id: ride.Id, CustomerPaymentEnabled: false))).Success,
+        "rider cannot change own payment access");
+    AssertEqual(1, realtime.RideStatuses.Count, "rejected access change is not broadcast");
+
+    AssertSuccess(await ExecuteAsync(driver, "update", new RideModel(Id: ride.Id, CustomerPaymentEnabled: false)), "driver disables payment before collection");
+    AssertEqual(2, realtime.RideStatuses.Count, "disabling payment also publishes immediately");
+    Assert(!realtime.RideStatuses.Last().CustomerPaymentEnabled, "rider receives disabled payment flag");
+    AssertEqual(2, publishedAfterCommit, "both payment access changes publish after commit");
+    Console.WriteLine("PASS: rider payment enable/disable emits committed realtime state; unchanged or rejected requests do not emit.");
+}
+
 static async Task<YemenDrive.Database.Entities.Ride> AddRideAsync(YemenDriveDbContext db, Fixture fixture, RideStatus status, decimal fare, decimal serviceFee, decimal cancellationFee)
 {
     var ride = new YemenDrive.Database.Entities.Ride
@@ -1195,6 +1382,7 @@ file sealed class RecordingRideRealtimePublisher : IRideRealtimePublisher
     public RideOfferRealtimeEvent? ReceivedOffer { get; private set; }
     public List<RideOfferRealtimeEvent> UpdatedOffers { get; } = [];
     public List<RideStatusRealtimeEvent> RideStatuses { get; } = [];
+    public Func<RideStatusRealtimeEvent, CancellationToken, Task>? ObserveRideStatusAsync { get; init; }
     public List<DriverLocationRealtimeEvent> DriverLocations { get; } = [];
     public List<RideMessageRealtimeEvent> RideMessages { get; } = [];
     public List<PaymentRealtimeEvent> Payments { get; } = [];
@@ -1241,12 +1429,12 @@ file sealed class RecordingRideRealtimePublisher : IRideRealtimePublisher
         return Task.CompletedTask;
     }
 
-    public Task PublishRideStatusUpdatedAsync(
+    public async Task PublishRideStatusUpdatedAsync(
         RideStatusRealtimeEvent rideStatus,
         CancellationToken cancellationToken)
     {
+        if (ObserveRideStatusAsync is not null) await ObserveRideStatusAsync(rideStatus, cancellationToken);
         RideStatuses.Add(rideStatus);
-        return Task.CompletedTask;
     }
 
     public Task PublishDriverLocationAsync(

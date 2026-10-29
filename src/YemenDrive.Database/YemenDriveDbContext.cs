@@ -31,6 +31,8 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<RideCancellationRequest> RideCancellationRequests => Set<RideCancellationRequest>();
     public DbSet<PaymentCardToken> PaymentCardTokens => Set<PaymentCardToken>();
     public DbSet<PaymentMethod> PaymentMethods => Set<PaymentMethod>();
+    public DbSet<PaymentProviderAccount> PaymentProviderAccounts => Set<PaymentProviderAccount>();
+    public DbSet<PaymentWalletOperation> PaymentWalletOperations => Set<PaymentWalletOperation>();
     public DbSet<Promotion> Promotions => Set<Promotion>();
     public DbSet<SupportTicket> SupportTickets => Set<SupportTicket>();
     public DbSet<ReferralRedemption> ReferralRedemptions => Set<ReferralRedemption>();
@@ -194,6 +196,39 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<PaymentMethod>().Property(x => x.ImageUrl).HasMaxLength(500);
         modelBuilder.Entity<PaymentMethod>().Property(x => x.ProviderCode).HasMaxLength(80).IsRequired();
         modelBuilder.Entity<PaymentMethod>().Property(x => x.PublicInstructionsAr).HasMaxLength(2000);
+        modelBuilder.Entity<PaymentProviderAccount>().HasOne(x => x.PaymentMethod)
+            .WithOne().HasForeignKey<PaymentProviderAccount>(x => x.PaymentMethodId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<PaymentProviderAccount>().Property(x => x.ProviderCode).HasMaxLength(80).IsRequired();
+        modelBuilder.Entity<PaymentProviderAccount>().Property(x => x.CredentialsEncrypted).IsRequired();
+        modelBuilder.Entity<PaymentProviderAccount>().Property(x => x.LoginStatus)
+            .HasMaxLength(40).HasDefaultValue("NotConfigured").IsRequired();
+        modelBuilder.Entity<PaymentProviderAccount>().Property(x => x.LastErrorCode).HasMaxLength(80);
+        modelBuilder.Entity<PaymentWalletOperation>().HasIndex(x => x.RideId).IsUnique().HasFilter("[IsOpen] = 1");
+        modelBuilder.Entity<PaymentWalletOperation>().HasIndex(x => x.RequestId).IsUnique();
+        modelBuilder.Entity<PaymentWalletOperation>().HasIndex(x => new { x.CustomerId, x.RideId, x.CreatedAtUtc });
+        modelBuilder.Entity<PaymentWalletOperation>().HasOne(x => x.Ride).WithMany()
+            .HasForeignKey(x => x.RideId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<PaymentWalletOperation>().HasOne(x => x.PaymentMethod).WithMany()
+            .HasForeignKey(x => x.PaymentMethodId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.RowVersion).IsRowVersion();
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.RequestId).HasMaxLength(80);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.ProviderOperationId).HasMaxLength(256);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.ProviderCode).HasMaxLength(80);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.ProviderReference).HasMaxLength(256);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.Status).HasMaxLength(40);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.Stage).HasMaxLength(24);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.NextAction).HasMaxLength(32);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.Currency).HasMaxLength(12);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.FeeCurrency).HasMaxLength(12);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.CustomerName).HasMaxLength(250);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.Mobile).HasMaxLength(30);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.ErrorCode).HasMaxLength(80);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.ProviderMessageAr).HasMaxLength(1000);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.Amount).HasPrecision(18, 2);
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.Fees).HasPrecision(18, 2);
+        modelBuilder.Entity<PaymentWalletOperation>().ToTable(table => table.HasCheckConstraint(
+            "CK_PaymentWalletOperations_Amounts", "[Amount] > 0 AND ([Fees] IS NULL OR [Fees] >= 0) AND [Currency] = 'YER' AND [FeeCurrency] = 'YER'"));
         modelBuilder.Entity<CashCollectionApproval>().HasIndex(x => new { x.RideId, x.Status })
             .IsUnique().HasFilter("[Status] = 0");
         modelBuilder.Entity<CashCollectionApproval>().HasIndex(x => new { x.DriverId, x.IdempotencyKey })
@@ -357,6 +392,7 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<ServiceKind>().Property(x => x.ImageUrl).HasMaxLength(500);
 
         modelBuilder.Entity<Ride>().Property(x => x.RowVersion).IsRowVersion();
+        modelBuilder.Entity<Ride>().Property(x => x.PaymentMethodCode).HasMaxLength(80).HasDefaultValue("cash").IsRequired();
         modelBuilder.Entity<Ride>().Property(x => x.IdempotencyKey).HasMaxLength(128);
         modelBuilder.Entity<Ride>().HasIndex(x => new { x.CustomerId, x.IdempotencyKey })
             .IsUnique().HasFilter("[IdempotencyKey] IS NOT NULL");

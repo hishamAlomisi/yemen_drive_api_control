@@ -1,5 +1,6 @@
 using System.Data;
 using Microsoft.EntityFrameworkCore;
+using YemenDrive.Application.Payments;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
@@ -142,6 +143,8 @@ public sealed class RideOffer(
 
     protected override async Task<object?> UpdateAsync(RideOfferModel model, CancellationToken cancellationToken)
     {
+        if (model.Status is null or OfferStatus.Accepted)
+            return await AcceptAsync(model, cancellationToken);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken);
         var entity = await FindAsync(model.Id, cancellationToken);
@@ -158,6 +161,7 @@ public sealed class RideOffer(
             throw new ServiceException("offer_expired", "انتهت صلاحية العرض.");
         }
 
+        await RidePaymentGuard.LockAsync(dbContext, entity.RideId, cancellationToken);
         var ride = await dbContext.Rides.Include(x => x.Offers)
             .SingleOrDefaultAsync(x => x.Id == entity.RideId, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
@@ -167,12 +171,7 @@ public sealed class RideOffer(
             (x.Status == RideStatus.DriverAssigned || x.Status == RideStatus.DriverEnRoute || x.Status == RideStatus.DriverArrived || x.Status == RideStatus.InProgress || x.Status == RideStatus.CancellationPending), cancellationToken))
             throw new ServiceException("driver_not_available", "ارتبط السائق برحلة أخرى. اختر عرضًا آخر.");
 
-        var requestedStatus = model.Status ?? OfferStatus.Accepted;
-        if (requestedStatus == OfferStatus.Accepted)
-        {
-            await transaction.DisposeAsync();
-            return await AcceptAsync(model, cancellationToken);
-        }
+        var requestedStatus = model.Status.Value;
         if (requestedStatus != OfferStatus.Rejected)
             throw new ServiceException("invalid_offer_status", "يمكن قبول العرض أو رفضه فقط.");
 
@@ -208,6 +207,7 @@ public sealed class RideOffer(
             throw new ServiceException("offer_expired", "انتهت صلاحية العرض.");
         }
 
+        await RidePaymentGuard.LockAsync(dbContext, entity.RideId, cancellationToken);
         var ride = await dbContext.Rides.Include(x => x.Offers)
             .SingleOrDefaultAsync(x => x.Id == entity.RideId, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
@@ -228,6 +228,7 @@ public sealed class RideOffer(
         ride.DriverId = entity.DriverId;
         await RidePricingPolicy.AcceptFareAsync(dbContext, ride, acceptedFare, cancellationToken);
         ride.Status = RideStatus.DriverAssigned;
+        RidePaymentPolicy.OnOfferAccepted(ride);
         ride.UpdatedAtUtc = DateTime.UtcNow;
         entity.UpdatedAtUtc = DateTime.UtcNow;
         try
@@ -262,7 +263,7 @@ public sealed class RideOffer(
             rideId = ride.Id,
             driverId = ride.DriverId,
             agreedPrice = ride.CustomerPrice, serviceFee = ride.ServiceFee, totalAmount = ride.TotalAmount,
-            rideStatus = ride.Status
+            rideStatus = ride.Status, ride.PaymentMethodCode, ride.PaymentRequiredBeforeStart
         };
     }
 
