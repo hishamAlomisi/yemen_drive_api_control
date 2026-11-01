@@ -3,8 +3,11 @@ namespace YemenDrive.Database.Entities;
 /// <summary>A durable reservation and provider outcome. Never contains credentials, OTPs or raw provider replies.</summary>
 public sealed class PaymentWalletOperation : Entity
 {
-    public int RideId { get; set; }
-    public Ride Ride { get; set; } = null!;
+    public int? RideId { get; set; }
+    public Ride? Ride { get; set; }
+    public int? WalletTransactionId { get; set; }
+    public int? JournalEntryId { get; set; }
+    public decimal? BalanceAfter { get; set; }
     public int CustomerId { get; set; }
     public int PaymentMethodId { get; set; }
     public PaymentMethod PaymentMethod { get; set; } = null!;

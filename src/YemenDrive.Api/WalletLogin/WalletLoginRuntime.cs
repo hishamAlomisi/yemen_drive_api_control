@@ -41,7 +41,7 @@ public sealed class WalletLoginRuntime(
             var db = scope.ServiceProvider.GetRequiredService<YemenDriveDbContext>();
             if (!await db.PaymentProviderAccounts.AsNoTracking().AnyAsync(x => x.PaymentMethodId == methodId &&
                 x.ConfigurationVersion == version && x.IsEnabled && x.ProviderCode == providerCode &&
-                x.PaymentMethod.IsActive && x.PaymentMethod.IsAvailableForRidePayment && x.PaymentMethod.ProviderCode == providerCode &&
+                x.PaymentMethod.IsActive && (x.PaymentMethod.IsAvailableForRidePayment || x.PaymentMethod.IsAvailableForWalletTopUp) && x.PaymentMethod.ProviderCode == providerCode &&
                 x.PaymentMethod.Kind == YemenDrive.Database.Entities.PaymentMethodKind.ExternalWallet, token))
                 throw new YemenDrive.Api.WalletPayments.WalletSessionUnavailableException();
             dispatched = true;
@@ -98,6 +98,26 @@ public sealed class WalletLoginRuntime(
                     catch (System.Security.Cryptography.CryptographicException)
                     { throw new WalletCredentialException(); }
                     var options = catalog.Parse(account.ProviderCode, json);
+                    if (account.ProviderCode == "Floosak" && options is eqsWallets.HttpWalletOptions httpOptions)
+                    {
+                        httpOptions.ResponseReceived = response =>
+                        {
+                            YemenDrive.Api.WalletPayments.FloosakOtpValidation.Observe(response.Path, response.StatusCode, response.Body,
+                                (options as eqsWallets.Providers.Floosak.FloosakOptions)?.Password);
+                            YemenDrive.Api.WalletPayments.FloosakPreparationValidation.Observe(response.Path, response.StatusCode,
+                                response.Body, (options as eqsWallets.Providers.Floosak.FloosakOptions)?.Password);
+                            if (response.Path == "/api/v1/agent/offline_cashout")
+                                logger.LogInformation("Wallet preparation response for payment method {PaymentMethodId}, provider Floosak, stage Request: {ResponseContract}",
+                                    account.PaymentMethodId,
+                                    YemenDrive.Api.WalletPayments.WalletProviderResponseDiagnostics.DescribeFloosakPreparation(response.StatusCode, response.Body));
+                        };
+                    }
+                    if (account.ProviderCode == "Jaib" && options is eqsWallets.HttpWalletOptions jaibHttpOptions)
+                    {
+                        jaibHttpOptions.ResponseReceived = response =>
+                            YemenDrive.Api.WalletPayments.JaibWithdrawalValidation.Observe(response.Path, response.StatusCode,
+                                response.Body, (options as eqsWallets.Providers.Jaib.JaibOptions)?.Password);
+                    }
                     entry.Client = factory.Create();
                     var success = await entry.Client.LoginAsync(options, token);
                     entry.Status = success ? "Ready" : "Failed";

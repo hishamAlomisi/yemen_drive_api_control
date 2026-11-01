@@ -98,6 +98,7 @@ public sealed record NotificationRealtimeEvent(
 
 public interface IRideRealtimePublisher
 {
+    Task PublishArrivalUpdatedAsync(IReadOnlyCollection<int> userIds, RideArrivalView arrival, CancellationToken token) => Task.CompletedTask;
     Task PublishRideRequestViewedAsync(int customerUserId, RideSearchViewer viewer,
         CancellationToken cancellationToken) => Task.CompletedTask;
 

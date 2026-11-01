@@ -12,7 +12,8 @@ public sealed class TrackingHub(
     TrackingHubAccessPolicy accessPolicy,
     IRideRealtimePublisher realtimePublisher,
     NearbyDriverSubscriptionStore nearbySubscriptions,
-    ILogger<TrackingHub> logger) : Hub
+    ILogger<TrackingHub> logger,
+    RideParticipantPresence? presence = null) : Hub
 {
     private static readonly RideStatus[] TrackableRideStatuses =
     [
@@ -30,6 +31,8 @@ public sealed class TrackingHub(
             Context.Abort();
             return;
         }
+
+        presence?.Connect(Context.ConnectionId, userId);
 
         await Groups.AddToGroupAsync(
             Context.ConnectionId,
@@ -50,7 +53,14 @@ public sealed class TrackingHub(
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         nearbySubscriptions.Remove(Context.ConnectionId);
+        presence?.Remove(Context.ConnectionId);
         await base.OnDisconnectedAsync(exception);
+    }
+
+    public Task SetForeground(bool foreground)
+    {
+        presence?.SetForeground(Context.ConnectionId, foreground);
+        return Task.CompletedTask;
     }
 
     public async Task JoinRide(int rideId)

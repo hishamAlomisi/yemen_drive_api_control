@@ -24,6 +24,10 @@ internal static class PrestartPaymentScenarios
         db.AddRange(customer, method); await db.SaveChangesAsync();
         var wallet = new Wallet { UserId = customer.Id, Currency = "YER", Balance = 100000 };
         db.Add(wallet); await db.SaveChangesAsync();
+        var provisioning = new FinancialAccountProvisioningService(db);
+        await provisioning.ProvisionUserAsync(customer, CancellationToken.None);
+        await provisioning.ProvisionPaymentMethodAsync(method, CancellationToken.None);
+        await db.SaveChangesAsync();
         var accounting = new RideAccountingPostingService(db, new AccountingPostingService(db));
         var riderRides = new RideService(db, config, new Actor(customer.Id), accounting);
         var payments = new Payment(db, config, new Actor(customer.Id), accounting);
@@ -54,11 +58,15 @@ internal static class PrestartPaymentScenarios
             var result = Data(accepted);
             Check(result.GetProperty("paymentRequiredBeforeStart").GetBoolean() == (choice != "cash") &&
                 ride.PaymentRequiredBeforeStart == (choice != "cash"), "both offer acceptance APIs establish prepayment requirement");
-            await new FinancialAccountProvisioningService(db).ProvisionExistingAsync(CancellationToken.None);
+            await provisioning.ProvisionUserAsync(driver, CancellationToken.None);
+            await db.SaveChangesAsync();
             return ride;
         }
 
         var trip = await Book("wallet", true);
+        trip.WaitingPricePerMinute = 10;
+        trip.WaitingMaxFee = 1000;
+        await db.SaveChangesAsync();
         var driverRides = new RideService(db, config, new Actor(trip.DriverId!.Value), accounting);
         Data(await Call(driverRides, "update", new RideModel(Id: trip.Id, Status: RideStatus.DriverEnRoute)));
         Data(await Call(driverRides, "update", new RideModel(Id: trip.Id, Status: RideStatus.DriverArrived)));
@@ -66,9 +74,9 @@ internal static class PrestartPaymentScenarios
         Code(await Call(driverRides, "update", new RideModel(Id: trip.Id, PaymentMethodCode: "cash")), "ride_access_denied");
         Code(await Call(payments, "add", new PaymentModel(RideId: trip.Id, Amount: trip.TotalAmount!.Value - 1)), "invalid_payment_amount");
         var beforeBalance = wallet.Balance;
-        var paid = Data(await Call(payments, "add", new PaymentModel(RideId: trip.Id, Amount: trip.TotalAmount!.Value,
+        var paid = Data(await Call(payments, "add", new PaymentModel(RideId: trip.Id, Amount: trip.TotalAmount!.Value, Provider: "YemenDriveWallet",
             IdempotencyKey: "prestart-internal")));
-        Data(await Call(payments, "add", new PaymentModel(RideId: trip.Id, Amount: trip.TotalAmount!.Value,
+        Data(await Call(payments, "add", new PaymentModel(RideId: trip.Id, Amount: trip.TotalAmount!.Value, Provider: "YemenDriveWallet",
             IdempotencyKey: "prestart-internal")));
         Check(wallet.Balance == beforeBalance - trip.TotalAmount && !trip.PaymentRequiredBeforeStart &&
             await db.PaymentTransactions.CountAsync(x => x.RideId == trip.Id && x.Status == PaymentStatus.Paid) == 1,
@@ -79,6 +87,11 @@ internal static class PrestartPaymentScenarios
         Check(detail.GetProperty("paymentCompleted").GetBoolean() && detail.GetProperty("paymentProvider").GetString() == "YemenDriveWallet" &&
             detail.GetProperty("paymentMethodNameAr").GetString() == "محفظة يمن درايف", "internal paid metadata comes from settled payment");
         Check(trip.StartedAtUtc != null && trip.WaitingFee == 0, "prepaid trip starts without changing settled amount");
+        Code(await Call(driverRides, "update", new RideModel(Id: trip.Id, CustomerPaymentEnabled: true)), "ride_already_paid");
+        var waiting = new RideWaiting(db, config, new Actor(customer.Id), new RideWaitingCoordinator(db));
+        var waitingState = Data(await Call(waiting, "get", new RideWaitingModel(RideId: trip.Id)));
+        Check(!waitingState.GetProperty("canRequest").GetBoolean(), "prepaid in-progress ride does not offer additional waiting charges");
+        Code(await Call(waiting, "add", new RideWaitingModel(RideId: trip.Id, RequestKey: Guid.NewGuid())), "payment_already_open");
 
         var cashTrip = await Book("wallet", true);
         var reservation = new PaymentWalletOperation { RideId = cashTrip.Id, CustomerId = customer.Id, PaymentMethodId = method.Id,
@@ -93,8 +106,51 @@ internal static class PrestartPaymentScenarios
             !await db.CashPaymentRequests.AnyAsync(x => x.RideId == cashTrip.Id) &&
             !await db.CashCollectionApprovals.AnyAsync(x => x.RideId == cashTrip.Id), "explicit cash switch changes only choice, never records collection");
         driverRides = new RideService(db, config, new Actor(cashTrip.DriverId!.Value), accounting);
+        cashTrip.WaitingPricePerMinute = 10;
+        cashTrip.WaitingMaxFee = 1000;
+        await db.SaveChangesAsync();
         Data(await Call(driverRides, "update", new RideModel(Id: cashTrip.Id, Status: RideStatus.DriverArrived)));
         Data(await Call(driverRides, "update", new RideModel(Id: cashTrip.Id, Status: RideStatus.InProgress)));
+        waitingState = Data(await Call(waiting, "get", new RideWaitingModel(RideId: cashTrip.Id)));
+        Check(waitingState.GetProperty("canRequest").GetBoolean(), "unpaid cash ride retains waiting availability after fallback");
+
+        var changedTrip = await Book("wallet", false);
+        Data(await Call(riderRides, "update", new RideModel(Id: changedTrip.Id, PaymentMethodCode: method.Code)));
+        Check(changedTrip.PaymentMethodCode == method.Code && changedTrip.PaymentRequiredBeforeStart,
+            "unpaid prestart choice can change to another wallet without removing the payment requirement");
+        var abandonedPreparation = new PaymentWalletOperation { RideId = changedTrip.Id, CustomerId = customer.Id,
+            PaymentMethodId = method.Id, ProviderCode = "Floosak", RequestId = "abandon-preparation", Amount = 1000,
+            Status = "ReviewRequired", Stage = "Request", ErrorCode = "provider_failed" };
+        db.Add(abandonedPreparation); await db.SaveChangesAsync();
+        Data(await Call(riderRides, "update", new RideModel(Id: changedTrip.Id, PaymentMethodCode: "wallet")));
+        Check(!abandonedPreparation.IsOpen && abandonedPreparation.Status == "Cancelled" && changedTrip.PaymentRequiredBeforeStart,
+            "choice update atomically abandons only an unsubmitted Floosak preparation");
+        changedTrip.Status = RideStatus.InProgress; changedTrip.PaymentRequiredBeforeStart = false;
+        await db.SaveChangesAsync();
+        Data(await Call(riderRides, "update", new RideModel(Id: changedTrip.Id, PaymentMethodCode: method.Code)));
+        Check(!changedTrip.PaymentRequiredBeforeStart, "unpaid in-progress choice can change without creating a prestart gate");
+
+        var cancelledTrip = await Book(method.Code, false);
+        cancelledTrip.Status = RideStatus.DriverEnRoute;
+        await db.SaveChangesAsync();
+        var cancelledPreparation = new PaymentWalletOperation { RideId = cancelledTrip.Id, CustomerId = customer.Id,
+            PaymentMethodId = method.Id, ProviderCode = "Floosak", RequestId = "cancel-ride-preparation", Amount = 1000,
+            Status = "ReviewRequired", Stage = "Request", ErrorCode = "provider_failed" };
+        db.Add(cancelledPreparation); await db.SaveChangesAsync();
+        var cancellations = new CancelService(db, config, new Actor(customer.Id), accounting);
+        Data(await Call(cancellations, "add", new RideCancellationRequestModel(RideId: cancelledTrip.Id, Reason: "تغيير الخطة")));
+        Check(cancelledTrip.Status == RideStatus.Cancelled && !cancelledPreparation.IsOpen &&
+            !await db.PaymentTransactions.AnyAsync(x => x.RideId == cancelledTrip.Id),
+            "en-route unpaid ride cancels directly and closes preparation without financial entries");
+
+        var protectedTrip = await Book(method.Code, false);
+        var uncertainDebit = new PaymentWalletOperation { RideId = protectedTrip.Id, CustomerId = customer.Id,
+            PaymentMethodId = method.Id, RequestId = "uncertain-debit-cancel", Amount = 1000,
+            Status = "ReviewRequired", Stage = "Complete", ErrorCode = "outcome_unknown" };
+        db.Add(uncertainDebit); await db.SaveChangesAsync();
+        Data(await Call(cancellations, "add", new RideCancellationRequestModel(RideId: protectedTrip.Id, Reason: "تغيير الخطة")));
+        Check(uncertainDebit.IsOpen && protectedTrip.Status == RideStatus.CancellationPending,
+            "cancellation request is accepted without releasing an uncertain debit");
 
         var racedTrip = await Book("wallet", false);
         var isolatedOptions = new DbContextOptionsBuilder<YemenDriveDbContext>().UseSqlServer(db.Database.GetConnectionString()).Options;
@@ -106,7 +162,7 @@ internal static class PrestartPaymentScenarios
                 ? await Call(new RideService(isolated, config, new Actor(customer.Id), isolatedAccounting), "update",
                     new RideModel(Id: racedTrip.Id, PaymentMethodCode: "cash"))
                 : await Call(new Payment(isolated, config, new Actor(customer.Id), isolatedAccounting), "add",
-                    new PaymentModel(RideId: racedTrip.Id, Amount: racedTrip.TotalAmount!.Value, IdempotencyKey: "prestart-race"));
+                    new PaymentModel(RideId: racedTrip.Id, Amount: racedTrip.TotalAmount!.Value, Provider: "YemenDriveWallet", IdempotencyKey: "prestart-race"));
         }
         var race = await Task.WhenAll(Race(true), Race(false));
         Check(race.Count(x => x.Success) == 1, "cash switch and early debit cannot both win concurrently");
@@ -116,6 +172,25 @@ internal static class PrestartPaymentScenarios
             "cash/debit race leaves one authoritative tender and no false paid cash choice");
 
         var externalTrip = await Book(method.Code, false);
+        var collectionTrip = await Book(method.Code, false);
+        collectionTrip.Status = RideStatus.InProgress;
+        collectionTrip.PaymentRequiredBeforeStart = false;
+        collectionTrip.CustomerPaymentEnabled = true;
+        await db.SaveChangesAsync();
+        var collectionActor = new Actor(collectionTrip.DriverId!.Value);
+        var cashService = new YemenDrive.Application.DriverPayments.DriverCashPayment(db, config, collectionActor, accounting);
+        var collectionRides = new RideService(db, config, collectionActor, accounting);
+        var cashModel = new YemenDrive.Application.DriverPayments.DriverCashPaymentModel(RideId: collectionTrip.Id,
+            CashReceived: collectionTrip.TotalAmount!.Value, Currency: "YER");
+        Code(await Call(cashService, "add", cashModel), "cash_payment_not_selected");
+        Code(await Call(collectionRides, "update", new RideModel(Id: collectionTrip.Id, Status: RideStatus.Completed)), "payment_required");
+        Check(!await db.PaymentTransactions.AnyAsync(x => x.RideId == collectionTrip.Id), "selected wallet cannot be collected as cash or finished unpaid");
+        await Call(riderRides, "update", new RideModel(Id: collectionTrip.Id, PaymentMethodCode: "cash"));
+        Data(await Call(cashService, "add", cashModel));
+        Data(await Call(collectionRides, "update", new RideModel(Id: collectionTrip.Id, Status: RideStatus.Completed)));
+        Check(collectionTrip.Status == RideStatus.Completed &&
+            await db.PaymentTransactions.AnyAsync(x => x.RideId == collectionTrip.Id && x.Status == PaymentStatus.Paid),
+            "explicit rider cash choice permits collection and finish only after durable payment");
         var operation = new PaymentWalletOperation { RideId = externalTrip.Id, CustomerId = customer.Id, PaymentMethodId = method.Id,
             ProviderCode = "Floosak", RequestId = "prestart-success", Amount = externalTrip.TotalAmount!.Value,
             Status = "ProviderSucceeded", ProviderSucceededAtUtc = DateTime.UtcNow, IsOpen = true };
@@ -136,15 +211,16 @@ internal static class PrestartPaymentScenarios
         var driverCancel = new CancelService(db, config, new Actor(externalTrip.DriverId!.Value), accounting);
         var cancellation = Data(await Call(driverCancel, "add", new RideCancellationRequestModel(RideId: externalTrip.Id, Reason: "تعذر بدء الرحلة")));
         var requestId = cancellation.GetProperty("id").GetInt32();
-        Check(externalTrip.Status == RideStatus.CancellationPending &&
-            (await db.RideCancellationRequests.SingleAsync(x => x.Id == requestId)).Status == RideCancellationStatus.AdminReviewPending,
+        Check(externalTrip.Status == RideStatus.DriverAssigned &&
+            (await db.RideCancellationRequests.SingleAsync(x => x.Id == requestId)).Status == RideCancellationStatus.CustomerReviewPending,
             "driver cannot silently discard paid prestart ride; existing financial review is required");
-        Code(await Call(new CancelService(db, config, new Actor(admin), accounting), "adminApprove", new RideCancellationRequestModel(Id: requestId)),
-            "manual_refund_required");
+        Data(await Call(new CancelService(db, config, new Actor(customer.Id), accounting), "accept", new RideCancellationRequestModel(Id: requestId)));
+        Check(externalTrip.Status == RideStatus.CancellationPending, "customer approval waits for paid-refund administration");
+        Data(await Call(new CancelService(db, config, new Actor(admin), accounting), "adminApprove", new RideCancellationRequestModel(Id: requestId)));
         db.ChangeTracker.Clear();
-        Check(!await db.PaymentTransactions.AnyAsync(x => x.RideId == externalTrip.Id && x.Status == PaymentStatus.Refunded) &&
-            (await db.RideCancellationRequests.SingleAsync(x => x.Id == requestId)).Status == RideCancellationStatus.AdminReviewPending,
-            "manual external refund failure creates no refunded funds or approved cancellation");
+        Check(await db.PaymentTransactions.AnyAsync(x => x.RideId == externalTrip.Id && x.Status == PaymentStatus.Refunded) &&
+            (await db.RideCancellationRequests.SingleAsync(x => x.Id == requestId)).Status == RideCancellationStatus.AdminApproved,
+            "administrative approval credits an external-wallet refund into the application wallet");
         Console.WriteLine("PASS: booking payment choice, both acceptance APIs, prestart gate, internal/external settlement, explicit cash fallback, metadata and paid cancellation safeguards.");
     }
 

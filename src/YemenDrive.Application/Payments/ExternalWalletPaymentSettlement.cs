@@ -33,7 +33,8 @@ public sealed class ExternalWalletPaymentSettlement(
     public async Task<PaymentTransaction> SettleAsync(PaymentWalletOperation operation, CancellationToken token)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
-        await RidePaymentGuard.LockAsync(db, operation.RideId, token);
+        if (operation.RideId is not int rideId) throw new ServiceException("ride_required", "هذه العملية ليست دفعة رحلة.");
+        await RidePaymentGuard.LockAsync(db, rideId, token);
         await db.Entry(operation).ReloadAsync(token);
         if (operation.Status == "Succeeded" && operation.PaymentTransactionId is int existingId)
         {
@@ -47,8 +48,13 @@ public sealed class ExternalWalletPaymentSettlement(
         var ride = await db.Rides.SingleAsync(x => x.Id == operation.RideId, token);
         await db.Entry(ride).ReloadAsync(token);
         if (ride.CustomerId != operation.CustomerId || ride.DriverId is null ||
-            ride.Status is not (RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.DriverArrived or RideStatus.InProgress or RideStatus.Completed))
+            ride.Status is not (RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.DriverArrived or RideStatus.InProgress or RideStatus.Completed or RideStatus.CancellationPending))
             throw new ServiceException("wallet_settlement_requires_review", "تحتاج الدفعة المؤكدة إلى مراجعة بيانات الرحلة.");
+        // A debit dispatched before cancellation must still be recorded when its
+        // provider confirms it. The cancellation review then refunds that payment.
+        if (ride.Status == RideStatus.CancellationPending && !await db.RideCancellationRequests.AnyAsync(
+                x => x.RideId == ride.Id, token))
+            throw new ServiceException("wallet_settlement_requires_review", "تحتاج الدفعة المؤكدة إلى مراجعة طلب الإلغاء.");
         var totalDue = ride.TotalAmount ?? (ride.CustomerPrice ?? ride.ServerPrice ?? 0m) + ride.WaitingFee + ride.ServiceFee;
         if (operation.Amount <= 0 || operation.Amount != totalDue || operation.Currency != "YER")
             throw new ServiceException("wallet_settlement_amount_mismatch", "تحتاج الدفعة المؤكدة إلى مراجعة المبلغ أو العملة.");

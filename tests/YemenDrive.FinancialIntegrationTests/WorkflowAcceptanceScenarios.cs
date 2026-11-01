@@ -47,7 +47,11 @@ internal static class WorkflowAcceptanceScenarios
         Check(trip.Status == RideStatus.InProgress && !profile.IsAvailable, "driver request keeps trip running pending passenger consent");
         Check(!(await Call(chauffeur, "accept", new RideCancellationRequestModel(Id: requestId))).Success, "driver cannot approve own request");
         Ok(await Call(passenger, "reject", new RideCancellationRequestModel(Id: requestId)));
-        Check(trip.Status == RideStatus.InProgress, "passenger refusal keeps same ride status");
+        Check(trip.Status == RideStatus.CancellationPending, "passenger refusal keeps cancellation pending administration");
+        Check(await db.RideCancellationRequests.AnyAsync(x => x.Id == requestId && x.Status == RideCancellationStatus.AdminReviewPending), "passenger refusal escalates directly");
+        Ok(await Call(administration, "adminApprove", new RideCancellationRequestModel(Id: requestId)));
+        Check(trip.Status == RideStatus.Cancelled && profile.IsAvailable, "administration finalizes unpaid cancellation");
+        trip = await Trip(RideStatus.InProgress);
         requestId = Data(await Call(chauffeur, "add", new RideCancellationRequestModel(RideId: trip.Id, Reason: "عطل مستمر"))).GetProperty("id").GetInt32();
         Ok(await Call(passenger, "accept", new RideCancellationRequestModel(Id: requestId)));
         Ok(await Call(passenger, "accept", new RideCancellationRequestModel(Id: requestId)));

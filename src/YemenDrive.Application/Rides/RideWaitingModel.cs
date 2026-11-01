@@ -117,11 +117,18 @@ public sealed class RideWaiting(
             throw new ServiceException("waiting_not_available", "الانتظار متاح أثناء الرحلة وقبل فتح الدفع فقط.");
         if (ride.WaitingPricePerMinute <= 0 || ride.WaitingMaxFee <= ride.WaitingFee)
             throw new ServiceException("waiting_not_configured", "الانتظار المدفوع غير مفعّل لهذه الرحلة أو وصل إلى سقف الرسوم.");
-        if (await db.PaymentWalletOperations.AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct) ||
-            await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && (x.Status == PaymentStatus.Pending || x.Status == PaymentStatus.Paid), ct) ||
-            await db.CashCollectionApprovals.AnyAsync(x => x.RideId == ride.Id && (x.Status == CashCollectionApprovalStatus.Pending || x.Status == CashCollectionApprovalStatus.Approved), ct))
+        if (await HasPaymentStartedAsync(ride.Id, ct))
             throw new ServiceException("payment_already_open", "لا يمكن إضافة انتظار بعد فتح طلب تحصيل.");
     }
+
+    private async Task<bool> HasPaymentStartedAsync(int rideId, CancellationToken ct) =>
+        await db.PaymentWalletOperations.AnyAsync(x => x.RideId == rideId && x.IsOpen, ct) ||
+        await db.PaymentTransactions.AnyAsync(x => x.RideId == rideId &&
+            (x.Status == PaymentStatus.Pending || x.Status == PaymentStatus.Authorized || x.Status == PaymentStatus.Paid), ct) ||
+        await db.CashPaymentRequests.AnyAsync(x => x.RideId == rideId &&
+            (x.Status == CashPaymentRequestStatus.Pending || x.Status == CashPaymentRequestStatus.DriverConfirmed), ct) ||
+        await db.CashCollectionApprovals.AnyAsync(x => x.RideId == rideId &&
+            (x.Status == CashCollectionApprovalStatus.Pending || x.Status == CashCollectionApprovalStatus.Approved), ct);
 
     private async Task<DriverLiveLocation> RequireStationaryLocationAsync(RideEntity ride, DateTime now, CancellationToken ct)
     {
@@ -140,8 +147,7 @@ public sealed class RideWaiting(
         var locationTime = await db.DriverLiveLocations.AsNoTracking().Where(x => x.DriverId == ride.DriverId).Select(x => (DateTime?)x.ObservedAtUtc).FirstOrDefaultAsync(ct);
         var activeFee = open is null ? 0 : RideWaitingCoordinator.FeeAt(open, now);
         var fare = ride.CustomerPrice ?? ride.ServerPrice ?? 0;
-        var walletPaymentOpen = await db.PaymentWalletOperations.AsNoTracking()
-            .AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct);
+        var paymentStarted = await HasPaymentStartedAsync(ride.Id, ct);
         return new
         {
             rideId = ride.Id, serverNowUtc = now, ride.Status,
@@ -150,7 +156,7 @@ public sealed class RideWaiting(
             baseFare = fare, ride.ServiceFee, totalAmount = fare + ride.ServiceFee + ride.WaitingFee + activeFee,
             connectionGraceSeconds = RideWaitingCoordinator.ConnectionGraceSeconds,
             connectionDeadlineUtc = locationTime?.AddSeconds(RideWaitingCoordinator.ConnectionGraceSeconds),
-            canRequest = ride.Status == RideStatus.InProgress && !ride.CustomerPaymentEnabled && !walletPaymentOpen && open is null && ride.WaitingPricePerMinute > 0 && ride.WaitingFee < ride.WaitingMaxFee,
+            canRequest = ride.Status == RideStatus.InProgress && !ride.CustomerPaymentEnabled && !paymentStarted && open is null && ride.WaitingPricePerMinute > 0 && ride.WaitingFee < ride.WaitingMaxFee,
             canDecide = open is { StartedAtUtc: null } && open.RequestedByUserId != userId,
             requestedByMe = open?.RequestedByUserId == userId,
             session = session is null ? null : new { session.Id, session.IsOpen, session.StartedAtUtc, session.EndedAtUtc, session.EndReason, session.FreeMinutes, session.PricePerMinute, session.MaxFee, session.Fee },

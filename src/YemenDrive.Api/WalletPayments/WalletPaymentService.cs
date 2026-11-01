@@ -11,15 +11,92 @@ using YemenDrive.Shared.Security;
 
 namespace YemenDrive.Api.WalletPayments;
 
-public sealed record WalletPaymentView(int Id, int RideId, int PaymentMethodId, string Status, string NextAction,
+public sealed record WalletPaymentView(int Id, int? RideId, int PaymentMethodId, string Status, string NextAction,
     string? CustomerName, string Mobile, decimal Amount, decimal? Fees, bool FeesKnown, string Currency,
     string FeeCurrency, string Recipient, string? ProviderReference, string Message, DateTime? PaidAtUtc,
-    string ProviderCode, string ProviderName, bool CustomerIsProviderVerified);
+    string ProviderCode, string ProviderName, bool CustomerIsProviderVerified, bool CanCancel,
+    string RequestId = "", WalletTopUpReceipt? Receipt = null);
+
+public sealed record WalletTopUpReceipt(string Number, decimal Amount, string Currency, decimal? ProviderFees,
+    bool FeesKnown, string ProviderName, string? CustomerName, string Mobile, string RequestId, string? ProviderReference,
+    DateTime? CompletedAtUtc, decimal? BalanceAfter, int? WalletTransactionId, int? JournalEntryId);
 
 public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserContext currentUser,
     IWalletPaymentGateway gateway, ExternalWalletPaymentSettlement settlement,
-    IRideRealtimePublisher? realtime = null)
+    IRideRealtimePublisher? realtime = null, ExternalWalletTopUpSettlement? topUps = null)
 {
+    private ExternalWalletTopUpSettlement TopUps => topUps ?? throw new ServiceException("top_up_unavailable", "خدمة الشحن غير مجهزة.");
+
+    private async Task<User> RequireTopUpCustomerAsync(CancellationToken token) =>
+        await db.Users.SingleOrDefaultAsync(x => x.Id == currentUser.RequireUserId() && x.IsActive && x.Role == UserRole.Customer, token)
+        ?? throw new ServiceException("wallet_access_denied", "الشحن متاح لحساب الراكب فقط.");
+
+    private async Task RequireScopeAsync(int? rideId, CancellationToken token)
+    {
+        if (rideId is int id) await RequireCustomerAsync(id, token);
+        else await RequireTopUpCustomerAsync(token);
+    }
+
+    private async Task LockScopeAsync(int? rideId, int customerId, CancellationToken token)
+    {
+        if (rideId is int id) { await RidePaymentGuard.LockAsync(db, id, token); return; }
+        var wallet = await db.Wallets.FromSqlInterpolated(
+            $"SELECT * FROM [Wallets] WITH (UPDLOCK,HOLDLOCK) WHERE [UserId] = {customerId}").SingleOrDefaultAsync(token);
+        if (wallet == null) throw new ServiceException("wallet_not_found", "محفظتك غير مجهزة.");
+    }
+
+    public async Task<WalletPaymentView?> GetTopUpAsync(int? paymentId, CancellationToken token, Guid? requestId = null)
+    {
+        var customer = await RequireTopUpCustomerAsync(token);
+        var query = db.PaymentWalletOperations.Where(x => x.RideId == null && x.CustomerId == customer.Id);
+        if (paymentId != null) query = query.Where(x => x.Id == paymentId);
+        else if (requestId != null) query = query.Where(x => x.RequestId == requestId.Value.ToString("N"));
+        else query = query.Where(x => x.IsOpen);
+        var operation = await query.OrderByDescending(x => x.Id).FirstOrDefaultAsync(token);
+        if (operation == null) return null;
+        await RecoverAsync(operation, token);
+        return View(operation);
+    }
+
+    public async Task<WalletPaymentView> StartTopUpAsync(int methodId, decimal amount, Guid requestId, CancellationToken token)
+    {
+        var customer = await RequireTopUpCustomerAsync(token);
+        if (amount <= 0 || amount > 9999999999999999m || decimal.Round(amount, 2) != amount || requestId == Guid.Empty)
+            throw new ServiceException("invalid_top_up_amount", "أدخل مبلغ شحن صحيحاً أكبر من صفر بمنزلتين عشريتين كحد أقصى.");
+        PaymentWalletOperation operation;
+        await using (var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token))
+        {
+            await LockScopeAsync(null, customer.Id, token);
+            var reference = requestId.ToString("N");
+            var same = await db.PaymentWalletOperations.SingleOrDefaultAsync(x => x.RequestId == reference, token);
+            if (same != null && (same.CustomerId != customer.Id || same.RideId != null || same.Amount != amount || same.PaymentMethodId != methodId))
+                throw new ServiceException("top_up_reference_conflict", "رقم المرجع مرتبط بعملية أخرى. استكمل العملية الأصلية.");
+            var existing = same ?? await db.PaymentWalletOperations.SingleOrDefaultAsync(x => x.CustomerId == customer.Id && x.RideId == null && x.IsOpen, token);
+            if (existing != null)
+            {
+                await tx.CommitAsync(token);
+                await RecoverAsync(existing, token);
+                return View(existing);
+            }
+            var method = await db.PaymentMethods.SingleOrDefaultAsync(x => x.Id == methodId, token);
+            var account = await db.PaymentProviderAccounts.SingleOrDefaultAsync(x => x.PaymentMethodId == methodId, token);
+            if (method == null || !method.IsActive || !method.IsAvailableForWalletTopUp || method.Kind != PaymentMethodKind.ExternalWallet ||
+                !WalletPaymentProviders.IsSupported(method.ProviderCode) || account == null || !account.IsEnabled ||
+                account.ProviderCode != method.ProviderCode || !gateway.IsReady(methodId, account.ConfigurationVersion))
+                throw new ServiceException("wallet_payment_unavailable", "خدمة هذه المحفظة غير متاحة حالياً. اختر طريقة أخرى.");
+            await TopUps.ValidateAsync(customer.Id, methodId, token);
+            operation = new PaymentWalletOperation { CustomerId = customer.Id, PaymentMethodId = methodId,
+                ProviderCode = method.ProviderCode, RequestId = reference, ConfigurationVersion = account.ConfigurationVersion,
+                RuntimeInstanceId = gateway.InstanceId, Mobile = NormalizeMobile(customer.PhoneNumber, method.ProviderCode),
+                Amount = amount, UpdatedAtUtc = DateTime.UtcNow };
+            db.PaymentWalletOperations.Add(operation);
+            await db.SaveChangesAsync(token);
+            await tx.CommitAsync(token);
+        }
+        return await RunProviderAsync(operation, ct => gateway.RequestAsync(operation.PaymentMethodId,
+            operation.ConfigurationVersion, operation.ProviderCode, operation.RequestId, operation.Mobile, operation.Amount, ct));
+    }
+
     public async Task<WalletPaymentView?> GetAsync(int rideId, CancellationToken token)
     {
         await RequireCustomerAsync(rideId, token);
@@ -49,7 +126,7 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
             EnsureRideReady(ride);
             if (await db.RideCancellationRequests.AnyAsync(x => x.RideId == rideId &&
                 (x.Status == RideCancellationStatus.DriverReviewPending || x.Status == RideCancellationStatus.AdminReviewPending ||
-                 x.Status == RideCancellationStatus.CustomerReviewPending), token))
+                 (x.Status == RideCancellationStatus.CustomerReviewPending || x.Status == RideCancellationStatus.RefundMethodPending || x.Status == RideCancellationStatus.RefundConsentPending)), token))
                 throw new ServiceException("ride_cancellation_pending", "توجد مراجعة لإلغاء الرحلة. لا يمكن بدء الدفع قبل حسمها.");
             if (await db.CashCollectionApprovals.AnyAsync(x => x.RideId == rideId &&
                 (x.Status == CashCollectionApprovalStatus.Pending || x.Status == CashCollectionApprovalStatus.Approved), token) ||
@@ -73,7 +150,8 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
             operation = new PaymentWalletOperation
             {
                 RideId = ride.Id, CustomerId = customerId, PaymentMethodId = paymentMethodId, ProviderCode = method.ProviderCode,
-                RequestId = "YD-" + Guid.NewGuid().ToString("N"), ConfigurationVersion = account.ConfigurationVersion,
+                // A fresh withdrawal gets a fresh reference; Confirm/Complete keep this stored value.
+                RequestId = Guid.NewGuid().ToString("N"), ConfigurationVersion = account.ConfigurationVersion,
                 RuntimeInstanceId = gateway.InstanceId, Mobile = mobile, Amount = amount,
                 UpdatedAtUtc = DateTime.UtcNow
             };
@@ -86,7 +164,7 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
             operation.ConfigurationVersion, operation.ProviderCode, operation.RequestId, operation.Mobile, operation.Amount, ct));
     }
 
-    public async Task<WalletPaymentView> ConfirmAsync(int rideId, int paymentId, bool approved, CancellationToken token)
+    public async Task<WalletPaymentView> ConfirmAsync(int? rideId, int paymentId, bool approved, CancellationToken token)
     {
         var claimed = await ClaimAsync(rideId, paymentId, approved ? "Confirm" : "Cancel", token);
         var operation = claimed.Operation;
@@ -104,39 +182,59 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
             operation.ConfigurationVersion, operation.ProviderCode, operation.ProviderOperationId!, true, ct));
     }
 
-    public async Task<WalletPaymentView> CompleteAsync(int rideId, int paymentId, string? code, CancellationToken token)
+    public async Task<WalletPaymentView> CompleteAsync(int? rideId, int paymentId, string? code, CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(code) || code.Trim().Length > 256)
             throw new ServiceException("verification_code_required", "أدخل الرمز أو رقم القسيمة المطلوب من المحفظة المختارة.");
+        await RequireScopeAsync(rideId, token);
+        var provider = await db.PaymentWalletOperations.Where(x => x.Id == paymentId && x.RideId == rideId)
+            .Where(x => x.CustomerId == currentUser.RequireUserId())
+            .Select(x => x.ProviderCode).SingleOrDefaultAsync(token)
+            ?? throw new ServiceException("wallet_payment_not_found", "عملية الدفع غير موجودة.");
+        var verificationCode = provider == "Floosak" ? NormalizeFloosakOtp(code) : code.Trim();
         var claimed = await ClaimAsync(rideId, paymentId, "Complete", token);
         var operation = claimed.Operation;
         if (!claimed.Claimed) return View(operation);
         // This value exists only in the call stack, never in an entity, log or response.
         return await RunProviderAsync(operation, ct => gateway.CompleteAsync(operation.PaymentMethodId,
-            operation.ConfigurationVersion, operation.ProviderCode, operation.ProviderOperationId!, code.Trim(), ct), code.Trim());
+            operation.ConfigurationVersion, operation.ProviderCode, operation.ProviderOperationId!, verificationCode, ct), verificationCode);
     }
 
-    private async Task<(PaymentWalletOperation Operation, bool Claimed)> ClaimAsync(int rideId, int paymentId,
+    public static string NormalizeFloosakOtp(string value)
+    {
+        var digits = new StringBuilder();
+        foreach (var character in value.Trim())
+        {
+            if (!char.IsDigit(character))
+                throw new ServiceException("invalid_verification_code", "رمز فلوسك يجب أن يحتوي على أرقام فقط. أدخل الرمز كما وصل إلى هاتفك.");
+            digits.Append((int)char.GetNumericValue(character));
+        }
+        if (!int.TryParse(digits.ToString(), System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out _))
+            throw new ServiceException("invalid_verification_code", "رمز فلوسك غير صالح. أدخل الرمز الرقمي كما وصل إلى هاتفك.");
+        return digits.ToString();
+    }
+
+    private async Task<(PaymentWalletOperation Operation, bool Claimed)> ClaimAsync(int? rideId, int paymentId,
         string stage, CancellationToken token)
     {
-        await RequireCustomerAsync(rideId, token);
-        var operation = await db.PaymentWalletOperations.SingleOrDefaultAsync(x => x.Id == paymentId && x.RideId == rideId, token)
+        await RequireScopeAsync(rideId, token);
+        var operation = await db.PaymentWalletOperations.SingleOrDefaultAsync(x => x.Id == paymentId && x.RideId == rideId && x.CustomerId == currentUser.RequireUserId(), token)
             ?? throw new ServiceException("wallet_payment_not_found", "عملية الدفع غير موجودة.");
         await RecoverAsync(operation, token);
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
-        await RidePaymentGuard.LockAsync(db, rideId, token);
+        await LockScopeAsync(rideId, operation.CustomerId, token);
         await db.Entry(operation).ReloadAsync(token);
         var canClaim = stage == "Cancel"
-            ? operation.Status is "AwaitingConfirmation" or "AwaitingCode"
+            ? WalletPaymentCancellationPolicy.CanCancel(operation)
             : stage == "Confirm" ? operation.Status == "AwaitingConfirmation" : operation.Status == "AwaitingCode";
         if (!canClaim) { await tx.CommitAsync(token); return (operation, false); }
-        var ride = await db.Rides.SingleAsync(x => x.Id == rideId, token);
         if (stage != "Cancel")
         {
             var accountValid = await db.PaymentProviderAccounts.AsNoTracking().AnyAsync(x =>
                 x.PaymentMethodId == operation.PaymentMethodId && x.IsEnabled && x.ProviderCode == operation.ProviderCode &&
                 x.ConfigurationVersion == operation.ConfigurationVersion && x.PaymentMethod.IsActive &&
-                x.PaymentMethod.IsAvailableForRidePayment && x.PaymentMethod.ProviderCode == operation.ProviderCode, token);
+                (rideId != null ? x.PaymentMethod.IsAvailableForRidePayment : x.PaymentMethod.IsAvailableForWalletTopUp) && x.PaymentMethod.ProviderCode == operation.ProviderCode, token);
             if (!accountValid)
             {
                 SetTerminal(operation, "Cancelled", "session_expired");
@@ -145,6 +243,9 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
                 await NotifyAsync(operation);
                 return (operation, false);
             }
+            if (rideId is int actualRideId)
+            {
+            var ride = await db.Rides.SingleAsync(x => x.Id == actualRideId, token);
             EnsureRideReady(ride);
             var paymentMethodCode = await db.PaymentMethods.AsNoTracking()
                 .Where(x => x.Id == operation.PaymentMethodId).Select(x => x.Code).SingleAsync(token);
@@ -153,6 +254,8 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
                 await db.PaymentTransactions.AnyAsync(x => x.RideId == rideId && x.Status == PaymentStatus.Paid, token))
                 throw new ServiceException("wallet_payment_ride_changed", "تغيرت حالة دفع الرحلة. حدّث بيانات الرحلة قبل المتابعة.");
             await settlement.ValidateAsync(ride, operation.PaymentMethodId, token);
+            }
+            else await TopUps.ValidateAsync(operation.CustomerId, operation.PaymentMethodId, token);
         }
         operation.Stage = stage;
         operation.Status = "Processing";
@@ -199,7 +302,7 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
         if (!operation.IsOpen || operation.Status is "Succeeded" or "ReviewRequired") return;
         // Only one state transition can win against Confirm/Complete. Serialize on the same ride.
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
-        await RidePaymentGuard.LockAsync(db, operation.RideId, token);
+        await LockScopeAsync(operation.RideId, operation.CustomerId, token);
         await db.Entry(operation).ReloadAsync(token);
         var changed = false;
         if (operation.Status == "Processing" && (operation.RuntimeInstanceId != gateway.InstanceId ||
@@ -222,7 +325,11 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
 
     private async Task TrySettleAsync(PaymentWalletOperation operation)
     {
-        try { await settlement.SettleAsync(operation, CancellationToken.None); }
+        try
+        {
+            if (operation.RideId == null) await TopUps.SettleAsync(operation, CancellationToken.None);
+            else await settlement.SettleAsync(operation, CancellationToken.None);
+        }
         catch (Exception)
         {
             // The persisted ProviderSucceeded row remains recoverable on GET. Do not submit another debit.
@@ -280,6 +387,21 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
     {
         operation.UpdatedAtUtc = DateTime.UtcNow;
         operation.NextAction = "None";
+        // Invalid code syntax can be rejected locally by the library without submitting HTTP.
+        // Its retained OTP action and matching workflow identify a correction within the same attempt.
+        if (operation.ProviderCode == "Floosak" && operation.Stage == "Complete" &&
+            result.Status == OperationStatus.Failed && result.ErrorCode == WalletErrorCode.InvalidRequest &&
+            result.NextAction == WalletStepNextAction.OneTimePassword && result.OperationId == operation.ProviderOperationId &&
+            !string.IsNullOrWhiteSpace(result.OperationId) && result.RequestId == operation.RequestId &&
+            result.ExpiresAt > DateTimeOffset.UtcNow && ValidCustomer(operation, result.Customer) &&
+            result.Receipt is { CompletedAt: null } retryReceipt && retryReceipt.Amount.Amount == operation.Amount &&
+            retryReceipt.Amount.Currency == CurrencyCode.YER && retryReceipt.Reference.ClientRequestId.Value == operation.RequestId)
+        {
+            operation.Status = "AwaitingCode";
+            operation.NextAction = "OneTimePassword";
+            operation.ErrorCode = "verification_failed";
+            return;
+        }
         var knownReceipt = result.Receipt;
         var knownReference = result.ProviderReference ?? knownReceipt?.Reference.ProviderTransactionId?.Value;
         if (knownReceipt is not null && knownReceipt.Amount.Amount == operation.Amount &&
@@ -302,6 +424,7 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
                 return;
             }
             operation.ProviderReference = reference;
+            if (receipt.Fees is { } finalFees) { operation.Fees = finalFees.Amount; operation.FeesKnown = true; }
             operation.ProviderSucceededAtUtc = receipt.CompletedAt?.UtcDateTime ?? DateTime.UtcNow;
             operation.Status = "ProviderSucceeded";
             operation.ErrorCode = null;
@@ -334,10 +457,10 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
             operation.ExpiresAtUtc = result.ExpiresAt?.UtcDateTime ?? DateTime.UtcNow.AddMinutes(5);
             return;
         }
-        var definitiveFailure = result.Status == OperationStatus.Failed && result.ErrorCode is
-            WalletErrorCode.InsufficientFunds or WalletErrorCode.Rejected or WalletErrorCode.LimitExceeded or
-            WalletErrorCode.InvalidRequest or WalletErrorCode.AuthenticationFailed or WalletErrorCode.WorkflowExpired or
-            WalletErrorCode.WorkflowNotFound or WalletErrorCode.CanceledBeforeSend;
+        // Failed is the SDK's definitive outcome, including provider error codes unknown to this app.
+        // The SDK reports uncertainty after dispatch as Unknown/Pending, so message text and error-code
+        // allowlists must not turn a rejected withdrawal into an indefinitely reserved payment.
+        var definitiveFailure = result.Status == OperationStatus.Failed && result.Receipt?.CompletedAt is null;
         var code = result.ErrorCode switch
         {
             WalletErrorCode.InsufficientFunds => "insufficient_funds",
@@ -376,7 +499,11 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
         operation.NextAction, operation.CustomerName, operation.Mobile, operation.Amount, operation.Fees,
         operation.FeesKnown, operation.Currency, operation.FeeCurrency, "يمن درايف", operation.ProviderReference,
         Message(operation), operation.PaidAtUtc, operation.ProviderCode, WalletPaymentProviders.Name(operation.ProviderCode),
-        !string.IsNullOrWhiteSpace(operation.CustomerName));
+        !string.IsNullOrWhiteSpace(operation.CustomerName), WalletPaymentCancellationPolicy.CanCancel(operation), operation.RequestId,
+        operation.RideId == null && operation.Status == "Succeeded" ? new WalletTopUpReceipt($"TOPUP-{operation.Id}",
+            operation.Amount, operation.Currency, operation.Fees, operation.FeesKnown, WalletPaymentProviders.Name(operation.ProviderCode),
+            operation.CustomerName, operation.Mobile, operation.RequestId, operation.ProviderReference, operation.PaidAtUtc,
+            operation.BalanceAfter, operation.WalletTransactionId, operation.JournalEntryId) : null);
 
     private static string Message(PaymentWalletOperation operation)
     {
@@ -387,7 +514,7 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
 
     private static string StateMessage(PaymentWalletOperation operation) => operation.Status switch
     {
-        "Succeeded" => "تم دفع قيمة الرحلة بنجاح عبر فلوسك.",
+        "Succeeded" => operation.RideId == null ? "تم شحن محفظتك بنجاح عبر فلوسك." : "تم دفع قيمة الرحلة بنجاح عبر فلوسك.",
         "AwaitingConfirmation" => "تحقق من بيانات حسابك والمبلغ ثم أكد الدفع.",
         "AwaitingCode" => operation.NextAction switch
         {
@@ -397,6 +524,7 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
         },
         "ProviderSucceeded" => "أكدت فلوسك الخصم وجارٍ تسجيل دفعتك. لا تكرر الدفع.",
         "Processing" => "جارٍ تنفيذ عملية الدفع. يرجى الانتظار.",
+        "ReviewRequired" when WalletPaymentCancellationPolicy.CanCancel(operation) => "تعذر تحضير بيانات حساب فلوسك قبل إرسال رمز التحقق. يمكنك إلغاء هذه المحاولة واختيار طريقة دفع أخرى.",
         "ReviewRequired" => "تعذر التأكد من نتيجة العملية. لا تكرر الدفع ولا تدفع نقداً؛ تواصل مع الدعم واذكر رقم العملية.",
         "Cancelled" => operation.ErrorCode == "session_expired" ? "انتهت جلسة الدفع. يمكنك بدء عملية جديدة." : "أُلغيت عملية الدفع قبل الخصم.",
         _ => operation.ErrorCode switch
@@ -413,7 +541,7 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
 
     private async Task NotifyAsync(PaymentWalletOperation operation)
     {
-        if (realtime is null) return;
+        if (realtime is null || operation.RideId == null) return;
         try
         {
             var ride = await db.Rides.AsNoTracking().SingleAsync(x => x.Id == operation.RideId, CancellationToken.None);

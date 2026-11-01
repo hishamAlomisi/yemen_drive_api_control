@@ -1420,6 +1420,10 @@ namespace YemenDrive.Database.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<decimal?>("BalanceAfter")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<Guid>("ConfigurationVersion")
                         .HasColumnType("uniqueidentifier");
 
@@ -1459,6 +1463,9 @@ namespace YemenDrive.Database.Migrations
 
                     b.Property<bool>("IsOpen")
                         .HasColumnType("bit");
+
+                    b.Property<int?>("JournalEntryId")
+                        .HasColumnType("int");
 
                     b.Property<string>("Mobile")
                         .IsRequired()
@@ -1504,7 +1511,7 @@ namespace YemenDrive.Database.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("nvarchar(80)");
 
-                    b.Property<int>("RideId")
+                    b.Property<int?>("RideId")
                         .HasColumnType("int");
 
                     b.Property<byte[]>("RowVersion")
@@ -1529,7 +1536,14 @@ namespace YemenDrive.Database.Migrations
                     b.Property<DateTime?>("UpdatedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<int?>("WalletTransactionId")
+                        .HasColumnType("int");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("CustomerId")
+                        .IsUnique()
+                        .HasFilter("[IsOpen] = 1 AND [RideId] IS NULL");
 
                     b.HasIndex("PaymentMethodId");
 
@@ -1538,7 +1552,7 @@ namespace YemenDrive.Database.Migrations
 
                     b.HasIndex("RideId")
                         .IsUnique()
-                        .HasFilter("[IsOpen] = 1");
+                        .HasFilter("[IsOpen] = 1 AND [RideId] IS NOT NULL");
 
                     b.HasIndex("CustomerId", "RideId", "CreatedAtUtc");
 
@@ -1742,6 +1756,15 @@ namespace YemenDrive.Database.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<Guid?>("ArrivalAlertId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("ArrivalAlertSentAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("ArrivalAlertStoppedAtUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<decimal>("CancellationFee")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
@@ -1775,6 +1798,9 @@ namespace YemenDrive.Database.Migrations
 
                     b.Property<double>("DestinationLongitude")
                         .HasColumnType("float");
+
+                    b.Property<DateTime?>("DriverArrivalAcknowledgedAtUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<decimal>("DriverCommissionAmount")
                         .HasPrecision(18, 2)
@@ -2025,6 +2051,15 @@ namespace YemenDrive.Database.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
 
+                    b.Property<int>("RefundChoiceRevision")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("RefundConsentedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("RequestedByDriver")
+                        .HasColumnType("bit");
+
                     b.Property<decimal?>("RequestedRefundAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
@@ -2056,7 +2091,7 @@ namespace YemenDrive.Database.Migrations
 
                     b.HasIndex("RideId", "Status")
                         .IsUnique()
-                        .HasFilter("[Status] IN (0, 2)");
+                        .HasFilter("[Status] IN (0, 2, 5, 9, 10)");
 
                     b.ToTable("RideCancellationRequests", t =>
                         {
@@ -3255,8 +3290,7 @@ namespace YemenDrive.Database.Migrations
                     b.HasOne("YemenDrive.Database.Entities.Ride", "Ride")
                         .WithMany()
                         .HasForeignKey("RideId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("PaymentMethod");
 

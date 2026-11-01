@@ -36,9 +36,11 @@ public static class WalletProviderMessageFormatter
         if (result.ErrorCode == WalletErrorCode.AuthenticationFailed ||
             Has(match, @"authentication failed|invalid (?:agent |api |client )?credentials|unauthorized|invalid (?:access )?token|بيانات دخول الوكيل|فشل (?:تسجيل الدخول|المصادقه)"))
             return $"تعذر اتصال التطبيق بحساب الوكيل لدى {providerName}. يمكنك التواصل مع دعم يمن درايف.";
+        if (string.Equals(text?.Trim(), FloosakOtpValidation.MismatchMessage, StringComparison.OrdinalIgnoreCase))
+            return $"أفادت {providerName} بأن رمز التحقق لا يطابق رقم معاملة السحب. استخدم الرمز المرسل لهذه العملية؛ وإذا بدأت عملية جديدة فاستخدم رمزها الجديد.";
         if (Has(match, @"(?:otp|pin|verification code|one.time password|رمز التحقق|رمز التاكيد|الرمز).{0,30}(?:expired|انته|منتهي)|(?:expired|انتهت صلاحيه).{0,25}(?:otp|pin|code|رمز|الرمز)"))
             return $"أفادت {providerName} بأن صلاحية رمز التحقق انتهت. اتبع حالة العملية المعروضة قبل بدء أي طلب جديد.";
-        if (Has(match, @"(?:otp|pin|verification code|one.time password|رمز التحقق|رمز التاكيد|الرمز).{0,30}(?:invalid|incorrect|wrong|غير صحيح|خاطئ|خاطي)|(?:invalid|incorrect|wrong).{0,15}(?:otp|pin|code)|رمز (?:خاطئ|غير صحيح)"))
+        if (Has(match, @"(?:otp|pin|verification code|one.time password|رمز التحقق|رمز التاكيد|الرمز|الكود|كود التحقق).{0,30}(?:invalid|incorrect|wrong|غير صحيح|خاطئ|خاطي)|(?:invalid|incorrect|wrong).{0,15}(?:otp|pin|code)|رمز (?:خاطئ|غير صحيح)"))
             return $"أفادت {providerName} بأن رمز التحقق غير صحيح. تحقق من الرمز المرسل إلى هاتفك.";
         if (Has(match, @"(?:account|wallet|customer|user).{0,30}(?:not found|does not exist|not exist|not registered|unregistered)|(?:الحساب|المحفظه|العميل|الرقم).{0,30}(?:غير موجود|غير مسجل|لا يوجد)|لا يوجد حساب|لم يتم العثور علي"))
             return $"لم تجد {providerName} حساباً مسجلاً برقم هاتفك. تحقق من تسجيل هذا الرقم في {providerName}.";
@@ -79,7 +81,11 @@ public static class WalletProviderMessageFormatter
                     ? $"أكدت {providerName} نجاح الخطوة الحالية. يلزم إكمال الخطوة المعروضة لإتمام الدفع."
                     : $"وصل رد من {providerName}، لكن لم تتأكد مطابقة نتيجة الخصم بعد. لا تكرر الدفع حتى تتضح نتيجة العملية.";
 
+        if (Has(match, @"provider response could not establish the operation outcome"))
+            return $"تعذر تحديد نتيجة طلب السحب من رد {providerName}. لا تكرر الدفع حتى تتأكد نتيجة الطلب؛ يمكنك التواصل مع دعم يمن درايف لمراجعته.";
+
         // A generic error code must not erase a more specific, safe business message.
+        if (text?.StartsWith($"أفادت {providerName}", StringComparison.Ordinal) == true) return Limit(text);
         if (!string.IsNullOrWhiteSpace(text) && !Has(match, @"^(?:error|failed|operation failed|request failed|rejected|invalid request|فشل|خطا|فشل الطلب|فشلت العمليه)[.!: ]*$"))
             return Has(text, @"[\u0600-\u06ff]")
                 ? Limit($"أفادت {providerName}: " + text)

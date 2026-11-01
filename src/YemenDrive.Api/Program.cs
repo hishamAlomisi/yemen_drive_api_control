@@ -83,8 +83,11 @@ builder.Services.AddSingleton<IWalletLoginClientFactory, WalletLoginClientFactor
 builder.Services.AddSingleton<WalletLoginRuntime>();
 builder.Services.AddHostedService<WalletLoginWorker>();
 builder.Services.AddSingleton<IWalletPaymentGateway, WalletPaymentGateway>();
+builder.Services.AddSingleton<IWalletPaymentAvailability>(services => (IWalletPaymentAvailability)services.GetRequiredService<IWalletPaymentGateway>());
 builder.Services.AddScoped<WalletPaymentService>();
 builder.Services.AddScoped<ExternalWalletPaymentSettlement>();
+builder.Services.AddScoped<ExternalWalletTopUpSettlement>();
+builder.Services.AddScoped<CashCollectionAccountingReconciliation>();
 // Google provider keys are read only from server configuration (for example
 // environment variables or user-secrets). They are never persisted or sent
 // to Flutter clients.
@@ -98,6 +101,8 @@ builder.Services.AddHttpClient<GoogleMapsGateway>(client =>
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<NearbyDriverSubscriptionStore>();
+builder.Services.AddSingleton<RideParticipantPresence>();
+builder.Services.AddSingleton<IRideParticipantPresence>(provider => provider.GetRequiredService<RideParticipantPresence>());
 builder.Services.AddScoped<TrackingHubAccessPolicy>();
 builder.Services.AddScoped<IRideRealtimePublisher, SignalRRideRealtimePublisher>();
 builder.Services.AddScoped<NotificationSaveCaptureInterceptor>();
@@ -562,6 +567,7 @@ static async Task SeedAdministratorAsync(IServiceProvider services)
     await using var scope = services.CreateAsyncScope();
     var db = scope.ServiceProvider.GetRequiredService<YemenDriveDbContext>();
     await db.Database.MigrateAsync();
+    await scope.ServiceProvider.GetRequiredService<CashCollectionAccountingReconciliation>().RunAsync(CancellationToken.None);
 
     const string phone = "700000001";
     var existing = await db.Users.Include(x => x.Wallet)

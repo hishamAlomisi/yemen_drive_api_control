@@ -204,7 +204,9 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<PaymentProviderAccount>().Property(x => x.LoginStatus)
             .HasMaxLength(40).HasDefaultValue("NotConfigured").IsRequired();
         modelBuilder.Entity<PaymentProviderAccount>().Property(x => x.LastErrorCode).HasMaxLength(80);
-        modelBuilder.Entity<PaymentWalletOperation>().HasIndex(x => x.RideId).IsUnique().HasFilter("[IsOpen] = 1");
+        modelBuilder.Entity<PaymentWalletOperation>().HasIndex(x => x.RideId).IsUnique().HasFilter("[IsOpen] = 1 AND [RideId] IS NOT NULL");
+        modelBuilder.Entity<PaymentWalletOperation>().HasIndex(x => x.CustomerId).IsUnique().HasFilter("[IsOpen] = 1 AND [RideId] IS NULL");
+        modelBuilder.Entity<PaymentWalletOperation>().Property(x => x.BalanceAfter).HasPrecision(18, 2);
         modelBuilder.Entity<PaymentWalletOperation>().HasIndex(x => x.RequestId).IsUnique();
         modelBuilder.Entity<PaymentWalletOperation>().HasIndex(x => new { x.CustomerId, x.RideId, x.CreatedAtUtc });
         modelBuilder.Entity<PaymentWalletOperation>().HasOne(x => x.Ride).WithMany()
@@ -250,7 +252,7 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<RideCancellationRequest>().Property(x => x.RowVersion).IsRowVersion();
         modelBuilder.Entity<RideCancellationRequest>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
         modelBuilder.Entity<RideCancellationRequest>().HasIndex(x => new { x.RideId, x.Status })
-            .IsUnique().HasFilter("[Status] IN (0, 2)");
+            .IsUnique().HasFilter("[Status] IN (0, 2, 5, 9, 10)");
         modelBuilder.Entity<RideCancellationRequest>().Property(x => x.Reason).HasMaxLength(1000).IsRequired();
         modelBuilder.Entity<RideCancellationRequest>().Property(x => x.DriverNote).HasMaxLength(1000);
         modelBuilder.Entity<RideCancellationRequest>().Property(x => x.AdminNote).HasMaxLength(1000);

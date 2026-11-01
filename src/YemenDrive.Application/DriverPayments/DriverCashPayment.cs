@@ -55,6 +55,8 @@ public sealed class DriverCashPayment(
         if (ride.DriverId != driverId)
             throw new ServiceException("ride_access_denied", "هذه الرحلة ليست مسندة إلى السائق الحالي.");
         await RidePaymentGuard.EnsureAvailableAsync(db, ride.Id, token);
+        if (!string.Equals(ride.PaymentMethodCode, "cash", StringComparison.OrdinalIgnoreCase))
+            throw new ServiceException("cash_payment_not_selected", "اختار الراكب الدفع بالمحفظة. يجب أن يختار النقد بنفسه قبل تسجيل تحصيل نقدي.");
         CashPaymentRequestEntity? confirmedCustomerCashRequest = null;
         if (ride.Status != RideStatus.InProgress)
         {
@@ -186,7 +188,17 @@ public sealed class DriverCashPayment(
         // separate receivable from that same driver; it must therefore appear
         // in the settlement balance as well as in the ledger journal.
         var customerWalletExcess = Math.Max(0m, difference);
-        var driverSettlementReceivable = platformReceivable + customerWalletExcess;
+        var driverNet = ride.DriverShare ?? fare - ride.DriverCommissionAmount;
+        var driverSettlementReceivable = Math.Max(0m, model.CashReceived - driverNet);
+        var driverWalletCredit = Math.Max(0m, driverNet - model.CashReceived);
+        if (driverWalletCredit > 0)
+        {
+            var driverWallet = await db.Wallets.SingleAsync(x => x.UserId == driverId, token);
+            if (driverWallet.Currency != currency) throw new ServiceException("currency_mismatch", "عملة محفظة السائق لا تطابق الدفعة.");
+            driverWallet.Balance += driverWalletCredit;
+            db.WalletTransactions.Add(new WalletTransaction { WalletId = driverWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Credit,
+                Amount = driverWalletCredit, BalanceAfter = driverWallet.Balance, Description = "مستحق السائق المغطى من محفظة العميل" });
+        }
         if (driverSettlementReceivable > 0)
         {
             // With cash, the driver physically holds the whole amount. The

@@ -61,34 +61,26 @@ internal static class WalletRideGuardScenarios
         foreach (var enabled in new[] { true, false })
             Code(await Call(driverRide, "update", new RideModel(Id: ride.Id, CustomerPaymentEnabled: enabled)),
                 "wallet_payment_in_progress", "driver cannot alter payment controls during wallet settlement");
-        Code(await Call(passengerCancel, "add", new RideCancellationRequestModel(RideId: ride.Id, Reason: "سبب اختبار")),
-            "wallet_payment_in_progress", "rider cannot cancel an uncertain wallet debit");
+        Check((await Call(passengerCancel, "add", new RideCancellationRequestModel(RideId: ride.Id, Reason: "لم أتمكن من الدفع عبر المحفظة"))).Success,
+            "rider can submit a cancellation request while the debit outcome is being checked");
         Code(await Call(driverCancel, "add", new RideCancellationRequestModel(RideId: ride.Id, Reason: "سبب اختبار")),
-            "wallet_payment_in_progress", "driver cannot cancel an uncertain wallet debit");
-
-        var request = new YemenDrive.Database.Entities.RideCancellationRequest
-        {
-            RideId = ride.Id, CustomerId = customer, DriverId = driver, RideStatusAtRequest = RideStatus.InProgress,
-            Status = RideCancellationStatus.CustomerReviewPending, Reason = "طلب سابق"
-        };
-        db.RideCancellationRequests.Add(request); await db.SaveChangesAsync();
-        Code(await Call(passengerCancel, "accept", new RideCancellationRequestModel(Id: request.Id)),
-            "wallet_payment_in_progress", "stale rider cancellation approval cannot race wallet settlement");
-        request.Status = RideCancellationStatus.DriverReviewPending; await db.SaveChangesAsync();
-        Code(await Call(driverCancel, "accept", new RideCancellationRequestModel(Id: request.Id)),
-            "wallet_payment_in_progress", "stale driver cancellation approval cannot race wallet settlement");
-        request.Status = RideCancellationStatus.AdminReviewPending; await db.SaveChangesAsync();
+            "ride_cancellation_already_open", "driver cannot create a second cancellation request for the same ride");
+        var request = await db.RideCancellationRequests.SingleAsync(x => x.RideId == ride.Id);
+        Check((await Call(driverCancel, "accept", new RideCancellationRequestModel(Id: request.Id))).Success &&
+            request.Status == RideCancellationStatus.AdminReviewPending,
+            "driver approval forwards an unresolved payment cancellation to administration");
         Code(await Call(adminCancel, "adminApprove", new RideCancellationRequestModel(Id: request.Id)),
             "wallet_payment_in_progress", "admin cannot finalize cancellation before provider result is known");
-        Check(ride.Status == RideStatus.InProgress && ride.TotalAmount == 1100 &&
+        Check(ride.Status == RideStatus.CancellationPending && ride.TotalAmount == 1100 &&
             !await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id) &&
             !await db.RideWaitingSessions.AnyAsync(x => x.RideId == ride.Id),
-            "rejected actions leave fare, ride and money unchanged");
+            "cancellation review freezes the trip without changing fare or money");
         var detail = Data(await Call(driverRide, "get", new RideModel(Id: ride.Id)));
         Check(detail.GetProperty("walletPaymentPending").GetBoolean() && !detail.GetProperty("paymentCompleted").GetBoolean(),
             "driver receives a pending status without a false paid receipt");
 
         request.Status = RideCancellationStatus.AdminRejected;
+        ride.Status = RideStatus.InProgress;
         operation.Status = "Succeeded";
         db.PaymentTransactions.Add(new PaymentTransaction
         {
@@ -103,7 +95,7 @@ internal static class WalletRideGuardScenarios
         detail = Data(await Call(driverRide, "get", new RideModel(Id: ride.Id)));
         Check(!detail.GetProperty("walletPaymentPending").GetBoolean() && detail.GetProperty("paymentCompleted").GetBoolean(),
             "driver sees final paid status after settlement");
-        Console.WriteLine("PASS: uncertain wallet operations freeze fare, payment controls and cancellation; confirmed payment allows driver completion.");
+        Console.WriteLine("PASS: uncertain payments allow cancellation review while freezing fare and final money settlement; confirmed payment allows completion.");
     }
 
     private static Task<ApiResult> Call<T>(ModelService<T> service, string operation, T model) where T : class =>

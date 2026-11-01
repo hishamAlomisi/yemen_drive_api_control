@@ -35,7 +35,8 @@ public enum CashPaymentRequestStatus { Pending, DriverConfirmed, DriverRejected,
 /// </summary>
 public enum CashCancellationRefundMethod { ReturnFromDriver = 1, CreditCustomerWallet = 2 }
 /// <summary>Lifecycle of a cancellation case.  Financial reversal is only possible after administration approves it.</summary>
-public enum RideCancellationStatus { DriverReviewPending, DriverRejected, AdminReviewPending, AdminApproved, AdminRejected, CustomerReviewPending, CustomerApproved, CustomerRejected, DriverCancelled }
+public enum RideCancellationStatus { DriverReviewPending, DriverRejected, AdminReviewPending, AdminApproved, AdminRejected, CustomerReviewPending, CustomerApproved, CustomerRejected, DriverCancelled,
+    RefundMethodPending = 9, RefundConsentPending = 10 }
 public enum RideCancellationDriverDecision { None, Accepted, Rejected, ReferredToAdmin }
 public enum PaymentStatus { Pending, Authorized, Paid, Failed, Refunded, Cancelled }
 public enum PaymentMethodKind { ExternalWallet, Card, BankTransfer }
@@ -217,6 +218,10 @@ public sealed class Ride : Entity
     public string PaymentMethodCode { get; set; } = "cash";
     public bool PaymentRequiredBeforeStart { get; set; }
     public string? RoutePolyline { get; set; }
+    public DateTime? DriverArrivalAcknowledgedAtUtc { get; set; }
+    public Guid? ArrivalAlertId { get; set; }
+    public DateTime? ArrivalAlertSentAtUtc { get; set; }
+    public DateTime? ArrivalAlertStoppedAtUtc { get; set; }
     public DateTime? StartedAtUtc { get; set; }
     public DateTime? CompletedAtUtc { get; set; }
     public ICollection<RideOffer> Offers { get; set; } = new List<RideOffer>();
@@ -384,6 +389,9 @@ public sealed class CashPaymentRequest : Entity
 /// </summary>
 public sealed class RideCancellationRequest : Entity
 {
+    public bool RequestedByDriver { get; set; }
+    public int RefundChoiceRevision { get; set; }
+    public DateTime? RefundConsentedAtUtc { get; set; }
     public byte[] RowVersion { get; set; } = [];
     public int RideId { get; set; }
     public Ride Ride { get; set; } = null!;

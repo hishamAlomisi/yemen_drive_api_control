@@ -79,7 +79,9 @@ try
     await ExternalWalletPaymentPostsOnceAndLocksOtherTendersAsync(db, configuration, fixture);
     await CustomerPaymentAccessChangesArePublishedAsync(db, configuration, fixture, options);
     await PrestartPaymentScenarios.RunAsync(db, configuration, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+    await CancellationRefundScenarios.RunAsync(db, configuration, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
 
+    await ExpandedCancellationAndAccountingAsync(db, configuration, fixture);
     Console.WriteLine("PASS: financial integration scenarios completed on an isolated temporary database.");
 }
 finally
@@ -87,6 +89,96 @@ finally
     await using var cleanup = new YemenDriveDbContext(options);
     await cleanup.Database.EnsureDeletedAsync();
     if (File.Exists(settingsPath)) File.Delete(settingsPath);
+}
+
+static async Task ExpandedCancellationAndAccountingAsync(YemenDriveDbContext db, DatabaseConfigurationStore config, Fixture fixture)
+{
+    var accounting = RideAccounting(db);
+    var publisher = new RecordingRideRealtimePublisher();
+    var rider = new RideCancellationRequestService(db, config, new TestCurrentUser(fixture.CustomerId), accounting, publisher);
+    var driver = new RideCancellationRequestService(db, config, new TestCurrentUser(fixture.DriverId), accounting, publisher);
+    var admin = new RideCancellationRequestService(db, config, new TestCurrentUser(fixture.AdminId), accounting, publisher);
+    foreach (var status in new[] { RideStatus.DriverAssigned, RideStatus.DriverEnRoute })
+    {
+        var trip = await AddRideAsync(db, fixture, status, 900, 100, 50);
+        AssertSuccess(await ExecuteAsync(rider, "add", new RideCancellationRequestModel(RideId: trip.Id, Reason: "لم أتمكن من الدفع عبر محفظة")), "unpaid passenger cancellation before arrival");
+        AssertEqual(RideStatus.Cancelled, trip.Status, "unpaid cancellation before arrival is immediate");
+        Assert(await db.Notifications.AnyAsync(x => x.UserId == fixture.DriverId && x.DataJson!.Contains($"\"rideId\":{trip.Id}") && x.Title == "تم إلغاء الرحلة"), "driver notified immediately");
+        Assert(!await db.PaymentTransactions.AnyAsync(x => x.RideId == trip.Id), "unpaid direct cancellation has no financial movement");
+    }
+    foreach (var status in new[] { RideStatus.DriverAssigned, RideStatus.DriverEnRoute, RideStatus.DriverArrived })
+    {
+        var trip = await AddRideAsync(db, fixture, status, 900, 100, 50);
+        AssertSuccess(await ExecuteAsync(driver, "add", new RideCancellationRequestModel(RideId: trip.Id, Reason: "عطل في المركبة")), "driver cancellation before payment/start");
+        AssertEqual(RideStatus.Cancelled, trip.Status, "driver cancels unpaid prestart directly");
+    }
+    var cash = new DriverCashPayment(db, config, new TestCurrentUser(fixture.DriverId), accounting);
+    var paid = await AddRideAsync(db, fixture, RideStatus.InProgress, 900, 100, 50);
+    AssertSuccess(await ExecuteAsync(cash, "add", new DriverCashPaymentModel(paid.Id, 1000, "YER", null, "expanded-cash-consent")), "cash paid before start");
+    // Represent an existing cash-paid ride before departure; collection UI retains its current timing.
+    paid.Status = RideStatus.DriverArrived; paid.StartedAtUtc = null; await db.SaveChangesAsync();
+    var walletBefore = await WalletBalanceAsync(db, fixture.CustomerId);
+    AssertSuccess(await ExecuteAsync(rider, "add", new RideCancellationRequestModel(RideId: paid.Id, Reason: "لم أعد بحاجة للرحلة")), "paid passenger cancellation");
+    var request = await db.RideCancellationRequests.SingleAsync(x => x.RideId == paid.Id);
+    AssertEqual(CashCancellationRefundMethod.CreditCustomerWallet, request.RequestedRefundMethod!.Value, "wallet refund is default");
+    AssertSuccess(await ExecuteAsync(driver, "accept", new RideCancellationRequestModel(Id: request.Id)), "driver approves paid cancellation");
+    AssertSuccess(await ExecuteAsync(admin, "adminApprove", new RideCancellationRequestModel(Id: request.Id)), "administration approves paid cancellation");
+    AssertEqual(RideStatus.CancellationPending, paid.Status, "administrative approval is not final before refund choice");
+    AssertSuccess(await ExecuteAsync(driver, "update", new RideCancellationRequestModel(Id: request.Id, RequestedRefundMethod: CashCancellationRefundMethod.CreditCustomerWallet, RefundChoiceRevision: 0)), "driver chooses wallet refund");
+    AssertEqual(walletBefore, await WalletBalanceAsync(db, fixture.CustomerId), "choice cannot credit wallet early");
+    AssertSuccess(await ExecuteAsync(rider, "reject", new RideCancellationRequestModel(Id: request.Id, RefundChoiceRevision: 1)), "passenger rejects wallet refund");
+    AssertEqual(RideCancellationStatus.DriverReviewPending, request.Status, "rejection returns to driver approval");
+    AssertEqual(walletBefore, await WalletBalanceAsync(db, fixture.CustomerId), "rejection creates no refund");
+    AssertSuccess(await ExecuteAsync(driver, "accept", new RideCancellationRequestModel(Id: request.Id)), "driver reapproves after passenger refusal");
+    AssertEqual(RideCancellationStatus.RefundMethodPending, request.Status, "existing administration approval survives method loop");
+    Assert(!(await ExecuteAsync(driver, "update", new RideCancellationRequestModel(Id: request.Id, RequestedRefundMethod: CashCancellationRefundMethod.ReturnFromDriver, RefundChoiceRevision: 0, CashReturned: true))).Success, "stale choice cannot settle");
+    db.ChangeTracker.Clear();
+    AssertSuccess(await ExecuteAsync(driver, "update", new RideCancellationRequestModel(Id: request.Id, RequestedRefundMethod: CashCancellationRefundMethod.ReturnFromDriver, RefundChoiceRevision: 1, CashReturned: true)), "cash return finalizes reviewed refund");
+    AssertSuccess(await ExecuteAsync(driver, "update", new RideCancellationRequestModel(Id: request.Id, RequestedRefundMethod: CashCancellationRefundMethod.ReturnFromDriver, RefundChoiceRevision: 1, CashReturned: true)), "cash-return replay has no effect");
+    AssertEqual(1, await db.PaymentTransactions.CountAsync(x => x.RideId == paid.Id && x.Status == PaymentStatus.Refunded), "refund cycle settles once");
+    AssertEqual(walletBefore, await WalletBalanceAsync(db, fixture.CustomerId), "cash-return cycle leaves passenger wallet unchanged");
+    var moving = await AddRideAsync(db, fixture, RideStatus.InProgress, 900, 100, 50);
+    AssertSuccess(await ExecuteAsync(driver, "add", new RideCancellationRequestModel(RideId: moving.Id, Reason: "حدث عطل أثناء الرحلة")), "driver requests cancellation during trip");
+    var movingRequest = await db.RideCancellationRequests.SingleAsync(x => x.RideId == moving.Id);
+    AssertEqual(RideCancellationStatus.CustomerReviewPending, movingRequest.Status, "started trip requires passenger decision");
+    AssertSuccess(await ExecuteAsync(rider, "reject", new RideCancellationRequestModel(Id: movingRequest.Id)), "passenger rejects driver cancellation");
+    AssertEqual(RideCancellationStatus.AdminReviewPending, movingRequest.Status, "passenger refusal escalates directly to administration");
+    AssertSuccess(await ExecuteAsync(admin, "adminApprove", new RideCancellationRequestModel(Id: movingRequest.Id)), "admin completes unpaid cancellation");
+
+    var arrivalTrip = await AddRideAsync(db, fixture, RideStatus.DriverArrived, 900, 100, 50);
+    var presence = new TestRidePresence { Online = true };
+    var driverArrival = new RideArrival(db, config, new TestCurrentUser(fixture.DriverId), publisher, presence);
+    var riderArrival = new RideArrival(db, config, new TestCurrentUser(fixture.CustomerId), publisher, presence);
+    AssertSuccess(await driverArrival.ExecuteAsync("ring", JsonSerializer.SerializeToElement(new RideArrivalModel(arrivalTrip.Id)), CancellationToken.None), "driver rings after arrival");
+    var alertId = arrivalTrip.ArrivalAlertId;
+    Assert(alertId != null && RideArrival.View(arrivalTrip, true).AlertActive, "arrival alert remains active until acknowledged");
+    Assert(!(await driverArrival.ExecuteAsync("stop", JsonSerializer.SerializeToElement(new RideArrivalModel(arrivalTrip.Id, alertId)), CancellationToken.None)).Success, "only passenger stops alert");
+    db.ChangeTracker.Clear();
+    AssertSuccess(await riderArrival.ExecuteAsync("stop", JsonSerializer.SerializeToElement(new RideArrivalModel(arrivalTrip.Id, alertId)), CancellationToken.None), "passenger stops alert and acknowledges");
+    AssertSuccess(await riderArrival.ExecuteAsync("stop", JsonSerializer.SerializeToElement(new RideArrivalModel(arrivalTrip.Id, alertId)), CancellationToken.None), "repeated acknowledgment is idempotent");
+    AssertEqual(1, await db.Notifications.CountAsync(x => x.UserId == fixture.DriverId && x.Title == "أكد الراكب استلام تنبيه الوصول" && x.DataJson!.Contains($"\"rideId\":{arrivalTrip.Id}")), "one acknowledgment reaches driver");
+    presence.Online = false;
+    AssertSuccess(await driverArrival.ExecuteAsync("ring", JsonSerializer.SerializeToElement(new RideArrivalModel(arrivalTrip.Id)), CancellationToken.None), "background passenger gets notification");
+    Assert(await db.Notifications.AnyAsync(x => x.UserId == fixture.DriverId && x.Title == "الراكب غير متصل بالتطبيق حالياً"), "driver informed passenger is offline");
+
+    var legacyRide = await AddRideAsync(db, fixture, RideStatus.Completed, 900, 100, 50);
+    var driverAccount = await db.LedgerAccounts.SingleAsync(x => x.Code == $"1100-DRV-{fixture.DriverId}");
+    var expenseAccount = await db.LedgerAccounts.SingleAsync(x => x.Purpose == LedgerAccountPurpose.DriverCommission && x.IsPosting);
+    var revenue = await db.LedgerAccounts.SingleAsync(x => x.Code == $"4200-SK-{fixture.ServiceKindId}");
+    var posting = new AccountingPostingService(db);
+    var legacy = await posting.PostAsync(new AccountingPostingRequest(JournalEntryType.RideCashCollection, "LEGACY-CASH", "Original legacy cash journal", "YER",
+        [new(driverAccount.Id, Debit: 1000, FinancialPartyId: driverAccount.FinancialPartyId, UserId: fixture.DriverId, RideId: legacyRide.Id),
+         new(revenue.Id, Credit: 1000, RideId: legacyRide.Id), new(expenseAccount.Id, Debit: 50, UserId: fixture.DriverId, RideId: legacyRide.Id),
+         new(driverAccount.Id, Credit: 50, FinancialPartyId: driverAccount.FinancialPartyId, UserId: fixture.DriverId, RideId: legacyRide.Id)],
+        SourceType: "RideCashPayment", SourceId: "legacy-example"), CancellationToken.None);
+    var correction = new CashCollectionAccountingReconciliation(db, posting);
+    AssertEqual(1, await correction.RunAsync(CancellationToken.None), "old cash share corrected once");
+    AssertEqual(0, await correction.RunAsync(CancellationToken.None), "cash share correction replay creates no journal");
+    AssertEqual(1050m, (await db.JournalEntries.SingleAsync(x => x.Id == legacy.JournalEntryId)).TotalDebit, "original cash journal preserved");
+    var adjustment = await db.JournalEntries.Include(x => x.Lines).SingleAsync(x => x.SourceType == "CashCollectionShareCorrection" && x.SourceId == legacy.JournalEntryId.ToString());
+    AssertEqual(800m, adjustment.TotalDebit, "independent correction recognizes missing actual driver share");
+    AssertEqual(800m, adjustment.TotalCredit, "correction is balanced");
+    Console.WriteLine("PASS: immediate pre-arrival cancellation, cash-refund consent loop, stale/repeated decisions, driver escalation, arrival acknowledgment/offline notification and legacy accounting correction.");
 }
 
 static async Task TrackingHubMembershipIsRestrictedToActiveRideParticipantsAsync(
@@ -911,10 +1003,8 @@ static async Task RideCancellationRequiresReasonAndFollowsReviewWorkflowAsync(Ye
     Assert(!(await ExecuteAsync(customerCancellation, "add", new RideCancellationRequestModel(RideId: completedRide.Id, Reason: "لا أريد المتابعة"))).Success,
         "completed ride cannot be cancelled or refunded");
 
-    // Before the driver starts heading to the customer, cancellation is
-    // reviewed by the driver. DriverEnRoute is intentionally immediate in
-    // the current product policy and is covered by the mobile flow.
-    var ride = await AddRideAsync(db, fixture, RideStatus.DriverAssigned, 900m, 100m, 50m);
+    // An unpaid cancellation after arrival requires the driver's review.
+    var ride = await AddRideAsync(db, fixture, RideStatus.DriverArrived, 900m, 100m, 50m);
     Assert(!(await ExecuteAsync(customerCancellation, "add", new RideCancellationRequestModel(RideId: ride.Id, Reason: " "))).Success,
         "cancellation reason is mandatory");
     AssertSuccess(await ExecuteAsync(customerCancellation, "add", new RideCancellationRequestModel(RideId: ride.Id, Reason: "تغيرت خططي اليوم")), "customer cancellation request");
@@ -1012,12 +1102,18 @@ static async Task AdministrativeApprovalSettlesPaidCashCancellationAsync(
     AssertSuccess(await ExecuteAsync(driverCancellation, "accept", new RideCancellationRequestModel(Id: walletRequest.Id)), "driver accepts paid cancellation");
     db.ChangeTracker.Clear();
     AssertEqual(RideCancellationStatus.AdminReviewPending, await db.RideCancellationRequests.Where(x => x.Id == walletRequest.Id).Select(x => x.Status).SingleAsync(), "paid cancellation awaits administration");
-    AssertSuccess(await ExecuteAsync(adminCancellation, "adminApprove", new RideCancellationRequestModel(Id: walletRequest.Id, Note: "اعتماد الاسترداد إلى المحفظة")), "admin settles cash cancellation to wallet");
+    AssertSuccess(await ExecuteAsync(adminCancellation, "adminApprove", new RideCancellationRequestModel(Id: walletRequest.Id, Note: "سجل قديم دون تسعيرة مسار؛ لم تُقطع مسافة", ReviewedTravelledFare: 0m)), "admin settles cash cancellation to wallet");
     db.ChangeTracker.Clear();
-    AssertEqual(balanceBeforeWalletRefund + 950m, await WalletBalanceAsync(db, fixture.CustomerId), "administrative decision credits the wallet with the refund");
+    AssertEqual(RideCancellationStatus.RefundMethodPending, await db.RideCancellationRequests.Where(x => x.Id == walletRequest.Id).Select(x => x.Status).SingleAsync(), "admin approval awaits driver refund choice");
+    AssertSuccess(await ExecuteAsync(driverCancellation, "update", new RideCancellationRequestModel(Id: walletRequest.Id,
+        RequestedRefundMethod: CashCancellationRefundMethod.CreditCustomerWallet, RefundChoiceRevision: 0)), "driver chooses wallet refund");
+    AssertEqual(balanceBeforeWalletRefund, await WalletBalanceAsync(db, fixture.CustomerId), "no refund before passenger consent");
+    AssertSuccess(await ExecuteAsync(customerCancellation, "accept", new RideCancellationRequestModel(Id: walletRequest.Id, RefundChoiceRevision: 1)), "passenger accepts wallet refund");
+    db.ChangeTracker.Clear();
+    AssertEqual(balanceBeforeWalletRefund + 850m, await WalletBalanceAsync(db, fixture.CustomerId), "administrative decision credits refund less service and cancellation fees");
     AssertEqual(RideStatus.Cancelled, await db.Rides.Where(x => x.Id == walletRefundRide.Id).Select(x => x.Status).SingleAsync(), "administrative decision cancels paid ride");
     AssertEqual(1, await db.PaymentTransactions.CountAsync(x => x.RideId == walletRefundRide.Id && x.Provider == "CashRefundToCustomerWallet" && x.Status == PaymentStatus.Refunded), "administrative wallet refund creates immutable payment record");
-    AssertEqual(-950m, await db.DriverSettlements.Where(x => x.PaymentReference != null && x.PaymentReference.StartsWith("cash-cancellation:payment:") && x.DriverId == fixture.DriverId).OrderByDescending(x => x.Id).Select(x => x.NetPayable).FirstAsync(), "administrative wallet refund creates driver receivable");
+    AssertEqual(-850m, await db.DriverSettlements.Where(x => x.PaymentReference != null && x.PaymentReference.StartsWith("cash-cancellation:payment:") && x.DriverId == fixture.DriverId).OrderByDescending(x => x.Id).Select(x => x.NetPayable).FirstAsync(), "administrative wallet refund creates driver receivable");
     var originalWalletPaymentId = await db.PaymentTransactions.Where(x => x.RideId == walletRefundRide.Id && x.Provider == "Cash" && x.Status == PaymentStatus.Paid).Select(x => x.Id).SingleAsync();
     AssertEqual(1, await db.JournalEntries.CountAsync(x => x.SourceType == "RideCancellation" && x.SourceId == $"payment:{originalWalletPaymentId}:wallet"), "administrative wallet refund posts one reversal journal");
     AssertSuccess(await ExecuteAsync(adminCancellation, "adminApprove", new RideCancellationRequestModel(Id: walletRequest.Id)), "repeated administrative approval is harmless");
@@ -1030,7 +1126,10 @@ static async Task AdministrativeApprovalSettlesPaidCashCancellationAsync(
         RideId: directReturnRide.Id, Reason: "لم تعد الرحلة مطلوبة", RequestedRefundMethod: CashCancellationRefundMethod.ReturnFromDriver)), "customer asks direct cash return");
     var directRequest = await db.RideCancellationRequests.SingleAsync(x => x.RideId == directReturnRide.Id);
     AssertSuccess(await ExecuteAsync(driverCancellation, "accept", new RideCancellationRequestModel(Id: directRequest.Id)), "driver accepts direct-return cancellation");
-    AssertSuccess(await ExecuteAsync(adminCancellation, "adminApprove", new RideCancellationRequestModel(Id: directRequest.Id)), "admin settles direct cash return");
+    AssertSuccess(await ExecuteAsync(adminCancellation, "adminApprove", new RideCancellationRequestModel(Id: directRequest.Id, ReviewedTravelledFare: 0m)), "admin settles direct cash return");
+    db.ChangeTracker.Clear();
+    AssertSuccess(await ExecuteAsync(driverCancellation, "update", new RideCancellationRequestModel(Id: directRequest.Id,
+        RequestedRefundMethod: CashCancellationRefundMethod.ReturnFromDriver, RefundChoiceRevision: 0, CashReturned: true)), "driver confirms cash refund after approval");
     db.ChangeTracker.Clear();
     AssertEqual(balanceBeforeDirectReturn, await WalletBalanceAsync(db, fixture.CustomerId), "direct cash return does not change customer wallet");
     AssertEqual(1, await db.PaymentTransactions.CountAsync(x => x.RideId == directReturnRide.Id && x.Provider == "CashReturnFromDriver" && x.Status == PaymentStatus.Refunded), "direct return creates immutable payment record");
@@ -1042,6 +1141,9 @@ static async Task AdministrativeApprovalSettlesPaidCashCancellationAsync(
     // the cancellation settlement branch remains covered independently from
     // the payment-timing workflow.
     var walletPaymentRide = await AddRideAsync(db, fixture, RideStatus.Completed, 900m, 100m, 50m);
+    var fundedCustomerWallet = await db.Wallets.SingleAsync(x => x.UserId == fixture.CustomerId);
+    fundedCustomerWallet.Balance += 1000m;
+    await db.SaveChangesAsync();
     var walletPayment = new Payment(db, configuration, new TestCurrentUser(fixture.CustomerId), RideAccounting(db));
     var customerBeforeWalletCancellation = await WalletBalanceAsync(db, fixture.CustomerId);
     var driverBeforeWalletCancellation = await WalletBalanceAsync(db, fixture.DriverId);
@@ -1055,9 +1157,9 @@ static async Task AdministrativeApprovalSettlesPaidCashCancellationAsync(
         RideId: walletPaymentRide.Id, Reason: "تغيرت خطط العميل بعد الدفع")), "customer asks cancellation after wallet payment");
     var walletPaymentRequest = await db.RideCancellationRequests.SingleAsync(x => x.RideId == walletPaymentRide.Id);
     AssertSuccess(await ExecuteAsync(driverCancellation, "accept", new RideCancellationRequestModel(Id: walletPaymentRequest.Id)), "driver accepts wallet-paid cancellation");
-    AssertSuccess(await ExecuteAsync(adminCancellation, "adminApprove", new RideCancellationRequestModel(Id: walletPaymentRequest.Id)), "admin settles Yemen Drive wallet cancellation");
+    AssertSuccess(await ExecuteAsync(adminCancellation, "adminApprove", new RideCancellationRequestModel(Id: walletPaymentRequest.Id, ReviewedTravelledFare: 0m)), "admin settles Yemen Drive wallet cancellation");
     db.ChangeTracker.Clear();
-    AssertEqual(customerBeforeWalletCancellation - 50m, await WalletBalanceAsync(db, fixture.CustomerId), "wallet payment cancellation returns the payment less cancellation fee");
+    AssertEqual(customerBeforeWalletCancellation - 150m, await WalletBalanceAsync(db, fixture.CustomerId), "wallet cancellation retains service and cancellation fees");
     AssertEqual(driverBeforeWalletCancellation, await WalletBalanceAsync(db, fixture.DriverId), "wallet payment cancellation reverses the driver's credited share");
     AssertEqual(1, await db.PaymentTransactions.CountAsync(x => x.RideId == walletPaymentRide.Id && x.Provider == "YemenDriveWallet" && x.Status == PaymentStatus.Refunded), "wallet payment cancellation creates refund record");
     var originalYemenDriveWalletPaymentId = await db.PaymentTransactions.Where(x => x.RideId == walletPaymentRide.Id && x.Provider == "YemenDriveWallet" && x.Status == PaymentStatus.Paid).Select(x => x.Id).SingleAsync();
@@ -1629,3 +1731,5 @@ file sealed class SignalRTestConnection(ClientWebSocket socket) : IAsyncDisposab
         }
     }
 }
+
+file sealed class TestRidePresence : IRideParticipantPresence { public bool Online; public bool IsForeground(int userId) => Online; }

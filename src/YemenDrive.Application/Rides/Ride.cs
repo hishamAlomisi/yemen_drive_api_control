@@ -22,7 +22,8 @@ public sealed class Ride(
     DatabaseConfigurationStore configurationStore,
     ICurrentUserContext currentUser,
     RideAccountingPostingService accounting,
-    IRideRealtimePublisher? realtimePublisher = null) : OperationsService<RideModel>(configurationStore)
+    IRideRealtimePublisher? realtimePublisher = null,
+    IRideParticipantPresence? presence = null) : OperationsService<RideModel>(configurationStore)
 {
     public override IReadOnlyCollection<string> Operations { get; } = ["add", "create", "update", "delete", "get", "cancel"];
     protected override async Task<object?> AddAsync(RideModel model, CancellationToken cancellationToken)
@@ -130,16 +131,14 @@ public sealed class Ride(
         {
             if (currentUser.UserId != entity.CustomerId)
                 throw new ServiceException("ride_access_denied", "تغيير وسيلة الدفع متاح لصاحب الطلب فقط.");
-            if (entity.Status is not (RideStatus.Draft or RideStatus.Searching or RideStatus.Negotiating) &&
+            if (entity.Status is not (RideStatus.Draft or RideStatus.Searching or RideStatus.Negotiating or RideStatus.InProgress or RideStatus.Completed) &&
                 !RidePaymentPolicy.IsBeforeStart(entity.Status))
-                throw new ServiceException("payment_method_locked", "لا يمكن تغيير وسيلة الحجز بعد بدء الرحلة.");
-            if (RidePaymentPolicy.IsBeforeStart(entity.Status) &&
-                !string.Equals(model.PaymentMethodCode.Trim(), "cash", StringComparison.OrdinalIgnoreCase))
-                throw new ServiceException("payment_method_locked", "بعد قبول العرض يمكنك إتمام الدفع المختار أو تحويله إلى النقد.");
+                throw new ServiceException("payment_method_locked", "لا يمكن تغيير وسيلة الدفع في حالة الرحلة الحالية.");
+            await WalletPaymentCancellationPolicy.CancelUnsubmittedAsync(dbContext, entity.Id, cancellationToken);
             await RidePaymentGuard.EnsureAvailableAsync(dbContext, entity.Id, cancellationToken);
             await RidePaymentPolicy.EnsureNoPendingDecisionAsync(dbContext, entity.Id, cancellationToken);
             entity.PaymentMethodCode = await RidePaymentPolicy.NormalizeChoiceAsync(dbContext, model.PaymentMethodCode, cancellationToken);
-            entity.PaymentRequiredBeforeStart = false;
+            entity.PaymentRequiredBeforeStart = RidePaymentPolicy.IsBeforeStart(entity.Status) && entity.PaymentMethodCode != "cash";
         }
         var statusChanged = false;
         if (model.DriverId is not null)
@@ -214,6 +213,14 @@ public sealed class Ride(
         await dbContext.SaveChangesAsync(cancellationToken);
         if (statusChanged)
             await NotifyRideStatusRecipientsAsync(entity, "تحديث حالة الرحلة", StatusMessage(entity.Status), cancellationToken);
+        if (statusChanged && entity.Status == RideStatus.DriverArrived && presence is not null &&
+            !presence.IsForeground(entity.CustomerId))
+        {
+            dbContext.Notifications.Add(new Notification { UserId = entity.DriverId!.Value, Type = NotificationType.RideStatus,
+                Title = "الراكب غير متصل بالتطبيق حالياً", Body = "يمكنك الاتصال بالراكب مباشرة لإبلاغه بوصولك.",
+                DataJson = $"{{\"action\":\"open_active_ride\",\"rideId\":{entity.Id}}}" });
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
         await transaction.CommitAsync(cancellationToken);
         if (realtimePublisher is not null &&
             (entity.Status != previousStatus || entity.DriverId != previousDriverId ||
@@ -222,6 +229,9 @@ public sealed class Ride(
         {
             await realtimePublisher.PublishRideStatusUpdatedAsync(
                 RideRealtimeEventFactory.Status(entity), cancellationToken);
+            if (statusChanged && entity.Status == RideStatus.DriverArrived)
+                await realtimePublisher.PublishArrivalUpdatedAsync(new[] { entity.CustomerId, entity.DriverId!.Value },
+                    RideArrival.View(entity, presence?.IsForeground(entity.CustomerId) == true), cancellationToken);
         }
         return ToResult(entity);
     }
@@ -474,6 +484,7 @@ public sealed class Ride(
             .FirstOrDefaultAsync(cancellationToken);
         var paidMethods = await RidePaidMethod.LoadAsync(dbContext, [entity.Id], cancellationToken);
         paidMethods.TryGetValue(entity.Id, out var paidMethod);
+        var selectedMethods = await RideSelectedPaymentMethod.LoadAsync(dbContext, cancellationToken);
         var driverLocation = entity.DriverId is null
             ? null
             : await dbContext.DriverLiveLocations.AsNoTracking()
@@ -518,6 +529,7 @@ public sealed class Ride(
             payments,
             paymentCompleted = payments.Any(x => x.Status == PaymentStatus.Paid),
             paymentMethodNameAr = paidMethod?.PaymentMethodNameAr,
+            selectedPaymentMethodNameAr = selectedMethods.GetValueOrDefault(entity.PaymentMethodCode, "محفظة خارجية"),
             paymentProvider = paidMethod?.PaymentProvider,
             walletPaymentPending = await dbContext.PaymentWalletOperations.AsNoTracking()
                 .AnyAsync(x => x.RideId == entity.Id && x.IsOpen && x.Status != "Succeeded", cancellationToken),

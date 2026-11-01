@@ -1349,9 +1349,11 @@ async function loadCancellations() {
     const decision = `${cancellationStatuses[item.status] || item.status}${item.driverDecision ? ` · ${cancellationDriverDecisions[item.driverDecision] || item.driverDecision}` : ''}`;
     const payment = item.paymentProvider ? `${item.paymentProvider} · ${number(item.paymentAmount)} YER` : 'لا توجد دفعة مسجلة';
     const refundRoute = item.requestedRefundMethod ? (cancellationRefundMethods[item.requestedRefundMethod] || 'مسار استرداد غير معروف') : 'لا يوجد مسار استرداد مطلوب';
+    const quote = item.refundQuote;
+    const refundDetails = quote?.paymentCompleted ? `<span class="cell-sub">رسوم الرحلة: ${number(quote.serviceFee)} · الإلغاء: ${number(quote.cancellationFee)} YER</span><span class="cell-sub">الجزء المقطوع: ${quote.travelledFare == null ? 'يحتاج مراجعة' : number(quote.travelledFare)} · إجمالي الخصم: ${quote.totalDeductions == null ? 'يحتاج مراجعة' : number(quote.totalDeductions)}</span><span class="cell-main">المبلغ المسترد: ${quote.refundAmount == null ? 'يحتاج تقدير الإدارة' : number(quote.refundAmount) + ' YER'}</span>` : '';
     const place = item.cancellationLatitude == null ? '—' : `${number(item.cancellationLatitude)}, ${number(item.cancellationLongitude)}`;
     const actions = isAdminReview ? `<div class="action-row">${iconActionButton('approve', 'اعتماد الإلغاء', `decideCancellation(${Number(item.id)}, true)`, { tone: 'success' })}${iconActionButton('reject', 'رفض طلب الإلغاء', `decideCancellation(${Number(item.id)}, false)`, { tone: 'danger' })}</div>` : '—';
-    return `<tr><td>#${escapeHtml(item.id)}</td><td><span class="cell-main">${escapeHtml(item.customerName || item.customerPhone || item.customerId)}</span><span class="cell-sub">السائق: ${escapeHtml(item.driverName || 'غير معيّن')}</span></td><td><span class="cell-main">${escapeHtml(item.pickup)} ← ${escapeHtml(item.destination)}</span><span class="cell-sub">الإجمالي: ${number(item.totalAmount)} YER</span></td><td><span class="cell-main">${escapeHtml(item.reason)}</span>${item.driverNote ? `<span class="cell-sub">ملاحظة السائق: ${escapeHtml(item.driverNote)}</span>` : ''}</td><td>${badge(decision, isAdminReview ? 'warning' : Number(item.status) === 3 ? 'success' : Number(item.status) === 4 ? 'danger' : 'info')}</td><td><span class="cell-main">${escapeHtml(payment)}</span><span class="cell-sub">الاسترداد: ${escapeHtml(refundRoute)}</span>${item.paymentStatus != null ? `<span class="cell-sub">حالة: ${escapeHtml(item.paymentStatus)}</span>` : ''}</td><td>${escapeHtml(place)}</td><td>${date(item.createdAtUtc)}</td><td>${actions}</td></tr>`;
+    return `<tr><td>#${escapeHtml(item.id)}</td><td><span class="cell-main">${escapeHtml(item.customerName || item.customerPhone || item.customerId)}</span><span class="cell-sub">السائق: ${escapeHtml(item.driverName || 'غير معيّن')}</span></td><td><span class="cell-main">${escapeHtml(item.pickup)} ← ${escapeHtml(item.destination)}</span><span class="cell-sub">الإجمالي: ${number(item.totalAmount)} YER</span></td><td><span class="cell-main">${escapeHtml(item.reason)}</span>${item.driverNote ? `<span class="cell-sub">ملاحظة السائق: ${escapeHtml(item.driverNote)}</span>` : ''}</td><td>${badge(decision, isAdminReview ? 'warning' : Number(item.status) === 3 ? 'success' : Number(item.status) === 4 ? 'danger' : 'info')}</td><td><span class="cell-main">${escapeHtml(payment)}</span><span class="cell-sub">الاسترداد: ${escapeHtml(refundRoute)}</span>${refundDetails}${item.paymentStatus != null ? `<span class="cell-sub">حالة: ${escapeHtml(item.paymentStatus)}</span>` : ''}</td><td>${escapeHtml(place)}</td><td>${date(item.createdAtUtc)}</td><td>${actions}</td></tr>`;
   });
   toggleEmpty('#cancellations-body', '#cancellations-empty', rows);
 }
@@ -1531,7 +1533,21 @@ window.openSafetyMap = async id => {
 window.decideCancellation = async (id, approve) => {
   const note = window.prompt('ملاحظة الإدارة (اختيارية):') || undefined;
   try {
-    const result = await execute('RideCancellationRequestModel', approve ? 'adminApprove' : 'adminReject', { id, note });
+    const item = state.cancellations.find(row => Number(row.id) === Number(id));
+    let reviewedTravelledFare;
+    let quote = item?.refundQuote;
+    if (approve && quote?.paymentCompleted) {
+      if (!quote.canCalculateRefund) {
+        const entered = window.prompt('راجع سجل الرحلة وحدد أجرة الجزء المقطوع بالريال اليمني قبل اعتماد الاسترداد:');
+        if (entered === null) return;
+        reviewedTravelledFare = Number(entered);
+        if (!entered.trim() || !Number.isFinite(reviewedTravelledFare) || reviewedTravelledFare < 0) throw new Error('أدخل مبلغاً صحيحاً للجزء المقطوع.');
+        const preview = await execute('RideCancellationRequestModel', 'get', { rideId: item.rideId, previewOnly: true, reviewedTravelledFare });
+        quote = preview.data;
+      }
+      if (!window.confirm(`المبلغ المدفوع: ${number(quote.paidAmount)} YER\nإجمالي الخصم: ${number(quote.totalDeductions)} YER\nالمبلغ الذي سيضاف إلى محفظة الراكب: ${number(quote.refundAmount)} YER\nاعتماد الإلغاء والاسترداد؟`)) return;
+    }
+    const result = await execute('RideCancellationRequestModel', approve ? 'adminApprove' : 'adminReject', { id, note, reviewedTravelledFare });
     toast(result.message || 'تم حفظ قرار الإدارة.');
     await loadCancellations();
   } catch (error) { if (!isAdminOperationCancelled(error)) toast(error.message, true); }

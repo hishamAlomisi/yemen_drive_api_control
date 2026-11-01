@@ -101,9 +101,10 @@ public sealed class RideReport(
             .OrderByDescending(x => x.CreatedAtUtc)
             .ToListAsync(cancellationToken);
         var paidMethods = await RidePaidMethod.LoadAsync(dbContext, rideIds, cancellationToken);
+        var selectedMethods = await RideSelectedPaymentMethod.LoadAsync(dbContext, cancellationToken);
         var pendingWalletRideIds = await dbContext.PaymentWalletOperations.AsNoTracking()
-            .Where(x => rideIds.Contains(x.RideId) && x.IsOpen && x.Status != "Succeeded")
-            .Select(x => x.RideId).Distinct().ToListAsync(cancellationToken);
+            .Where(x => x.RideId != null && rideIds.Contains(x.RideId.Value) && x.IsOpen && x.Status != "Succeeded")
+            .Select(x => x.RideId!.Value).Distinct().ToListAsync(cancellationToken);
 
         return rides.Select(x =>
         {
@@ -160,6 +161,7 @@ public sealed class RideReport(
                 x.WaitingFreeMinutes, x.WaitingPricePerMinute, x.WaitingMaxFee,
                 x.CustomerPaymentEnabled, paymentCompleted = paidMethod is not null,
                 paymentMethodNameAr = paidMethod?.PaymentMethodNameAr,
+                selectedPaymentMethodNameAr = selectedMethods.GetValueOrDefault(x.PaymentMethodCode, "محفظة خارجية"),
                 paymentProvider = paidMethod?.PaymentProvider,
                 x.PaymentMethodCode,
                 paymentRequiredBeforeStart = RidePaymentPolicy.RequiresBeforeStart(x),

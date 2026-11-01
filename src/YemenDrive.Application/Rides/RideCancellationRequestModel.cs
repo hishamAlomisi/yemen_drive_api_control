@@ -8,4 +8,8 @@ public sealed record RideCancellationRequestModel(
     int? RideId = null,
     string? Reason = null,
     CashCancellationRefundMethod? RequestedRefundMethod = null,
-    string? Note = null);
+    string? Note = null,
+    bool PreviewOnly = false,
+    decimal? ReviewedTravelledFare = null,
+    int? RefundChoiceRevision = null,
+    bool CashReturned = false);

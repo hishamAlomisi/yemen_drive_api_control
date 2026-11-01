@@ -37,10 +37,11 @@ public sealed class RideCancellationReport(
             .Where(x => x.RideId != null && rideIds.Contains(x.RideId.Value))
             .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(token);
 
-        return rows.Select(x =>
+        var result = new List<object>();
+        foreach (var x in rows)
         {
-            var payment = payments.FirstOrDefault(p => p.RideId == x.RideId);
-            return new
+            var payment = payments.FirstOrDefault(p => p.RideId == x.RideId && p.Status == PaymentStatus.Paid);
+            result.Add(new
             {
                 x.Id, x.RideId, x.Status, x.DriverDecision, x.RideStatusAtRequest,
                 canAdminReview = x.Status == RideCancellationStatus.AdminReviewPending ||
@@ -57,8 +58,10 @@ public sealed class RideCancellationReport(
                 x.DriverDecidedAtUtc, x.DriverNote, x.AdminDecidedAtUtc, x.AdminNote, x.CreatedAtUtc,
                 paymentProvider = payment?.Provider,
                 paymentStatus = payment?.Status,
-                paymentAmount = payment?.Amount
-            };
-        }).ToList();
+                paymentAmount = payment?.Amount,
+                refundQuote = await RideCancellationQuote.GetAsync(db, x.Ride, token, x)
+            });
+        }
+        return result;
     }
 }

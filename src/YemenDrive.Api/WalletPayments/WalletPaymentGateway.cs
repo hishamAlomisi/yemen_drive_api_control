@@ -12,15 +12,17 @@ public interface IWalletPaymentGateway
     Task<WalletStepResult> CompleteAsync(int methodId, Guid version, string providerCode, string operationId, string code, CancellationToken token);
 }
 
-public sealed class WalletPaymentGateway(WalletLoginRuntime runtime) : IWalletPaymentGateway
+public sealed class WalletPaymentGateway(WalletLoginRuntime runtime) : IWalletPaymentGateway, YemenDrive.Application.Payments.IWalletPaymentAvailability
 {
+    public bool Supports(string providerCode) => WalletPaymentProviders.IsSupported(providerCode);
     public Guid InstanceId { get; } = Guid.NewGuid();
     public bool IsReady(int methodId, Guid version) => runtime.GetStatus(methodId, version) == "Ready";
     public Task<WalletStepResult> RequestAsync(int methodId, Guid version, string providerCode, string requestId, string mobile, decimal amount, CancellationToken token) =>
         runtime.WithPaymentClientAsync(methodId, version, providerCode, client => providerCode switch
         {
-            "Floosak" => client.Floosak.RequestWithdrawFromCustomerAsync(requestId, mobile, amount, CurrencyCode.YER, CurrencyCode.YER, token),
-            "Jaib" => client.Jaib.RequestWithdrawalAsync(requestId, mobile, amount, CurrencyCode.YER, token),
+            "Floosak" => FloosakPreparationValidation.RequestAsync(() => client.Floosak.RequestWithdrawFromCustomerAsync(requestId, mobile, amount, CurrencyCode.YER, CurrencyCode.YER, token)),
+            "Jaib" => JaibWithdrawalValidation.RunAsync(JaibWithdrawalValidation.PreparationPath,
+                () => client.Jaib.RequestWithdrawalAsync(requestId, mobile, amount, CurrencyCode.YER, token)),
             _ => throw new WalletSessionUnavailableException()
         }, token);
     public Task<WalletStepResult> ConfirmAsync(int methodId, Guid version, string providerCode, string operationId, bool approved, CancellationToken token) =>
@@ -33,8 +35,9 @@ public sealed class WalletPaymentGateway(WalletLoginRuntime runtime) : IWalletPa
     public Task<WalletStepResult> CompleteAsync(int methodId, Guid version, string providerCode, string operationId, string code, CancellationToken token) =>
         runtime.WithPaymentClientAsync(methodId, version, providerCode, client => providerCode switch
         {
-            "Floosak" => client.Floosak.CompleteAsync(operationId, code, token),
-            "Jaib" => client.Jaib.CompleteAsync(operationId, code, token),
+            "Floosak" => FloosakOtpValidation.CompleteAsync(() => client.Floosak.CompleteAsync(operationId, code, token), code),
+            "Jaib" => JaibWithdrawalValidation.RunAsync(JaibWithdrawalValidation.ConfirmationPath,
+                () => client.Jaib.CompleteAsync(operationId, code, token), code),
             _ => throw new WalletSessionUnavailableException()
         }, token);
 }

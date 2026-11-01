@@ -37,7 +37,7 @@ public static class RidePaymentPolicy
             if (!ride.PaymentRequiredBeforeStart || ride.PaymentMethodCode == "cash")
                 throw new ServiceException("ride_payment_not_ready", "لم تصبح الرحلة جاهزة للدفع بهذه الوسيلة بعد.");
             if (payingMethodCode is not null && !ride.PaymentMethodCode.Equals(payingMethodCode, StringComparison.OrdinalIgnoreCase))
-                throw new ServiceException("ride_payment_method_mismatch", "استخدم وسيلة الدفع المختارة عند الحجز أو حوّل الدفع إلى النقد.");
+                throw new ServiceException("ride_payment_method_mismatch", "اعتمد وسيلة الدفع الجديدة للرحلة قبل بدء الدفع بها.");
             return;
         }
         if (ride.Status != RideStatus.Completed && !(ride.Status == RideStatus.InProgress && ride.CustomerPaymentEnabled))
@@ -51,7 +51,7 @@ public static class RidePaymentPolicy
             throw new ServiceException("payment_required_before_start", "يجب على الراكب إتمام الدفع المختار أو التحويل إلى النقد قبل بدء الرحلة.");
         if (await db.RideCancellationRequests.AnyAsync(x => x.RideId == ride.Id &&
             (x.Status == RideCancellationStatus.DriverReviewPending || x.Status == RideCancellationStatus.AdminReviewPending ||
-             x.Status == RideCancellationStatus.CustomerReviewPending), token))
+             (x.Status == RideCancellationStatus.CustomerReviewPending || x.Status == RideCancellationStatus.RefundMethodPending || x.Status == RideCancellationStatus.RefundConsentPending)), token))
             throw new ServiceException("ride_cancellation_pending", "يجب حسم طلب الإلغاء قبل بدء الرحلة.");
     }
 
@@ -59,7 +59,7 @@ public static class RidePaymentPolicy
     {
         if (await db.RideCancellationRequests.AnyAsync(x => x.RideId == rideId &&
             (x.Status == RideCancellationStatus.DriverReviewPending || x.Status == RideCancellationStatus.AdminReviewPending ||
-             x.Status == RideCancellationStatus.CustomerReviewPending), token))
+             (x.Status == RideCancellationStatus.CustomerReviewPending || x.Status == RideCancellationStatus.RefundMethodPending || x.Status == RideCancellationStatus.RefundConsentPending)), token))
             throw new ServiceException("ride_cancellation_pending", "يجب حسم طلب الإلغاء قبل الدفع أو تغيير وسيلته.");
         if (await db.CashCollectionApprovals.AnyAsync(x => x.RideId == rideId &&
                 (x.Status == CashCollectionApprovalStatus.Pending || x.Status == CashCollectionApprovalStatus.Approved), token) ||

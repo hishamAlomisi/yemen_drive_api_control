@@ -21,6 +21,26 @@ using YemenDrive.Shared.Security;
 using RideEntity = YemenDrive.Database.Entities.Ride;
 using MethodEntity = YemenDrive.Database.Entities.PaymentMethod;
 
+await FloosakPreparationScenarios.RunAsync();
+await FloosakCompletionScenarios.RunAsync();
+await JaibWithdrawalScenarios.RunAsync();
+Check(WalletPaymentService.NormalizeMobile("967774922225", "Jaib") == "774922225", "Jaib strips the supplied customer's country prefix");
+foreach (var provider in new[] { "Floosak", "Jaib" })
+{
+    var failedStep = new PaymentWalletOperation { ProviderCode = provider, Stage = "Complete", RequestId = "failed-step", Amount = 1000m };
+    WalletPaymentService.ApplyResult(failedStep, new WalletStepResult { Status = OperationStatus.Failed,
+        ErrorCode = WalletErrorCode.ProviderUnavailable, Message = "طلب السحب غير مسموح لهذا الحساب" });
+    Check(failedStep.Status == "Failed" && !failedStep.IsOpen && failedStep.ProviderSucceededAtUtc is null &&
+        WalletPaymentService.View(failedStep).Message.Contains("طلب السحب غير مسموح لهذا الحساب"),
+        "SDK definitive failure displays the reason and releases the operation regardless of its error-code category");
+}
+Check(WalletPaymentService.NormalizeFloosakOtp(" ٠١٢٣٤٥ ") == "012345", "Arabic OTP digits normalize before workflow claim, preserving leading zeros");
+foreach (var invalidOtp in new[] { "code", "123-456", "123 456", "99999999999999" })
+{
+    try { WalletPaymentService.NormalizeFloosakOtp(invalidOtp); throw new InvalidOperationException("Invalid OTP accepted"); }
+    catch (ServiceException) { }
+}
+
 foreach (var phone in new[] { "777123456", "+967777123456", "00967777123456", "967777123456", "0777123456", "٧٧٧١٢٣٤٥٦" })
 {
     Check(WalletPaymentService.NormalizeMobile(phone) == "967777123456", "Floosak phone uses country prefix");
@@ -89,6 +109,14 @@ WalletPaymentService.ApplyResult(misleading, new WalletStepResult { Status = Ope
     ErrorCode = WalletErrorCode.OutcomeUnknown, Message = "تم الدفع بنجاح" });
 Check(misleading.Status == "ReviewRequired" && misleading.IsOpen && !WalletPaymentService.View(misleading).Message.Contains("تم الدفع بنجاح"),
     "provider wording cannot override unknown financial status");
+var genericUnknown = new PaymentWalletOperation { Stage = "Request", Amount = 1000m, RequestId = "generic-unknown", ProviderCode = "Floosak" };
+WalletPaymentService.ApplyResult(genericUnknown, new WalletStepResult { Status = OperationStatus.Unknown,
+    ErrorCode = WalletErrorCode.OutcomeUnknown, Message = "Provider response could not establish the operation outcome" });
+var genericUnknownMessage = WalletPaymentService.View(genericUnknown).Message;
+Check(genericUnknown.Status == "ReviewRequired" && genericUnknown.IsOpen &&
+    genericUnknownMessage.Any(c => c is >= '\u0600' and <= '\u06ff') &&
+    !genericUnknownMessage.Contains("Provider response", StringComparison.OrdinalIgnoreCase),
+    "generic SDK unknown outcome is explained in Arabic without weakening the payment reservation");
 Console.WriteLine("PASS: provider messages translated/rephrased, unknown business reasons retained, sensitive values removed, financial status authoritative.");
 
 var databaseName = "YemenDrive_WalletPaymentTests_" + Guid.NewGuid().ToString("N");
@@ -105,6 +133,7 @@ builder.Services.AddSingleton<IWalletPaymentGateway>(gateway);
 builder.Services.AddScoped<AccountingPostingService>();
 builder.Services.AddScoped<RideAccountingPostingService>();
 builder.Services.AddScoped<ExternalWalletPaymentSettlement>();
+builder.Services.AddScoped<ExternalWalletTopUpSettlement>();
 builder.Services.AddScoped<WalletPaymentService>();
 await using var app = builder.Build();
 app.MapWalletPaymentEndpoints();
@@ -185,9 +214,18 @@ try
     var cancelledRide = await NewRide();
     var cancelStart = await Post(Path(cancelledRide), new { paymentMethodId = method.Id });
     var cancelId = cancelStart.GetProperty("id").GetInt32();
+    string cancelledReference;
+    await using (var checkDb = new YemenDriveDbContext(options))
+        cancelledReference = await checkDb.PaymentWalletOperations.Where(x => x.Id == cancelId).Select(x => x.RequestId).SingleAsync();
     Check(Status(await Post(Path(cancelledRide) + $"/{cancelId}/confirm", new { approved = false })) == "Cancelled", "cancel before debit");
-    Check((await Post(Path(cancelledRide), new { paymentMethodId = method.Id })).GetProperty("id").GetInt32() != cancelId,
-        "cancel releases reservation");
+    var newAttemptId = (await Post(Path(cancelledRide), new { paymentMethodId = method.Id })).GetProperty("id").GetInt32();
+    Check(newAttemptId != cancelId, "cancel releases reservation");
+    await using (var checkDb = new YemenDriveDbContext(options))
+    {
+        var newReference = await checkDb.PaymentWalletOperations.Where(x => x.Id == newAttemptId).Select(x => x.RequestId).SingleAsync();
+        Check(newReference != cancelledReference && newReference.Length == 32 && Guid.TryParseExact(newReference, "N", out _),
+            "a fresh withdrawal receives a new 32-character reference");
+    }
 
     var disabledRide = await NewRide();
     var disabledStart = await Post(Path(disabledRide), new { paymentMethodId = method.Id });
@@ -311,6 +349,36 @@ try
     Check(Status(await Post(Path(unknownJaibRide), new { paymentMethodId = method.Id })) == "ReviewRequired" && gateway.RequestCount == beforeUnknownRetry,
         "unknown initial dispatch prevents all provider recharges");
     gateway.UnknownRequest = false;
+    gateway.UnknownRequest = true;
+    var preparationRide = await NewRide();
+    var preparation = await Post(Path(preparationRide), new { paymentMethodId = method.Id });
+    var preparationId = preparation.GetProperty("id").GetInt32();
+    Check(Status(preparation) == "ReviewRequired" && preparation.GetProperty("canCancel").GetBoolean(),
+        "Floosak preparation without code or receipt can be explicitly abandoned");
+    Check(!unknownJaib.GetProperty("canCancel").GetBoolean() && !unknown.GetProperty("canCancel").GetBoolean(),
+        "unknown Jaib requests and dispatched Floosak completions remain protected");
+    var callsBeforeCancel = (gateway.RequestCount, gateway.ConfirmCount, gateway.CompleteCount);
+    Check(Status(await Post(Path(preparationRide) + $"/{preparationId}/confirm", new { approved = false })) == "Cancelled",
+        "old preparation reservation is released by explicit cancellation");
+    Check((gateway.RequestCount, gateway.ConfirmCount, gateway.CompleteCount) == callsBeforeCancel,
+        "abandoning preparation never dispatches another provider request");
+    Check(Status(await Post(Path(unknownRide) + $"/{unknownId}/confirm", new { approved = false })) == "ReviewRequired",
+        "cancel cannot release an uncertain debit");
+    gateway.UnknownRequest = false;
+    Check(Status(await Post(Path(preparationRide), new { paymentMethodId = jaibMethod.Id })) == "AwaitingConfirmation",
+        "a different wallet can start after preparation is explicitly cancelled");
+
+    foreach (var protectedOperation in new[] {
+        new PaymentWalletOperation { Status = "AwaitingCode", ProviderSucceededAtUtc = DateTime.UtcNow },
+        new PaymentWalletOperation { Status = "ReviewRequired", Stage = "Request", ErrorCode = "provider_data_mismatch" },
+        new PaymentWalletOperation { Status = "ReviewRequired", Stage = "Request", ErrorCode = "provider_failed", ProviderReference = "possible-debit" },
+        new PaymentWalletOperation { Status = "ReviewRequired", Stage = "Complete", ErrorCode = "outcome_unknown" },
+        new PaymentWalletOperation { Status = "Processing", Stage = "Request", ErrorCode = "outcome_unknown" } })
+        Check(!WalletPaymentCancellationPolicy.CanCancel(protectedOperation), "evidence, mismatches, later stages and in-flight calls stay reserved");
+    foreach (var preparedStatus in new[] { "AwaitingConfirmation", "AwaitingCode" })
+        Check(WalletPaymentCancellationPolicy.CanCancel(new PaymentWalletOperation {
+            Status = preparedStatus, ProviderReference = "preparation-transaction-only", IsOpen = true }),
+            "preparation reference does not prevent safe payment-method change before a debit is dispatched");
     Console.WriteLine("PASS: Jaib local-phone/account routing, provider metadata, canonical settlement, cross-provider reservation and challenge-before-confirmation.");
 
     foreach (var earlyStatus in new[] { RideStatus.DriverAssigned, RideStatus.DriverEnRoute, RideStatus.DriverArrived })
@@ -335,6 +403,84 @@ try
     Check((await client.PostAsJsonAsync(Path(cashEarlyRide), new { paymentMethodId = method.Id })).StatusCode == HttpStatusCode.BadRequest &&
         gateway.RequestCount == beforeCashDispatch, "cash booking does not dispatch an unchosen early debit");
     Console.WriteLine("PASS: early selected-wallet HTTP payment, provider mismatch guard and authoritative prestart requirement clearing.");
+
+    // Top-up follows exactly the same gateway actions with a user-entered amount.
+    gateway.AfterComplete = null; gateway.RequestFailure = false; gateway.UnknownRequest = false;
+    gateway.UnknownComplete = false; gateway.RequestRejectionMessage = null; gateway.JaibPreliminaryAction = null;
+    await using (var topUpDb = new YemenDriveDbContext(options))
+    {
+        foreach (var pm in await topUpDb.PaymentMethods.ToListAsync()) pm.IsAvailableForWalletTopUp = true;
+        await topUpDb.SaveChangesAsync();
+    }
+    Check((await unauthenticated.GetAsync("/api/wallet/top-ups/current")).StatusCode == HttpStatusCode.Unauthorized, "topup anonymous blocked");
+    decimal beforeTopUp;
+    await using (var topUpDb = new YemenDriveDbContext(options)) beforeTopUp = await topUpDb.Wallets.Where(x => x.UserId == rider.Id).Select(x => x.Balance).SingleAsync();
+    foreach (var pm in new[] { method, jaibMethod })
+    {
+        var requestId = Guid.NewGuid();
+        const decimal enteredAmount = 2345.50m;
+        var topUpRequestCount = gateway.RequestCount;
+        var topUpPreparation = await Post("/api/wallet/top-ups", new { paymentMethodId = pm.Id, amount = enteredAmount, requestId });
+        var topUpId = topUpPreparation.GetProperty("id").GetInt32();
+        Check(Status(topUpPreparation) == "AwaitingConfirmation" && gateway.LastAmount == enteredAmount && topUpPreparation.GetProperty("rideId").ValueKind == JsonValueKind.Null,
+            "user-entered topup amount has no ride");
+        Check((await other.PostAsJsonAsync($"/api/wallet/top-ups/{topUpId}/confirm", new { approved = true })).StatusCode == HttpStatusCode.BadRequest,
+            "another passenger cannot confirm topup");
+        Check((await Post("/api/wallet/top-ups", new { paymentMethodId = pm.Id, amount = enteredAmount, requestId })).GetProperty("id").GetInt32() == topUpId &&
+            gateway.RequestCount == topUpRequestCount + 1, "topup same reference replays topUpPreparation");
+        await Post($"/api/wallet/top-ups/{topUpId}/confirm", new { approved = true });
+        await using (var topUpDb = new YemenDriveDbContext(options)) Check(await topUpDb.Wallets.Where(x => x.UserId == rider.Id).Select(x => x.Balance).SingleAsync() == beforeTopUp, "no topup credit before final success");
+        var final = await Post($"/api/wallet/top-ups/{topUpId}/complete", new { code = "654321" });
+        var completeCount = gateway.CompleteCount;
+        await Post($"/api/wallet/top-ups/{topUpId}/complete", new { code = "654321" });
+        await Post("/api/wallet/top-ups", new { paymentMethodId = pm.Id, amount = enteredAmount, requestId });
+        Check(Status(final) == "Succeeded" && gateway.CompleteCount == completeCount && gateway.RequestCount == topUpRequestCount + 1,
+            "topup completed exactly once after completion and start replay");
+        Check(final.GetProperty("receipt").GetProperty("amount").GetDecimal() == enteredAmount && final.GetProperty("receipt").GetProperty("providerFees").GetDecimal() == 10m,
+            "receipt separates credited amount and provider fee");
+        await using (var topUpDb = new YemenDriveDbContext(options))
+        {
+            beforeTopUp += enteredAmount;
+            Check(await topUpDb.Wallets.Where(x => x.UserId == rider.Id).Select(x => x.Balance).SingleAsync() == beforeTopUp, "exact topup credited once");
+            var journal = await topUpDb.JournalEntries.Include(x => x.Lines).SingleAsync(x => x.SourceType == "ExternalWalletTopUp" && x.SourceId == topUpId.ToString());
+            Check(journal.TotalDebit == enteredAmount && journal.TotalCredit == enteredAmount && journal.Lines.All(x => x.RideId == null), "balanced topup journal has no ride or driver revenue");
+            Check(await topUpDb.WalletTransactions.CountAsync(x => x.ExternalReference == $"wallet-top-up:{topUpId}") == 1 &&
+                await topUpDb.Notifications.CountAsync(x => x.UserId == rider.Id && x.DataJson!.Contains($"\"topUpId\":{topUpId}")) == 1, "one wallet movement and notification");
+        }
+    }
+    Check((await client.PostAsJsonAsync("/api/wallet/top-ups", new { paymentMethodId = method.Id, amount = -1, requestId = Guid.NewGuid() })).StatusCode == HttpStatusCode.BadRequest, "negative topup blocked");
+    gateway.RequestRejectionMessage = "insufficient balance";
+    var rejectedTopUp = await Post("/api/wallet/top-ups", new { paymentMethodId = method.Id, amount = 12, requestId = Guid.NewGuid() });
+    Check(Status(rejectedTopUp) == "Failed", "provider rejects topup before confirmation");
+    gateway.RequestRejectionMessage = null;
+    var newTopUp = await Post("/api/wallet/top-ups", new { paymentMethodId = jaibMethod.Id, amount = 12, requestId = Guid.NewGuid() });
+    Check(Status(newTopUp) == "AwaitingConfirmation", "new method possible after topup refusal");
+    await Post($"/api/wallet/top-ups/{newTopUp.GetProperty("id").GetInt32()}/confirm", new { approved = false });
+    var recoveryReference = Guid.NewGuid();
+    var recoverTopUp = await Post("/api/wallet/top-ups", new { paymentMethodId = method.Id, amount = 100, requestId = recoveryReference });
+    var topUpRecoverId = recoverTopUp.GetProperty("id").GetInt32();
+    await Post($"/api/wallet/top-ups/{topUpRecoverId}/confirm", new { approved = true });
+    int walletLedgerId;
+    await using (var topUpDb = new YemenDriveDbContext(options))
+    {
+        var walletId = await topUpDb.Wallets.Where(x => x.UserId == rider.Id).Select(x => x.Id).SingleAsync();
+        walletLedgerId = await topUpDb.LedgerAccounts.Where(x => x.Code == $"2100-WLT-{walletId}").Select(x => x.Id).SingleAsync();
+    }
+    gateway.AfterComplete = async () => {
+        await using var topUpDb = new YemenDriveDbContext(options);
+        await topUpDb.LedgerAccounts.Where(x => x.Id == walletLedgerId).ExecuteUpdateAsync(x => x.SetProperty(a => a.IsActive, false));
+    };
+    Check(Status(await Post($"/api/wallet/top-ups/{topUpRecoverId}/complete", new { code = "654321" })) == "Processing", "confirmed topup keeps recoverable evidence if ledger posting fails");
+    var priorCompletes = gateway.CompleteCount;
+    await using (var topUpDb = new YemenDriveDbContext(options))
+    {
+        Check(await topUpDb.Wallets.Where(x => x.UserId == rider.Id).Select(x => x.Balance).SingleAsync() == beforeTopUp, "topup accounting failure rolls back wallet credit");
+        await topUpDb.LedgerAccounts.Where(x => x.Id == walletLedgerId).ExecuteUpdateAsync(x => x.SetProperty(a => a.IsActive, true));
+    }
+    var recoveredReceipt = await Data(await client.GetAsync($"/api/wallet/top-ups/by-reference/{recoveryReference}"));
+    Check(Status(recoveredReceipt) == "Succeeded" && gateway.CompleteCount == priorCompletes, "reference lookup recovers final receipt without another debit");
+    gateway.AfterComplete = null;
+    Console.WriteLine("PASS: Floosak/Jaib user-amount topups, ownership, reference replay, final credit, immutable balanced journal, receipt, notification and rejection recovery.");
 
     async Task<int> NewRide(RideStatus status = RideStatus.InProgress, string paymentMethodCode = "cash")
     {
