@@ -99,10 +99,17 @@ $('#route-change-report-body').addEventListener('click', event => {
     ['أجرة المسار الجديد المتبقي', invoice.newRouteFare], ['رسوم الانتظار', invoice.waitingFee],
     ['الإجمالي الجديد', invoice.newTotal], ['الفرق عن الإجمالي السابق', invoice.difference]
   ];
+  const finance = row.currentFinance;
+  const financeRows = finance ? [
+    ['المبلغ الحالي المستحق للرحلة', finance.amountDue], ['المدفوع المؤكد', finance.paidAmount],
+    ['المسترد المنفذ', finance.refundedAmount], ['المتبقي غير المسدد', finance.outstandingAmount],
+    ['الزيادة المستحقة للاسترداد', finance.refundDue]
+  ] : [];
   $('#route-change-invoice-title').textContent = `فاتورة تغيير المسار — رحلة #${row.rideId} · طلب #${row.id}`;
   $('#route-change-invoice-content').innerHTML = `<p class="admin-report-note">${row.status === 'accepted' ? 'الأجرة المعتمدة عند قبول هذا الطلب. لا تعني هذه الفاتورة تحصيل المبلغ.' : 'عرض أجرة محفوظ لهذا الطلب؛ لم تُعتمد هذه الرسوم على الراكب.'} القيم تخص وقت الطلب وقد تختلف عن إجمالي الرحلة الحالي.</p>
     <p><strong>الوجهة السابقة:</strong> ${escapeHtml(row.oldDestinationLabel || '—')}<br><strong>الوجهة الجديدة:</strong> ${escapeHtml(row.newDestinationLabel || '—')}</p>
     <dl class="route-change-invoice-amounts">${amountRows.map(([label, value]) => `<div><dt>${label}</dt><dd>${number(value)} ر.ي</dd></div>`).join('')}</dl>
+    ${finance ? `<h3>التسوية المالية الحالية للرحلة</h3><dl class="route-change-invoice-amounts">${financeRows.map(([label, value]) => `<div><dt>${label}</dt><dd>${number(value)} ر.ي</dd></div>`).join('')}</dl><p class="admin-report-note">المدفوع السابق محسوب مرة واحدة. تتم متابعة المديونية والاسترداد من شاشة النقل والتسوية المالية؛ رسوم الخدمة غير مستردة.</p>` : ''}
     <p class="admin-report-note">المسافة المكتملة: ${number(Number(invoice.completedDistanceMeters) / 1000)} كم<br>المسافة الجديدة المتبقية: ${number(Number(invoice.newDistanceMeters) / 1000)} كم<br>مدة المسار الجديد: ${number(Math.ceil(Number(invoice.newDurationSeconds) / 60))} دقيقة</p>`;
   $('#route-change-invoice-dialog').showModal();
 });

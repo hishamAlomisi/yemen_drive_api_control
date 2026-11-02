@@ -598,3 +598,57 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); outlin
   .wallet-phone-field .field-control-segment > .button { width: 100%; }
   .field-label-segment { flex-basis: 92px; width: 92px; min-width: 92px; }
 }
+
+/* Operational administration follows the shared teal dashboard surfaces. */
+.operational-screen { --operational-gap: 18px; }
+.operational-screen > .panel, .operational-screen > .data-section { margin-top: 20px; }
+.operational-screen > .panel { padding: 24px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); }
+.operational-screen h2 { font-size: 18px; margin: 0 0 8px; }
+.operational-screen p { color: var(--muted); line-height: 1.8; margin: 0 0 18px; }
+.operational-filters, .operational-form { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 20px; }
+.operational-filters { grid-template-columns: minmax(0,2fr) minmax(220px,1fr); padding: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 18px; }
+.operational-screen label { display: flex; flex-direction: column; gap: 9px; font-size: 13px; font-weight: 600; min-width: 0; }
+.operational-screen .full-width, .record-identity-preview { grid-column: 1/-1; }
+.operational-screen input:not([type=checkbox]), .operational-screen select, .operational-screen textarea { width: 100%; border: 1px solid var(--line-dark); border-radius: 8px; padding: 11px 12px; min-height: 44px; background: var(--surface); font-size: 14px; }
+.operational-screen textarea { min-height: 112px; }
+.operational-screen .segmented-field { flex-direction: column; border: 0; background: transparent; overflow: visible; gap: 8px; }
+.operational-screen .field-label-segment { flex: 0 0 auto; width: auto; min-width: 0; min-height: 0; justify-content: flex-start; border: 0; padding: 0; background: transparent; color: var(--ink); font-size: 13px; text-align: right; }
+.operational-screen .field-control-segment { border: 1px solid var(--line-dark); border-radius: 8px; overflow: hidden; }
+.operational-screen .segmented-field .field-control-segment > input, .operational-screen .segmented-field .field-control-segment > select { min-height: 44px; height: 44px; font-size: 14px; }
+.operational-screen .segmented-check-field { flex-direction: row; align-items: center; justify-content: flex-start; width: auto; min-height: 32px; border: 0; background: transparent; gap: 10px; }
+.operational-screen .segmented-check-field .field-control-segment { flex: 0 0 20px; border: 0; order: -1; }
+.operational-screen .segmented-check-field .field-control-segment input { margin: 0; }
+.operational-metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
+.operational-metric { padding: 18px 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.operational-metric span { display: block; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+.operational-metric strong { color: var(--primary-dark); font-size: 24px; font-variant-numeric: tabular-nums; }
+.operational-metric small { font-size: 11px; font-weight: 400; color: var(--muted); }
+.operational-table { table-layout: fixed; min-width: 920px; }
+.operational-table th, .operational-table td { white-space: normal; overflow-wrap: anywhere; vertical-align: middle; padding: 16px; line-height: 1.7; }
+.operational-table th:last-child { width: 160px; }
+.operational-table .cell-main, .operational-table .cell-sub { max-width: none; white-space: normal; overflow: visible; }
+.operational-table .badge { height: auto; min-height: 25px; }
+.ride-finance-table { min-width: 1100px; }
+.ride-finance-table th:first-child { width: 260px; }
+.ride-finance-table th:nth-child(2) { width: 180px; }
+.ride-finance-table th:last-child { width: auto; }
+.money-cell { font-variant-numeric: tabular-nums; font-weight: 650; }
+.review-list { display: grid; gap: 12px; }
+.review-card { display: flex; gap: 20px; align-items: center; justify-content: space-between; padding: 18px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 10px; }
+.review-card > div:first-child { min-width: 0; flex: 1; }
+.review-card h3 { font-size: 14px; margin: 0 0 8px; }
+.review-card p { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.review-card-actions { flex: 0 0 auto; max-width: 240px; color: var(--muted); font-size: 12px; }
+.permission-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; }
+.permission-grid fieldset { margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); min-width: 0; }
+.permission-grid legend { font-size: 13px; font-weight: 700; padding: 0 5px; color: var(--primary-dark); }
+.permission-grid .check-field { display: flex; flex-direction: row; align-items: center; margin: 8px 0; font-weight: 400; }
+.permission-grid input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--primary); }
+.review-notice, .record-identity-preview { padding: 12px 16px; color: var(--primary-dark); background: #eaf4f3; border: 1px solid #cde4e0; border-radius: 8px; font-size: 13px; line-height: 1.8; }
+.review-notice { margin-top: 16px; }
+.form-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.review-dialog { width: min(600px,92vw); padding: 24px; border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+.review-dialog select { width: 100%; margin: 16px 0; }
+.review-dialog::backdrop { background: rgba(22,43,47,.4); }
+@media(max-width:900px) { .operational-form, .permission-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .operational-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media(max-width:600px) { .operational-filters, .operational-form, .permission-grid { grid-template-columns: minmax(0,1fr); } .review-card { flex-direction: column; align-items: stretch; } .operational-screen > .panel { padding: 16px; } }

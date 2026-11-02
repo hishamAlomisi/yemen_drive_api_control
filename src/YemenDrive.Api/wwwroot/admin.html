@@ -6,7 +6,7 @@
   <title>YemenDrive | لوحة التحكم</title>
   <link rel="icon" type="image/png" href="/yemen-drive-page-icon.png?v=20261015">
   <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/admin.css?v=20261029-wallet-login-2">
+  <link rel="stylesheet" href="/admin.css?v=20261102-admin-design-2">
 </head>
 <body>
   <div class="admin-login" id="admin-login">
@@ -38,6 +38,7 @@
             <button class="nav-item nav-sub-item" data-view="catalog"><span class="nav-icon">▦</span><span>الخدمات وأنواعها</span></button>
             <button class="nav-item nav-sub-item" data-view="pricing"><span class="nav-icon">¤</span><span>التسعير</span></button>
             <button class="nav-item nav-sub-item" data-view="payment-methods"><span class="nav-icon">▣</span><span>طرق الدفع</span></button>
+            <button class="nav-item nav-sub-item" data-view="transfer-fees"><span class="nav-icon">⇄</span><span>رسوم تحويل المحافظ</span></button>
             <button class="nav-item nav-sub-item" data-view="console"><span class="nav-icon">›_</span><span>محطة API</span></button>
           </div>
         </details>
@@ -54,6 +55,9 @@
           <div class="nav-submenu">
             <button class="nav-item nav-sub-item" data-view="customers"><span class="nav-icon">♙</span><span>العملاء</span></button>
             <button class="nav-item nav-sub-item" data-view="rides"><span class="nav-icon">↗</span><span>الرحلات</span></button>
+            <button class="nav-item nav-sub-item" data-view="operational-review"><span class="nav-icon">▤</span><span>المتابعة المالية والشكاوى</span></button>
+            <button class="nav-item nav-sub-item" data-view="operational-policy"><span class="nav-icon">⚙</span><span>سياسة الوصول والمهل</span></button>
+            <button class="nav-item nav-sub-item" data-view="access-governance"><span class="nav-icon">◎</span><span>الصلاحيات وطلبات حذف الحساب</span></button>
             <button class="nav-item nav-sub-item" data-view="cancellations"><span class="nav-icon">!</span><span>طلبات الإلغاء</span></button>
             <button class="nav-item nav-sub-item" data-view="wallet"><span class="nav-icon">□</span><span>المحافظ</span></button>
             <button class="nav-item nav-sub-item" data-view="places"><span class="nav-icon">☆</span><span>الأماكن المحفوظة</span></button>
@@ -152,6 +156,52 @@
           </section>
         </section>
 
+        <section class="view" id="view-transfer-fees">
+          <div class="section-toolbar"><div><h2>رسوم تحويل المحافظ</h2><p>الحد الأدنى مشمول والأعلى غير مشمول. اترك الحد الأعلى فارغاً لشريحة مفتوحة. تُضاف الرسوم إلى المبلغ المحوّل.</p></div><button class="button" id="transfer-fee-refresh">تحديث</button></div>
+          <div class="panel"><form id="transfer-fee-form" class="form-grid">
+            <input type="hidden" name="id">
+            <label>من مبلغ (ر.ي)<input name="fromAmount" type="number" min="0" max="1000000000" step="0.01" required></label>
+            <label>إلى أقل من (ر.ي)<input name="toAmount" type="number" min="0" max="1000000000" step="0.01" placeholder="بدون حد أعلى"></label>
+            <label>طريقة الاحتساب<select name="feeKind"><option value="Fixed">قيمة ثابتة</option><option value="Percent">نسبة مئوية</option></select></label>
+            <label>قيمة الرسوم / النسبة<input name="feeValue" type="number" min="0" step="0.01" required></label>
+            <label class="check-field"><input name="isActive" type="checkbox" checked> مفعلة</label>
+            <div class="form-actions"><button class="button primary" type="submit">حفظ الشريحة</button><button class="button" type="button" id="transfer-fee-reset">شريحة جديدة</button></div>
+          </form><p id="transfer-fee-result" role="status"></p></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>من (شامل)</th><th>إلى (غير شامل)</th><th>الرسوم</th><th>الحالة</th><th>الإجراء</th></tr></thead><tbody id="transfer-fee-body"></tbody></table></div></section>
+        </section>
+        <section class="view operational-screen" id="view-operational-review">
+          <div class="section-toolbar"><div><h2>النقل والتسوية المالية</h2><p>القبض والاسترداد والمبالغ المستحقة، مستقلة عن حالة النقل</p></div><button class="button" onclick="loadOperationalReview()">تحديث البيانات</button></div>
+          <div class="operational-filters"><label>الرحلة<select id="financial-ride-filter" onchange="loadOperationalReview()"><option value="">كل الرحلات</option></select></label><label>البحث في المعالجات<input id="financial-case-search" type="search" placeholder="اسم العميل أو المسؤول أو حالة المعالجة" oninput="renderFinancialCases()"></label></div>
+          <div id="operational-totals" class="operational-metrics"></div>
+          <section class="data-section"><div class="section-header"><h2>المعالجات المالية</h2></div><div class="table-wrap"><table class="operational-table"><thead><tr><th>المعالجة والرحلة</th><th>الحالة والمسؤول</th><th>المبلغ والأساس</th><th>الإجراءات</th></tr></thead><tbody id="financial-cases-body"></tbody></table></div></section>
+          <div class="panel"><h2>محاولات المزود الأصلية</h2><p>راجع كشف المزود ومرجعه والمبلغ قبل القرار.</p><div id="provider-review-list" class="review-list"></div></div>
+          <div class="panel"><h2>الشكاوى ومتابعتها</h2><div id="support-review-list" class="review-list"></div></div>
+          <section class="data-section"><div class="section-header"><h2>تفصيل الرحلات والقبض والمستحق</h2></div><div class="table-wrap"><table class="operational-table ride-finance-table"><thead><tr><th>الرحلة والمسار</th><th>العميل والسائق</th><th>النقل</th><th>المستحق</th><th>المقبوض</th><th>المسترد</th><th>المتبقي</th><th>حق الاسترداد</th></tr></thead><tbody id="operational-rides"></tbody></table></div></section>
+          <section class="data-section"><div class="section-header"><h2>سجل القرارات والأدلة</h2></div><div class="table-wrap"><table class="operational-table"><thead><tr><th>السجل</th><th>الإجراء</th><th>المسؤول</th><th>التاريخ</th><th>أساس القرار</th></tr></thead><tbody id="operational-audit"></tbody></table></div></section>
+        </section>
+        <section class="view operational-screen" id="view-operational-policy">
+          <div class="section-toolbar"><div><h2>قيم السياسة المعتمدة</h2><p>تحفظ نسخة السياسة لكل رحلة عند إنشائها</p></div></div>
+          <div class="panel policy-panel"><form id="operational-policy-form" class="operational-form" onsubmit="saveOperationalPolicy(event)">
+            <label>نطاق إثبات الوصول بالمتر<input name="arrivalToleranceMeters" type="number" min="1" step="1" placeholder="مثال: 100"></label>
+            <label>مهلة حضور الراكب بالدقائق<input name="pickupGraceMinutes" type="number" min="0" step="1" placeholder="مثال: 5"></label>
+            <label>مهلة رد القرار بالدقائق<input name="decisionResponseMinutes" type="number" min="1" step="1" placeholder="مثال: 15"></label>
+            <label class="full-width">أساس السياسة المعتمدة<textarea name="approvalBasis" required maxlength="1000" placeholder="أدخل أساس اعتماد القيم ومرجع القرار"></textarea></label>
+            <div class="full-width form-actions"><button class="button primary" type="submit">اعتماد نسخة جديدة</button></div>
+          </form><div id="operational-policy-result" class="review-notice" role="status"></div></div>
+        </section>
+        <section class="view operational-screen" id="view-access-governance">
+          <div class="section-toolbar"><div><h2>الصلاحيات وحذف الحساب</h2><p>تفويض الإدارة وقرارات تعطيل الحسابات</p></div></div>
+          <div class="panel" id="administrator-permissions-panel"><h2>تفويض الموظفين</h2><p>صلاحيات مسؤول النظام الأصلية ممنوحة تلقائياً ومحمية من التعديل.</p>
+            <form id="administrator-permissions-form" class="operational-form" onsubmit="saveAdministratorPermissions(event)">
+              <label class="full-width">حساب الإدارة<select name="userId" required onchange="readAdministratorPermissions(this.form)"><option value="">اختر المسؤول بالاسم</option></select></label>
+              <div id="administrator-permissions-notice" class="review-notice full-width" role="status">اختر حساباً لعرض صلاحياته.</div>
+              <div class="permission-grid full-width"><fieldset><legend>الاسترداد والمعالجات المالية</legend><label class="check-field"><input type="checkbox" name="permission" value="refunds.read"> عرض</label><label class="check-field"><input type="checkbox" name="permission" value="refunds.write"> تنفيذ القرارات</label></fieldset><fieldset><legend>المالية والمزودون</legend><label class="check-field"><input type="checkbox" name="permission" value="finance.read"> عرض</label><label class="check-field"><input type="checkbox" name="permission" value="finance.write"> تنفيذ القرارات</label></fieldset><fieldset><legend>البلاغات والدعم</legend><label class="check-field"><input type="checkbox" name="permission" value="support.read"> عرض</label><label class="check-field"><input type="checkbox" name="permission" value="support.write"> تنفيذ القرارات</label></fieldset><fieldset><legend>السياسة والتسعير</legend><label class="check-field"><input type="checkbox" name="permission" value="policy.read"> عرض</label><label class="check-field"><input type="checkbox" name="permission" value="policy.write"> تنفيذ القرارات</label></fieldset><fieldset><legend>الحسابات والبيانات الشخصية</legend><label class="check-field"><input type="checkbox" name="permission" value="personal_data.read"> عرض</label><label class="check-field"><input type="checkbox" name="permission" value="personal_data.write"> تنفيذ القرارات</label></fieldset><fieldset><legend>السلامة</legend><label class="check-field"><input type="checkbox" name="permission" value="safety.read"> عرض</label><label class="check-field"><input type="checkbox" name="permission" value="safety.write"> تنفيذ القرارات</label></fieldset><fieldset><legend>تشغيل الرحلات</legend><label class="check-field"><input type="checkbox" name="permission" value="operations.read"> عرض</label><label class="check-field"><input type="checkbox" name="permission" value="operations.write"> تنفيذ القرارات</label></fieldset><fieldset><legend>تفويض الموظفين</legend><label class="check-field"><input type="checkbox" name="permission" value="permissions.read"> عرض</label><label class="check-field"><input type="checkbox" name="permission" value="permissions.write"> تنفيذ القرارات</label></fieldset><fieldset><legend>الإدارة الكاملة</legend><label class="check-field"><input type="checkbox" name="permission" value="*"> تفويض كامل</label></fieldset></div>
+              <label class="full-width">سبب تغيير التفويض<textarea name="reason" required maxlength="1000" placeholder="سبب التغيير ومرجع القرار"></textarea></label>
+              <div class="full-width form-actions"><button class="button primary" type="submit">حفظ التفويض</button></div>
+            </form>
+          </div>
+          <div class="panel"><h2>طلبات حذف الحساب</h2><p>تعطيل الحساب يأتي بعد تسوية الحقوق ومراجعة الاحتفاظ بالسجلات.</p><div id="deletion-request-list" class="review-list"></div></div>
+        </section>
         <section class="view" id="view-users">
           <div class="section-toolbar"><div><h2>المستخدمون</h2><p>العملاء والسائقون ومديرو النظام</p></div><div class="command-row"><input class="search-input" id="user-search" placeholder="بحث بالاسم أو الهاتف"><button class="button primary" data-form="user">إضافة مستخدم</button></div></div>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الاسم</th><th>الهاتف</th><th>البريد</th><th>الدور</th><th>المدينة</th><th>الحالة</th><th>تاريخ الإضافة</th><th>الإجراءات</th></tr></thead><tbody id="users-body"></tbody></table></div><div class="empty-state hidden" id="users-empty">لا يوجد مستخدمون مطابقون.</div></section>
@@ -190,7 +240,7 @@
         </section>
 
         <section class="view" id="view-cancellations">
-          <div class="section-toolbar"><div><h2>طلبات إلغاء الرحلات</h2><p>مراجعة السبب وقرار السائق وبيانات الرحلة. اعتماد الإدارة للرحلة المدفوعة ينفذ التسوية المالية ومسار الاسترداد المحدد مرة واحدة.</p></div><div class="command-row"><select class="filter-select" id="cancellation-filter"><option value="">كل الحالات</option><option value="0">بانتظار السائق</option><option value="1">رفض السائق</option><option value="2">قيد مراجعة الإدارة</option><option value="3">وافقت الإدارة</option><option value="4">رفضت الإدارة</option><option value="5">بانتظار موافقة الراكب</option><option value="6">وافق الراكب</option><option value="7">رفض الراكب</option><option value="8">ألغى السائق قبل البدء</option></select><button class="button" id="cancellations-refresh">تحديث</button></div></div>
+          <div class="section-toolbar"><div><h2>طلبات إلغاء الرحلات</h2><p>مراجعة السبب وقرار السائق وبيانات الرحلة. اعتماد الإدارة للرحلة المدفوعة ينفذ التسوية المالية ومسار الاسترداد المحدد مرة واحدة.</p></div><div class="command-row"><select class="filter-select" id="cancellation-filter"><option value="">كل الحالات</option><option value="0">بانتظار السائق</option><option value="1">رفض السائق</option><option value="2">قيد مراجعة الإدارة</option><option value="3">وافقت الإدارة</option><option value="4">رفضت الإدارة</option><option value="5">بانتظار موافقة الراكب</option><option value="6">وافق الراكب</option><option value="7">رفض الراكب</option><option value="8">ألغى السائق قبل البدء</option><option value="9">اختيار وجهة الاسترداد</option><option value="10">موافقة الراكب على الوجهة</option><option value="11">إثبات استلام النقد</option><option value="12">معالجة مالية مستقلة</option></select><button class="button" id="cancellations-refresh">تحديث</button></div></div>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>الطلب</th><th>العميل / السائق</th><th>الرحلة</th><th>سبب الإلغاء</th><th>القرار</th><th>الدفع</th><th>الموقع عند الإلغاء</th><th>التاريخ</th><th>إجراء الإدارة</th></tr></thead><tbody id="cancellations-body"></tbody></table></div><div class="empty-state hidden" id="cancellations-empty">لا توجد طلبات إلغاء مطابقة.</div></section>
         </section>
         <section class="view" id="view-safety">
@@ -219,7 +269,7 @@
         <section class="view" id="view-wallet">
           <div class="section-toolbar"><div><h2>المحفظة</h2><p>عرض الرصيد والحركات المالية المنشورة. لا يمكن إضافة حركة مباشرة.</p></div></div>
           <section class="wallet-query"><div class="wallet-phone-field"><label class="field-label-segment" for="wallet-phone-number">رقم هاتف المستخدم</label><div class="field-control-segment"><input id="wallet-phone-number" type="tel" inputmode="tel" autocomplete="tel" dir="ltr" placeholder="مثال: 777123456"><button class="button" id="wallet-load">عرض المحفظة</button></div></div></section>
-          <div class="wallet-summary hidden" id="wallet-summary"><div><span>الرصيد الحالي</span><strong id="wallet-balance">0</strong><small id="wallet-currency">YER</small></div><div><span>عدد الحركات</span><strong id="wallet-transactions-count">0</strong><small>حركة مالية</small></div><div class="wallet-owner-card"><span class="wallet-owner-title">صاحب المحفظة</span><strong class="wallet-owner-name" id="wallet-owner-name">—</strong><small id="wallet-owner-id">معرف المستخدم: —</small><div class="wallet-owner-details"><div><span>رقم الهاتف</span><strong id="wallet-owner-phone">—</strong></div><div><span>البريد الإلكتروني</span><strong id="wallet-owner-email">—</strong></div><div><span>نوع الحساب</span><strong id="wallet-owner-role">—</strong></div><div><span>حالة الحساب</span><strong id="wallet-owner-status">—</strong></div><div><span>الجنس</span><strong id="wallet-owner-gender">—</strong></div><div><span>العنوان</span><strong id="wallet-owner-address">—</strong></div><div><span>تاريخ إنشاء الحساب</span><strong id="wallet-owner-created">—</strong></div><div><span>آخر تحديث للحساب</span><strong id="wallet-owner-updated">—</strong></div></div></div></div>
+          <div class="wallet-summary hidden" id="wallet-summary"><div><span>الرصيد الحالي</span><strong id="wallet-balance">0</strong><small id="wallet-currency">YER</small></div><div><span>مديونية المحفظة</span><strong id="wallet-ledger-debt">0</strong><small>تسدد من الإيداعات القادمة</small></div><div><span>عدد الحركات</span><strong id="wallet-transactions-count">0</strong><small>حركة مالية</small></div><div class="wallet-owner-card"><span class="wallet-owner-title">صاحب المحفظة</span><strong class="wallet-owner-name" id="wallet-owner-name">—</strong><small id="wallet-owner-id">معرف المستخدم: —</small><div class="wallet-owner-details"><div><span>رقم الهاتف</span><strong id="wallet-owner-phone">—</strong></div><div><span>البريد الإلكتروني</span><strong id="wallet-owner-email">—</strong></div><div><span>نوع الحساب</span><strong id="wallet-owner-role">—</strong></div><div><span>حالة الحساب</span><strong id="wallet-owner-status">—</strong></div><div><span>الجنس</span><strong id="wallet-owner-gender">—</strong></div><div><span>العنوان</span><strong id="wallet-owner-address">—</strong></div><div><span>تاريخ إنشاء الحساب</span><strong id="wallet-owner-created">—</strong></div><div><span>آخر تحديث للحساب</span><strong id="wallet-owner-updated">—</strong></div></div></div></div>
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>النوع</th><th>المبلغ</th><th>الرصيد بعد الحركة</th><th>الوصف</th><th>المرجع</th><th>التاريخ</th></tr></thead><tbody id="wallet-body"></tbody></table></div><div class="empty-state" id="wallet-empty">أدخل رقم هاتف المستخدم لعرض محفظته.</div></section>
         </section>
 
@@ -324,7 +374,7 @@
           <form id="route-change-report-filters" class="admin-report-filters">
             <label>من تاريخ الطلب<input id="route-change-report-from" type="date"></label>
             <label>إلى تاريخ الطلب<input id="route-change-report-to" type="date"></label>
-            <label>رقم الرحلة<input id="route-change-report-ride" type="number" min="1" step="1" placeholder="كل الرحلات"></label>
+            <label>الرحلة<select id="route-change-report-ride"><option value="">كل الرحلات</option></select></label>
             <label>الراكب أو السائق<input id="route-change-report-search" maxlength="100" placeholder="الاسم أو الهاتف"></label>
             <label>حالة الطلب<select id="route-change-report-status"><option value="">كل الحالات</option><option value="quoted">عرض أجرة</option><option value="pending">بانتظار الموافقة</option><option value="accepted">مقبول</option><option value="rejected">مرفوض</option><option value="cancelled">ملغى</option><option value="expired">انتهت المهلة</option></select></label>
             <div class="admin-report-actions"><button class="button primary" type="submit">عرض السجل</button><button class="button" type="reset">مسح التصفية</button></div>
@@ -341,7 +391,7 @@
           <form id="waiting-report-filters" class="admin-report-filters">
             <label>من تاريخ الطلب<input id="waiting-report-from" type="date"></label>
             <label>إلى تاريخ الطلب<input id="waiting-report-to" type="date"></label>
-            <label>رقم الرحلة<input id="waiting-report-ride" type="number" min="1" step="1" placeholder="كل الرحلات"></label>
+            <label>الرحلة<select id="waiting-report-ride"><option value="">كل الرحلات</option></select></label>
             <label>الراكب أو السائق<input id="waiting-report-search" maxlength="100" placeholder="الاسم أو الهاتف"></label>
             <label>حالة الانتظار<select id="waiting-report-status"><option value="">كل الحالات</option><option value="active">انتظار جارٍ</option><option value="ended">انتظار منتهٍ</option><option value="pending">بانتظار الموافقة</option><option value="unstarted">طلب لم يبدأ</option></select></label>
             <label class="check-field"><input id="waiting-report-charged" type="checkbox">رسوم مثبتة أكبر من صفر</label>
@@ -388,7 +438,8 @@
   </dialog>
   <script src="/vendor/signalr/signalr.min.js" defer></script>
   <script src="/vendor/leaflet/leaflet.js" defer></script>
-  <script src="/admin.js?v=20261101-cancellation-refunds" defer></script>
+  <script src="/admin.js?v=20261102-wallet-debt-1" defer></script>
+  <script src="/admin-transfer-fees.js?v=20261102-1" defer></script>
   <script src="/admin-waiting-report.js?v=20261019-ride-reports-2" defer></script>
   <script src="/admin-route-change-report.js?v=20261019-ride-reports-2" defer></script>
 </body>

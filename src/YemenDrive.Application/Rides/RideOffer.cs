@@ -56,9 +56,10 @@ public sealed class RideOffer(
                 x => x.UserId == driverId &&
                      x.ServiceKindId == ride.ServiceKindId &&
                      x.ServiceCatalogItemId == ride.ServiceCatalogItemId &&
-                     x.IsAvailable &&
+                     x.IsAvailable && x.AcceptsNewRequests && x.IsApproved && x.User.IsActive &&
+                     x.ApprovedPassengerSeats != null && x.ApprovedPassengerSeats >= (ride.PassengerCount ?? (ride.MoreThanFourPassengers ? 5 : 1)) &&
                      !dbContext.Rides.Any(activeRide =>
-                         activeRide.DriverId == driverId && activeRide.Id != ride.Id &&
+                         activeRide.DriverId == driverId && activeRide.ServiceEndedAtUtc == null && activeRide.Id != ride.Id &&
                          (activeRide.Status == RideStatus.DriverAssigned ||
                           activeRide.Status == RideStatus.DriverEnRoute ||
                           activeRide.Status == RideStatus.DriverArrived ||

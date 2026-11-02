@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.DataProtection;
 using System.Security.Cryptography;
 using System.Text;
@@ -100,12 +101,14 @@ builder.Services.AddHttpClient<GoogleMapsGateway>(client =>
 });
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.AddSignalR();
+builder.Services.AddScoped<DriverLocationIngestionService>();
 builder.Services.AddSingleton<NearbyDriverSubscriptionStore>();
 builder.Services.AddSingleton<RideParticipantPresence>();
 builder.Services.AddSingleton<IRideParticipantPresence>(provider => provider.GetRequiredService<RideParticipantPresence>());
 builder.Services.AddScoped<TrackingHubAccessPolicy>();
 builder.Services.AddScoped<IRideRealtimePublisher, SignalRRideRealtimePublisher>();
 builder.Services.AddScoped<NotificationSaveCaptureInterceptor>();
+builder.Services.AddScoped<WalletMovementNotificationInterceptor>();
 builder.Services.AddSingleton<FirebaseAdminPushSender>();
 builder.Services.AddHostedService<NotificationPushWorker>();
 builder.Services.AddScoped<RideOfferExpiration>();
@@ -117,7 +120,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 builder.Services.AddDbContext<YemenDriveDbContext>((serviceProvider, options) =>
 {
-    options.AddInterceptors(serviceProvider.GetRequiredService<NotificationSaveCaptureInterceptor>());
+    options.AddInterceptors(serviceProvider.GetRequiredService<WalletMovementNotificationInterceptor>(), serviceProvider.GetRequiredService<NotificationSaveCaptureInterceptor>());
     var settings = serviceProvider.GetRequiredService<DatabaseConfigurationStore>().Current;
     if (settings is not null)
     {
@@ -137,6 +140,7 @@ foreach (var serviceType in modelServiceTypes)
 }
 
 builder.Services.AddScoped<ModelServiceDispatcher>();
+builder.Services.AddScoped<IModelRequestAuthorizer, YemenDrive.Application.Administration.AdministratorAccess>();
 builder.Services.AddHostedService<ConsoleSetupShortcutService>();
 
 var app = builder.Build();
@@ -350,6 +354,7 @@ app.MapGet("/api/admin/safety/recordings/{recordingId:int}/audio", async (
     if (!await IsAdminAsync(currentUser.UserId, db, token))
         return Results.Unauthorized();
 
+    await YemenDrive.Application.Administration.AdministratorAccess.RequireAsync(db, currentUser.RequireUserId(), "safety.read", token);
     var recording = await db.EmergencyRecordings.AsNoTracking()
         .SingleOrDefaultAsync(x => x.Id == recordingId && x.EndedAtUtc != null && x.UploadedBytes > 0, token);
     if (recording is null)
@@ -496,6 +501,18 @@ app.MapPost("/api/admin/development/seed", async (
     return Results.Ok(ApiResult.Ok(await seeder.SeedAsync(cancellationToken), "تمت إضافة بيانات التطوير التجريبية."));
 });
 
+app.MapPost("/api/tracking/driver-location", async (
+    DriverLocationHubRequest sample, ICurrentUserContext currentUser, DriverLocationIngestionService locations) =>
+{
+    if (currentUser.UserId is not int driverId) return Results.Unauthorized();
+    try {
+        await locations.SaveAsync(driverId, sample);
+        return Results.Ok(ApiResult.Ok(new { accepted = true }));
+    }
+    catch (HubException exception) { return Results.BadRequest(ApiResult.Fail("invalid_location", exception.Message)); }
+    catch (OperationCanceledException) { return Results.StatusCode(503); }
+});
+
 app.MapPost("/api/execute", async (
     ApiRequest request,
     ModelServiceDispatcher dispatcher,
@@ -567,6 +584,12 @@ static async Task SeedAdministratorAsync(IServiceProvider services)
     await using var scope = services.CreateAsyncScope();
     var db = scope.ServiceProvider.GetRequiredService<YemenDriveDbContext>();
     await db.Database.MigrateAsync();
+    try {
+        var walletSync = new WalletLedgerSynchronization(db);
+        await walletSync.ReconcileExistingAsync(CancellationToken.None);
+        foreach (var message in walletSync.ReviewMessages) services.GetRequiredService<ILoggerFactory>().CreateLogger("WalletLedgerReconciliation").LogError("{WalletReview}", message);
+    }
+    catch (ServiceException error) { services.GetRequiredService<ILoggerFactory>().CreateLogger("WalletLedgerReconciliation").LogError("Wallet ledger reconciliation requires review: {Code} {Message}", error.Code, error.Message); }
     await scope.ServiceProvider.GetRequiredService<CashCollectionAccountingReconciliation>().RunAsync(CancellationToken.None);
 
     const string phone = "700000001";
@@ -575,6 +598,7 @@ static async Task SeedAdministratorAsync(IServiceProvider services)
     if (existing is not null)
     {
         var changed = false;
+        if (!existing.IsSystemAdministrator) { existing.IsSystemAdministrator = true; changed = true; }
         if (existing.Role != UserRole.Admin) { existing.Role = UserRole.Admin; changed = true; }
         if (!existing.IsActive) { existing.IsActive = true; changed = true; }
         if (existing.Wallet is null)
@@ -590,6 +614,7 @@ static async Task SeedAdministratorAsync(IServiceProvider services)
     {
         PhoneNumber = phone,
         DisplayName = "YemenDrive Administrator",
+        IsSystemAdministrator = true,
         PasswordHash = PasswordHash.Create("Admin1234!"),
         Role = UserRole.Admin,
         IsActive = true,

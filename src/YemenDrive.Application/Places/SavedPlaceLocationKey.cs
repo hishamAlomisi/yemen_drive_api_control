@@ -3,8 +3,8 @@ using System.Globalization;
 namespace YemenDrive.Application.Places;
 
 /// <summary>
-/// Uses a roughly eleven-metre grid so a single physical location cannot be
-/// saved repeatedly because of normal GPS jitter.
+/// Uses a roughly eleven-metre grid to match unnamed favourites despite GPS jitter.
+/// Named shortcuts may share coordinates and are updated by name or standard kind.
 /// </summary>
 public static class SavedPlaceLocationKey
 {

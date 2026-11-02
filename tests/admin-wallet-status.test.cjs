@@ -49,6 +49,8 @@ function harness(request, items = [method(1)]) {
     focus() {}
     querySelectorAll() { return []; }
     appendChild() {}
+    append() {}
+    remove() {}
   }
   function node(selector) {
     const id = selector.match(/data-wallet-login-id="(\d+)"/)?.[1];
@@ -61,7 +63,7 @@ function harness(request, items = [method(1)]) {
     return { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
   };
   const document = {
-    hidden: false, querySelector: node, querySelectorAll: () => [],
+    hidden: false, querySelector: node, querySelectorAll: () => [], createElement: () => new Node(),
     addEventListener: (name, callback) => addListener(documentEvents, name, callback),
     documentElement: new Node(), body: new Node()
   };
@@ -238,4 +240,80 @@ test('returning to the visible wallet page after sign-in restarts status refresh
   assert.equal(h.requests.length, count + 1);
   await h.tick(3000);
   assert.equal(h.requests.length, count + 2);
+});
+
+
+test('operational review keeps available sections and exposes only authorized decisions', async t => {
+  const h = harness(async () => login('Ready')); t.after(h.close);
+  vm.runInContext("administratorPermissions = new Set(['finance.read','refunds.read','support.read'])", h.context);
+  h.context.execute = async model => ({ data: model === 'OperationalReviewModel' ? {
+    totals: { verifiedReceipts: 400, outstanding: 600 }, rides: [], audit: [],
+    pendingProviderOperations: [{id:3, providerCode:'Jaib', amount:1000, currency:'YER', status:'ReviewRequired',requestId:'original'}]
+  } : model === 'RideFinancialCaseModel' ? [{id:2,rideId:1,kind:'Receivable',status:'Open',amount:600,note:'<script>unsafe</script>'}]
+    : [{id:4,userId:1,category:'Payment',status:'Investigating',message:'test'}] });
+  await h.context.loadOperationalReview();
+  assert.match(h.node('#operational-totals').innerHTML, /600/);
+  assert.doesNotMatch(h.node('#financial-cases-body').innerHTML, /onclick="decideFinancialCase/);
+  assert.match(h.node('#financial-cases-body').innerHTML, /&lt;script&gt;/);
+  assert.doesNotMatch(h.node('#provider-review-list').innerHTML, /onclick="reviewProviderOutcome/);
+  assert.match(h.node('#support-review-list').innerHTML, /عرض سجل المعالجة/);
+});
+
+test('support-only staff can view tickets while denied finance is stated explicitly', async t => {
+  const h = harness(async () => login('Ready')); t.after(h.close);
+  vm.runInContext("administratorPermissions = new Set(['support.read'])", h.context);
+  h.context.execute = async model => { if (model !== 'SupportTicketModel') throw new Error('permission denied'); return { data:[{id:5,userId:1,category:'Safety',status:'Open',message:'help'}] }; };
+  await h.context.loadOperationalReview();
+  assert.match(h.node('#operational-totals').textContent, /تفويض/);
+  assert.match(h.node('#provider-review-list').textContent, /يتطلب صلاحية/);
+  assert.match(h.node('#support-review-list').innerHTML, /بلاغ #5/);
+});
+
+test('unauthorized admin actions never issue a decision request', async t => {
+  const h = harness(async () => login('Ready')); t.after(h.close);
+  vm.runInContext("administratorPermissions = new Set(['refunds.read'])", h.context);
+  let decisions = 0; h.context.execute = async () => { decisions++; return {data:[]}; };
+  await h.context.decideFinancialCase(1); await h.context.reviewProviderOutcome(1); await h.context.decideDeletionRequest(1);
+  assert.equal(decisions, 0);
+  h.context.clearAdminSession(); assert.equal(h.context.canAdmin('refunds.read'), false);
+});
+
+test('authorized financial review submits evidence to the correct operation', async t => {
+  const h = harness(async () => login('Ready')); t.after(h.close);
+  vm.runInContext("administratorPermissions = new Set(['refunds.write']); operationalReview = {financialCases:[{id:2,kind:'Receivable',amount:600}]}", h.context);
+  h.context.reviewChoice = async () => 'ConfirmDebt'; h.context.requiredReviewText = () => 'verified fixture'; h.context.prompt = () => '';
+  h.context.chooseAdministrator = async () => '';
+  h.context.loadOperationalReview = async () => {};
+  const calls = []; h.context.execute = async (model,operation,data) => { calls.push({model,operation,data}); return {data:{}}; };
+  await h.context.decideFinancialCase(2);
+  assert.equal(calls.length, 1); assert.equal(calls[0].model,'RideFinancialCaseModel'); assert.equal(calls[0].data.resolution,'ConfirmDebt'); assert.equal(calls[0].data.note,'verified fixture');
+});
+
+test('permission form reads labeled choices and saves an explicit audit reason', async t => {
+  const h = harness(async () => login('Ready')); t.after(h.close);
+  vm.runInContext("administratorPermissions = new Set(['permissions.read','permissions.write'])", h.context);
+  const inputs = [{value:'refunds.read',checked:false},{value:'refunds.write',checked:false}];
+  const submit = {disabled:false};
+  const form = {dataset:{},elements:{userId:{value:'7'},reason:{value:'approved responsibilities'}},querySelector: () => submit,querySelectorAll: selector => selector.endsWith(':checked') ? inputs.filter(x => x.checked) : inputs};
+  const calls = []; h.context.execute = async (model,operation,data) => { calls.push({model,operation,data}); return {data:{permissions:['refunds.read']}}; };
+  await h.context.readAdministratorPermissions(form); assert.equal(inputs[0].checked,true); assert.equal(inputs[1].checked,false);
+  inputs[1].checked = true;
+  await h.context.saveAdministratorPermissions({preventDefault(){},target:form});
+  assert.equal(calls[1].operation,'update'); assert.equal(calls[1].data.reason,'approved responsibilities'); assert.deepEqual(Array.from(calls[1].data.permissions),['refunds.read','refunds.write']);
+});
+
+test('system administrator effective permissions are visible and cannot be saved over', async t => {
+  const h = harness(async () => login('Ready')); t.after(h.close);
+  vm.runInContext("administratorPermissions = new Set(['*']); currentAdministratorId = 1", h.context);
+  const inputs = [{value:'refunds.read',checked:false},{value:'permissions.write',checked:false}];
+  const submit = {disabled:false};
+  const form = {dataset:{},elements:{userId:{value:'1'},reason:{value:''}},querySelector: () => submit,querySelectorAll: () => inputs};
+  let writes = 0;
+  h.context.execute = async (model, operation) => { if (operation === 'update') writes++; return {data:{userId:1,isSystemAdministrator:true,permissions:['*']}}; };
+  await h.context.readAdministratorPermissions(form);
+  assert.equal(inputs.every(x => x.checked && x.disabled), true);
+  assert.equal(submit.disabled, true);
+  await h.context.saveAdministratorPermissions({preventDefault(){},target:form});
+  assert.equal(writes, 0);
+  assert.match(h.node('#administrator-permissions-notice').textContent, /ممنوحة تلقائياً/);
 });

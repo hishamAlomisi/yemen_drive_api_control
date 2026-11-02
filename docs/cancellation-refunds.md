@@ -1,19 +1,17 @@
-# Cancellation and paid-ride refunds
+# الإلغاء والاسترداد — 2 نوفمبر 2026
 
-`RideCancellationRequestModel/get` with `rideId` and `previewOnly: true` returns an ownership-checked refund quote. The rider confirms a centered breakdown before sending a paid cancellation request. Payment-related cancellation reasons apply only to unpaid assigned/ongoing rides.
+انتهاء النقل مستقل عن مراجعة السبب والمال. قبل البدء ينهي الإلغاء الالتزام؛ أثناء الرحلة يلزم التوقف الآمن وتسجيل النهاية والدليل المتاح. رفض الموافقة المالية أو تأخر المزود لا يعيد الرحلة إلى حالة جارية. يستقبل السائق الطلبات وفق الأهلية والسعة والموقع الحديث واختياره الاتصال.
 
-The quote retains the snapshotted service and cancellation fees. For started rides it also retains completed travel, waiting and route-change fees. Traveled fare follows the original negotiated pricing factor and trusted driver GPS; it excludes recorded waiting time. The request freezes the computed refund and cancellation location. Missing, stale or discontinuous tracking requires an explicit administrative reviewed fare; the cancellation request itself remains available.
+الإلغاء غير المدفوع قبل الوصول مباشر وفق المسار الموجود. مراجعة الراكب والسائق والإدارة تحدد المسؤولية والمبلغ في الحالات الأخرى. أول رفض يفتح مراجعة مسؤولة. لا تلزم ثلاثة رفضات، ولا يتكرر اختيار الاسترداد بلا معالجة.
 
-Customer request -> driver decision -> administrative approval is the paid workflow. Requesting/accepting cancellation creates no refund. Only final administrative approval credits the internal customer wallet and posts a separate immutable refund and balanced reversal journal. Floosak/Jaib refunds are credited to the application wallet. Available driver balance is debited for unearned entitlement; a shortfall is recorded as an independent driver debt and does not block the customer refund. Repeated approval has no duplicate financial effect.
+المعاينة تفصل المقبوض ورسوم السياسة الأصلية والجزء المقطوع والانتظار والتغييرات وصافي الاسترداد. غياب سجل موثوق يجعل الأجرة قيد المراجعة؛ لا تصبح ديناً نهائياً ولا تحظر الحجز قبل اعتمادها. القبض المتأخر يسجل على المحاولة الأصلية ويفتح المعالجة المالية للاسترداد.
 
-Prepared confirmation/code workflows can be abandoned without another provider call, including when a preparation transaction ID exists. Dispatched/uncertain debits stay reserved while cancellation review is accepted. Final administrative settlement requires their outcome to be known. A late provider-confirmed debit can be recorded against a CancellationPending ride, then refunded through the existing cancellation review. New debit attempts remain blocked during review.
+استرداد فلوسك وجيب إلى المصدر غير مثبت في الربط الحالي. محفظة التطبيق تتطلب قبول الراكب؛ رفضها يفتح معالجة لتوثيق بديل ممول وتحويله واستلامه. لا تستخدم دالة السحب كاسترداد. تحفظ الدفعات الأصلية وتضاف قيود مستقلة متوازنة، مع عكس المستحق غير المستحق لكل دفعة مرة واحدة.
 
-Unpaid rider cancellation before driver arrival is immediate; after arrival it follows driver review. An unpaid driver cancellation before departure is immediate. After departure or payment, a driver request requires passenger consent; refusal goes directly to administration. Required decisions keep the ride reserved until completion.
+طريقة الاسترداد النقدي تحتاج اختياراً صريحاً. قول السائق إنه أعاد النقد يبقي الاسترداد بانتظار تأكيد الراكب أو دليل وقرار مفوض. عدم الرد ليس استلاماً. المراجع وإصدارات القرار تمنع التسوية المكررة.
 
-Cash-paid cancellation obtains administrative approval before the driver selects cash return or the passenger wallet (default). Wallet return requires passenger consent. Refusal repeats driver approval and refund selection without posting money. Cash return requires the driver's explicit acknowledgment that the net amount has been returned. Replayed or stale decisions cannot duplicate refunds.
+المستحق غير المحصل منفصل عن الرصيد القابل للسحب. لا يتحمل الراكب رسوم خطأ السائق أو الشركة، ولا تفرض خسارة على السائق تلقائياً. تحفظ شروط الرحلة القديمة عند تغيير السياسة.
 
-Driver arrival is separate from starting the ride. Foreground passengers receive a full-screen arrival/voice alert across application pages and acknowledge it to the driver. Background passengers receive a persisted notification with sound; the driver sees their foreground availability. Stopping an alert survives reconnect, and stale alert IDs cannot stop a newer ring.
+المتابعة المالية متاحة في سجل الرحلة والإشعارات للتطبيقين. يعاد جلب الحالة قبل القرار. الإدارة تفصل القضايا والمبالغ والإجراءات حسب الصلاحيات والأدلة. تستخدم المهل المعتمدة إن وجدت؛ غيابها لا يسقط حقاً ولا يثبت قبضاً.
 
-`ArrivalAndCashRefundConsent` adds arrival timestamps, alert and consent state. `ExternalWalletTopUps` allows the same withdrawal operation to represent a wallet top-up without a ride. Existing amounts/location fields hold the frozen cancellation quote. Startup repairs the known old cash driver-share mismatch with an independent balanced `CashCollectionShareCorrection` journal; source journals and operational balances are preserved.
-
-Financial integration tests use an isolated temporary database; wallet tests use mocked provider HTTP with the installed provider libraries. No real payment or refund is used for verification.
+راجع [تقرير التصحيحات والتسليم](operational-corrections-2026-11-02.md). الاختبارات المالية على قواعد معزولة وHTTP محاكٍ بالمكتبات الفعلية؛ اختبار الهاتف والمزود الحقيقي ما زال مطلوباً.

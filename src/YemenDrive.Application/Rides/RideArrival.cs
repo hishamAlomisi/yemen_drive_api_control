@@ -27,7 +27,7 @@ public sealed class RideArrival(YemenDriveDbContext db, DatabaseConfigurationSto
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
         if (user.UserId != ride.CustomerId && user.UserId != ride.DriverId)
             throw new ServiceException("ride_access_denied", "هذا التنبيه خاص بأطراف الرحلة.");
-        var arrived = ride.Status == RideStatus.DriverArrived;
+        var arrived = ride.Status == RideStatus.DriverArrived && ride.PassengerBoardedAtUtc == null;
         var changed = false;
         if (operation != "get" && !arrived) throw new ServiceException("arrival_not_active", "التنبيه متاح بعد وصول السائق وقبل بدء الرحلة فقط.");
         if (operation is "acknowledge" or "stop")
@@ -65,8 +65,8 @@ public sealed class RideArrival(YemenDriveDbContext db, DatabaseConfigurationSto
         return view;
     }
     public static RideArrivalView View(YemenDrive.Database.Entities.Ride ride, bool online) => new(ride.Id,
-        ride.Status == RideStatus.DriverArrived, online, ride.Driver?.DisplayName ?? "السائق",
+        ride.Status == RideStatus.DriverArrived && ride.PassengerBoardedAtUtc == null, online, ride.Driver?.DisplayName ?? "السائق",
         ride.DriverArrivalAcknowledgedAtUtc is not null, ride.ArrivalAlertId,
-        ride.Status == RideStatus.DriverArrived && ride.ArrivalAlertSentAtUtc is not null && ride.ArrivalAlertStoppedAtUtc is null,
-        ride.Status == RideStatus.DriverArrived);
+        ride.Status == RideStatus.DriverArrived && ride.PassengerBoardedAtUtc == null && ride.ArrivalAlertSentAtUtc is not null && ride.ArrivalAlertStoppedAtUtc is null,
+        ride.Status == RideStatus.DriverArrived && ride.PassengerBoardedAtUtc == null);
 }

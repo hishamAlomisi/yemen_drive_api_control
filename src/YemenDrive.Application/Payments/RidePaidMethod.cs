@@ -18,7 +18,7 @@ public sealed record RidePaidMethod(string PaymentProvider, string PaymentMethod
                 NameAr = db.PaymentWalletOperations.Where(operation => operation.PaymentTransactionId == payment.Id && operation.Status == "Succeeded")
                     .Select(operation => operation.PaymentMethod.NameAr).FirstOrDefault()
             }).ToListAsync(token);
-        return payments.ToDictionary(x => x.RideId, x => new RidePaidMethod(x.Provider,
+        return payments.GroupBy(x => x.RideId).Select(group => group.Last()).ToDictionary(x => x.RideId, x => new RidePaidMethod(x.Provider,
             !string.IsNullOrWhiteSpace(x.NameAr) ? x.NameAr : x.Provider switch
             {
                 "YemenDriveWallet" => "محفظة يمن درايف",

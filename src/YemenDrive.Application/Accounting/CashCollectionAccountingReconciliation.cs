@@ -26,7 +26,7 @@ public sealed class CashCollectionAccountingReconciliation(YemenDriveDbContext d
             var difference = driverNet - recorded;
             // Only the known old calculation is repaired automatically.
             if (difference == 0 || recorded != ride.DriverCommissionAmount || driverNet < 0) continue;
-            var current = original.Lines.FirstOrDefault(x => x.LedgerAccount.Purpose == LedgerAccountPurpose.DriverCurrentAccount && x.UserId == ride.DriverId);
+            var current = original.Lines.FirstOrDefault(x => x.LedgerAccount.Purpose == LedgerAccountPurpose.DriverCurrentAccount && x.UserId == ride.DriverId && x.Credit == recorded && x.Credit > 0);
             if (current == null) continue;
             await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
             var result = await posting.PostAsync(new AccountingPostingRequest(JournalEntryType.ManualAdjustment,

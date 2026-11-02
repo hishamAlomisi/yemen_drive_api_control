@@ -45,10 +45,11 @@ public sealed class RideRouteChangeReport(YemenDriveDbContext db, DatabaseConfig
         var page = Math.Min(model.Page, pageCount);
         var rows = await query.Include(x => x.Ride).ThenInclude(x => x.Customer).Include(x => x.Ride).ThenInclude(x => x.Driver)
             .OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id).Skip((page - 1) * model.PageSize).Take(model.PageSize).ToListAsync(ct);
+        var finances = await YemenDrive.Application.Payments.RideFinancialState.ReadManyAsync(db, rows.Select(x => x.Ride).DistinctBy(x => x.Id).ToList(), ct);
         return new { page, pageSize = model.PageSize, pageCount, totalCount, serverNowUtc = DateTime.UtcNow,
             summary = (object?)summary ?? new { requestCount = 0, acceptedCount = 0, chargedFee = 0m },
             rows = rows.Select(x => new { x.Id, x.RideId, customerName = x.Ride.Customer.DisplayName, driverName = x.Ride.Driver?.DisplayName,
                 x.OldDestinationLabel, x.NewDestinationLabel, x.ChangeLatitude, x.ChangeLongitude, x.Status, x.CreatedAtUtc,
-                x.ExpiresAtUtc, x.DecidedAtUtc, invoice = RideRouteChangeService.Invoice(x) }) };
+                x.ExpiresAtUtc, x.DecidedAtUtc, currentFinance = finances[x.RideId], invoice = RideRouteChangeService.Invoice(x) }) };
     }
 }

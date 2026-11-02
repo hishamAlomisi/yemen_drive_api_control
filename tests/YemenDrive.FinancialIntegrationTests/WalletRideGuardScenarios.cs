@@ -61,17 +61,17 @@ internal static class WalletRideGuardScenarios
         foreach (var enabled in new[] { true, false })
             Code(await Call(driverRide, "update", new RideModel(Id: ride.Id, CustomerPaymentEnabled: enabled)),
                 "wallet_payment_in_progress", "driver cannot alter payment controls during wallet settlement");
-        Check((await Call(passengerCancel, "add", new RideCancellationRequestModel(RideId: ride.Id, Reason: "لم أتمكن من الدفع عبر المحفظة"))).Success,
+        Check((await Call(passengerCancel, "add", new RideCancellationRequestModel(SafeStopConfirmed: true,RideId: ride.Id, Reason: "لم أتمكن من الدفع عبر المحفظة"))).Success,
             "rider can submit a cancellation request while the debit outcome is being checked");
-        Code(await Call(driverCancel, "add", new RideCancellationRequestModel(RideId: ride.Id, Reason: "سبب اختبار")),
-            "ride_cancellation_already_open", "driver cannot create a second cancellation request for the same ride");
+        Code(await Call(driverCancel, "add", new RideCancellationRequestModel(SafeStopConfirmed: true,RideId: ride.Id, Reason: "سبب اختبار")),
+            "ride_not_cancellable", "driver cannot create a second cancellation request for the same ride");
         var request = await db.RideCancellationRequests.SingleAsync(x => x.RideId == ride.Id);
         Check((await Call(driverCancel, "accept", new RideCancellationRequestModel(Id: request.Id))).Success &&
             request.Status == RideCancellationStatus.AdminReviewPending,
             "driver approval forwards an unresolved payment cancellation to administration");
-        Code(await Call(adminCancel, "adminApprove", new RideCancellationRequestModel(Id: request.Id)),
+        Code(await Call(adminCancel, "adminApprove", new RideCancellationRequestModel(Note: "اختبار مراجعة المسؤولية والأدلة", Id: request.Id)),
             "wallet_payment_in_progress", "admin cannot finalize cancellation before provider result is known");
-        Check(ride.Status == RideStatus.CancellationPending && ride.TotalAmount == 1100 &&
+        Check(ride.Status == RideStatus.Cancelled && ride.TotalAmount == 1100 &&
             !await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id) &&
             !await db.RideWaitingSessions.AnyAsync(x => x.RideId == ride.Id),
             "cancellation review freezes the trip without changing fare or money");
@@ -79,9 +79,9 @@ internal static class WalletRideGuardScenarios
         Check(detail.GetProperty("walletPaymentPending").GetBoolean() && !detail.GetProperty("paymentCompleted").GetBoolean(),
             "driver receives a pending status without a false paid receipt");
 
-        request.Status = RideCancellationStatus.AdminRejected;
-        ride.Status = RideStatus.InProgress;
-        operation.Status = "Succeeded";
+        operation.Status = "Failed"; operation.IsOpen = false; await db.SaveChangesAsync();
+        ride = new YemenDrive.Database.Entities.Ride { CustomerId = customer, DriverId = driver, ServiceKindId = kind, ServiceCatalogItemId = catalog, Status = RideStatus.InProgress, StartedAtUtc = DateTime.UtcNow.AddMinutes(-5), CustomerPrice = 1000, ServiceFee = 100, TotalAmount = 1100, DriverShare = 900 };
+        db.Rides.Add(ride); await db.SaveChangesAsync();
         db.PaymentTransactions.Add(new PaymentTransaction
         {
             RideId = ride.Id, UserId = customer, Amount = 1100, Currency = "YER", Provider = "Floosak",

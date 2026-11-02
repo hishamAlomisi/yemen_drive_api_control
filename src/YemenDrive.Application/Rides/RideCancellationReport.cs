@@ -44,7 +44,7 @@ public sealed class RideCancellationReport(
             result.Add(new
             {
                 x.Id, x.RideId, x.Status, x.DriverDecision, x.RideStatusAtRequest,
-                canAdminReview = x.Status == RideCancellationStatus.AdminReviewPending ||
+                canAdminReview = x.Status is RideCancellationStatus.AdminReviewPending or RideCancellationStatus.FinancialReviewPending ||
                     (x.Status == RideCancellationStatus.CustomerApproved && x.AdminDecidedAtUtc == null && payment?.Status == PaymentStatus.Paid),
                 customerName = x.Ride.Customer.DisplayName,
                 customerPhone = x.Ride.Customer.PhoneNumber,
@@ -53,7 +53,7 @@ public sealed class RideCancellationReport(
                 pickup = RideLocationText.DisplayName(x.Ride.PickupLabel, x.Ride.PickupAddress, "نقطة الانطلاق"),
                 destination = RideLocationText.DisplayName(x.Ride.DestinationLabel, x.Ride.DestinationAddress, "الوجهة"),
                 x.Ride.CustomerPrice, x.Ride.ServiceFee, x.Ride.TotalAmount,
-                x.Reason, x.RequestedRefundMethod, x.RequestedRefundAmount,
+                x.Reason, x.RequestedRefundMethod, x.RequestedRefundAmount, x.AssignedAdminId, x.ReviewDueAtUtc, x.Responsibility, x.WaiveCancellationFees, x.Ride.ServiceEndedAtUtc,
                 x.CancellationLatitude, x.CancellationLongitude, x.LocationObservedAtUtc,
                 x.DriverDecidedAtUtc, x.DriverNote, x.AdminDecidedAtUtc, x.AdminNote, x.CreatedAtUtc,
                 paymentProvider = payment?.Provider,

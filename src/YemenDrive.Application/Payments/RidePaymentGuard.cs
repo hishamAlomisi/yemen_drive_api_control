@@ -20,7 +20,8 @@ public static class RidePaymentGuard
 
     public static async Task EnsureAvailableAsync(YemenDriveDbContext db, int rideId, CancellationToken token)
     {
-        if (await db.PaymentTransactions.AnyAsync(x => x.RideId == rideId && x.Status == PaymentStatus.Paid, token))
+        var ride = await db.Rides.SingleAsync(x => x.Id == rideId, token);
+        if (RideFinancialState.Due(ride) > 0 && (await RideFinancialState.ReadAsync(db, ride, token)).OutstandingAmount <= 0)
             throw new ServiceException("ride_already_paid", "هذه الرحلة مسددة بالفعل ولا يمكن تحصيلها مجدداً.");
         if (await db.PaymentWalletOperations.AnyAsync(x => x.RideId == rideId && x.IsOpen, token))
             throw new ServiceException("wallet_payment_in_progress", "توجد عملية دفع للمحفظة؛ استكملها أو تحقق من نتيجتها قبل استخدام وسيلة أخرى.");

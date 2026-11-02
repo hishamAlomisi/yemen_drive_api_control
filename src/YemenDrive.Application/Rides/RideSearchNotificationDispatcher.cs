@@ -19,11 +19,12 @@ internal static class RideSearchNotificationDispatcher
         var radiusMeters = RideDriverProximity.RadiusMeters(ride, DateTime.UtcNow);
         var locationFreshAfter = DateTime.UtcNow.AddMinutes(-5);
         var candidates = (await db.DriverProfiles.AsNoTracking()
-            .Where(profile => profile.User.IsActive && profile.IsAvailable &&
+            .Where(profile => profile.User.IsActive && profile.IsAvailable && profile.AcceptsNewRequests && profile.IsApproved &&
+                              profile.ApprovedPassengerSeats != null && profile.ApprovedPassengerSeats >= (ride.PassengerCount ?? (ride.MoreThanFourPassengers ? 5 : 1)) &&
                               profile.ServiceKindId == ride.ServiceKindId &&
                               profile.ServiceCatalogItemId == ride.ServiceCatalogItemId &&
                               !db.Rides.Any(activeRide =>
-                                  activeRide.DriverId == profile.UserId &&
+                                  activeRide.DriverId == profile.UserId && activeRide.ServiceEndedAtUtc == null &&
                                   (activeRide.Status == RideStatus.DriverAssigned ||
                                    activeRide.Status == RideStatus.DriverEnRoute ||
                                    activeRide.Status == RideStatus.DriverArrived ||

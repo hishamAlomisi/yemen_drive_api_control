@@ -17,13 +17,15 @@ public enum FinancialPartyType
 public enum LedgerAccountPurpose
 {
     General, CustomerWallet, DriverCurrentAccount, ServiceFee,
-    ServiceCollection, DriverCommission, ExternalWallet, CashCollection
+    ServiceCollection, DriverCommission, ExternalWallet, CashCollection,
+    CustomerReceivable, DriverUncollectedEntitlement, CustomerRefundPayable
 }
 public enum JournalEntryType
 {
     OpeningBalance, RideCashCollection, RideWalletPayment, WalletTopUp,
     RideCancellation, DriverSettlementCollection, ManualAdjustment, Reversal,
-    AdminCashReceipt = 8, AdminCashDisbursement = 9, AdminAccountTransfer = 10
+    AdminCashReceipt = 8, AdminCashDisbursement = 9, AdminAccountTransfer = 10,
+    WalletTransfer = 11
 }
 public enum JournalEntryStatus { Draft, Posted }
 public enum CashCollectionApprovalStatus { Pending, Approved, Rejected, InsufficientBalance }
@@ -36,7 +38,7 @@ public enum CashPaymentRequestStatus { Pending, DriverConfirmed, DriverRejected,
 public enum CashCancellationRefundMethod { ReturnFromDriver = 1, CreditCustomerWallet = 2 }
 /// <summary>Lifecycle of a cancellation case.  Financial reversal is only possible after administration approves it.</summary>
 public enum RideCancellationStatus { DriverReviewPending, DriverRejected, AdminReviewPending, AdminApproved, AdminRejected, CustomerReviewPending, CustomerApproved, CustomerRejected, DriverCancelled,
-    RefundMethodPending = 9, RefundConsentPending = 10 }
+    RefundMethodPending = 9, RefundConsentPending = 10, CashReceiptPending = 11, FinancialReviewPending = 12 }
 public enum RideCancellationDriverDecision { None, Accepted, Rejected, ReferredToAdmin }
 public enum PaymentStatus { Pending, Authorized, Paid, Failed, Refunded, Cancelled }
 public enum PaymentMethodKind { ExternalWallet, Card, BankTransfer }
@@ -60,6 +62,7 @@ public sealed class User : Entity
     public string PasswordHash { get; set; } = string.Empty;
     public UserRole Role { get; set; } = UserRole.Customer;
     public bool IsActive { get; set; } = true;
+    public bool IsSystemAdministrator { get; set; }
     public DriverProfile? DriverProfile { get; set; }
     public Wallet? Wallet { get; set; }
 }
@@ -94,6 +97,9 @@ public sealed class AuthSession : Entity
 
 public sealed class DriverProfile : Entity
 {
+    public bool AcceptsNewRequests { get; set; } = true;
+    public bool IsApproved { get; set; } = true;
+    public int? ApprovedPassengerSeats { get; set; }
     public int UserId { get; set; }
     public User User { get; set; } = null!;
     public int ServiceKindId { get; set; }
@@ -159,6 +165,17 @@ public sealed class ServiceArea : Entity
 
 public sealed class Ride : Entity
 {
+    public DateTime? ServiceEndedAtUtc { get; set; }
+    public string? ServiceEndReason { get; set; }
+    public DateTime? PassengerBoardedAtUtc { get; set; }
+    public DateTime? DriverArrivedAtUtc { get; set; }
+    public DateTime? RiderVerifiedPickupAtUtc { get; set; }
+    public double? ArrivalToleranceMeters { get; set; }
+    public int? PickupGraceMinutes { get; set; }
+    public int? DecisionResponseMinutes { get; set; }
+    public decimal? FinancialAmountDue { get; set; }
+    public decimal? FinancialDriverEntitlement { get; set; }
+    public decimal? CollectedDriverEntitlement { get; set; }
     public bool HasRoutePricingSnapshot { get; set; }
     public decimal RouteBaseFare { get; set; }
     public decimal RoutePerKilometer { get; set; }
@@ -185,6 +202,7 @@ public sealed class Ride : Entity
     public decimal AppliedDriverCommissionRate { get; set; }
     public decimal AppliedDriverCommissionFixed { get; set; }
     public bool MoreThanFourPassengers { get; set; }
+    public int? PassengerCount { get; set; }
     [System.ComponentModel.DataAnnotations.MaxLength(1000)]
     public string? PassengerNotes { get; set; }
     public byte[] RowVersion { get; set; } = [];
@@ -242,6 +260,9 @@ public sealed class RideOffer : Entity
 
 public sealed class Wallet : Entity
 {
+    public decimal LedgerDebt { get; set; }
+    public int TransferPasswordFailures { get; set; }
+    public DateTime? TransferLockedUntilUtc { get; set; }
     public byte[] RowVersion { get; set; } = [];
     public int UserId { get; set; }
     public User User { get; set; } = null!;
@@ -340,6 +361,11 @@ public sealed class NotificationPushDelivery : Entity
 
 public sealed class PaymentTransaction : Entity
 {
+    public decimal? PhysicalCashReceived { get; set; }
+    public decimal? DriverEntitlementReversed { get; set; }
+    public bool IsSupplemental { get; set; }
+    public decimal? ServiceFeeAmount { get; set; }
+    public decimal? DriverNetAmount { get; set; }
     public int UserId { get; set; }
     public int? RideId { get; set; }
     public decimal Amount { get; set; }
@@ -389,6 +415,16 @@ public sealed class CashPaymentRequest : Entity
 /// </summary>
 public sealed class RideCancellationRequest : Entity
 {
+    public decimal? TravelledFareSnapshot { get; set; }
+    public int? RefundFundingLedgerAccountId { get; set; }
+    public string? RefundPayoutEvidenceReference { get; set; }
+    public int? AssignedAdminId { get; set; }
+    public DateTime? ReviewDueAtUtc { get; set; }
+    public string? Responsibility { get; set; }
+    public bool WaiveCancellationFees { get; set; }
+    public bool? CustomerCashReceiptConfirmed { get; set; }
+    public DateTime? CashReturnedAtUtc { get; set; }
+    public string? RefundDestination { get; set; }
     public bool RequestedByDriver { get; set; }
     public int RefundChoiceRevision { get; set; }
     public DateTime? RefundConsentedAtUtc { get; set; }
@@ -457,6 +493,9 @@ public sealed class Promotion : Entity
 
 public sealed class SupportTicket : Entity
 {
+    public int? RideId { get; set; }
+    public int? AssignedAdminId { get; set; }
+    public int? LastDecisionByUserId { get; set; }
     public int UserId { get; set; }
     public User User { get; set; } = null!;
     public string Category { get; set; } = string.Empty;

@@ -10,4 +10,6 @@ public sealed record DriverModel(
     decimal CommissionRate = 0,
     bool IsAvailable = true,
     decimal Rating = 0,
-    string? PhotoUrl = null);
+    string? PhotoUrl = null,
+    bool? IsApproved = null,
+    int? ApprovedPassengerSeats = null);

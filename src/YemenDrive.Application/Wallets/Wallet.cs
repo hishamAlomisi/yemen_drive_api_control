@@ -30,12 +30,18 @@ public sealed class Wallet(
             ?? throw new ServiceException("wallet_not_found", string.IsNullOrWhiteSpace(model.PhoneNumber)
                 ? "محفظة المستخدم غير موجودة."
                 : "لا توجد محفظة مرتبطة برقم الهاتف المدخل.");
+        var debts = await dbContext.RideFinancialCases.AsNoTracking().Where(x => x.CustomerId == userId && x.Kind == "Receivable" && x.Amount > 0 && (x.Status == "Open" || x.Status == "Confirmed"))
+            .Select(x => new { x.RideId, x.Amount, x.Currency, x.Status, x.Note }).ToListAsync(cancellationToken);
         return new
         {
             wallet.Id,
             wallet.UserId,
             wallet.Balance,
+            wallet.LedgerDebt,
+            netBalance = wallet.Balance - wallet.LedgerDebt,
             wallet.Currency,
+            outstandingRideDebt = debts.Sum(x => x.Amount),
+            rideDebts = debts,
             owner = new
             {
                 wallet.User.Id,

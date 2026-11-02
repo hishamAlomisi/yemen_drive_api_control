@@ -26,6 +26,7 @@ public sealed class Driver(
     }
     protected override async Task<object?> AddAsync(DriverModel model, CancellationToken cancellationToken)
     {
+        if (model.ApprovedPassengerSeats is <= 0) throw new ServiceException("invalid_vehicle_capacity", "حدد عدد المقاعد الفعلي المعتمد للركاب دون مقعد السائق.");
         
 
         var user = await dbContext.Users.Include(x => x.DriverProfile)
@@ -53,6 +54,8 @@ public sealed class Driver(
             Rating = 0m,
             PhotoUrl = model.PhotoUrl
         };
+        entity.IsApproved = model.IsApproved ?? true;
+        entity.ApprovedPassengerSeats = model.ApprovedPassengerSeats;
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         user.Role = UserRole.Driver;
         dbContext.DriverProfiles.Add(entity);
@@ -78,6 +81,12 @@ public sealed class Driver(
         if (!string.IsNullOrWhiteSpace(model.PlateNumber)) entity.PlateNumber = model.PlateNumber.Trim();
         entity.CommissionRate = model.CommissionRate;
         entity.IsAvailable = model.IsAvailable;
+        if (model.IsApproved != null) entity.IsApproved = model.IsApproved.Value;
+        if (model.ApprovedPassengerSeats != null)
+        {
+            if (model.ApprovedPassengerSeats <= 0) throw new ServiceException("invalid_vehicle_capacity", "حدد عدد المقاعد الفعلي المعتمد للركاب دون مقعد السائق.");
+            entity.ApprovedPassengerSeats = model.ApprovedPassengerSeats;
+        }
         if (model.PhotoUrl is not null)
             entity.PhotoUrl = string.IsNullOrWhiteSpace(model.PhotoUrl) ? null : model.PhotoUrl.Trim();
         entity.UpdatedAtUtc = DateTime.UtcNow;
@@ -132,7 +141,7 @@ public sealed class Driver(
         serviceKindCode = x.ServiceKind?.Code, serviceKindNameAr = x.ServiceKind?.NameAr,
         serviceCode = x.ServiceCatalogItem?.Code, serviceNameAr = x.ServiceCatalogItem?.NameAr,
         x.VehicleModel,
-        x.PlateNumber, x.CommissionRate, x.IsAvailable, x.Rating, x.PhotoUrl,
+        x.PlateNumber, x.CommissionRate, x.IsAvailable, x.IsApproved, x.AcceptsNewRequests, x.ApprovedPassengerSeats, x.Rating, x.PhotoUrl,
         x.CreatedAtUtc, x.UpdatedAtUtc
     };
 }

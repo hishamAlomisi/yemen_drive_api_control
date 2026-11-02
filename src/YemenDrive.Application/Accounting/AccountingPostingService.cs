@@ -37,6 +37,16 @@ public sealed record AccountingPostingResult(int JournalEntryId, string EntryNum
 /// </summary>
 public sealed class AccountingPostingService(YemenDriveDbContext db)
 {
+    public List<JournalEntry>? DeferredWalletEntries { get; set; }
+    private Task ApplyWalletEffectsAsync(JournalEntry entry, CancellationToken token) {
+        if (DeferredWalletEntries is { } entries) { entries.Add(entry); return Task.CompletedTask; }
+        return new WalletLedgerSynchronization(db).ApplyPostedAsync(entry, token);
+    }
+    public async Task FlushWalletEffectsAsync(CancellationToken token) {
+        var entries = DeferredWalletEntries ?? []; DeferredWalletEntries = null;
+        await new WalletLedgerSynchronization(db).ApplyAdministrativeBatchAsync(entries, token);
+        await db.SaveChangesAsync(token);
+    }
     public async Task<AccountingPostingResult> PostAsync(AccountingPostingRequest request, CancellationToken token)
     {
         ValidateRequest(request);
@@ -51,12 +61,14 @@ public sealed class AccountingPostingService(YemenDriveDbContext db)
 
         if (!string.IsNullOrWhiteSpace(request.SourceType) && !string.IsNullOrWhiteSpace(request.SourceId))
         {
-            var existing = await db.JournalEntries.AsNoTracking().SingleOrDefaultAsync(x =>
+            var existing = await db.JournalEntries.AsNoTracking().Include(x => x.Lines).SingleOrDefaultAsync(x =>
                 x.SourceType == request.SourceType.Trim() &&
                 x.SourceId == request.SourceId.Trim() &&
                 x.Type == request.Type, token);
             if (existing is not null)
             {
+                await ApplyWalletEffectsAsync(existing, token);
+                await db.SaveChangesAsync(token);
                 if (ownsTransaction) await transaction!.CommitAsync(token);
                 return new AccountingPostingResult(existing.Id, existing.EntryNumber, true);
             }
@@ -137,7 +149,6 @@ public sealed class AccountingPostingService(YemenDriveDbContext db)
         try
         {
             await db.SaveChangesAsync(token);
-            if (ownsTransaction) await transaction!.CommitAsync(token);
         }
         catch (DbUpdateException) when (!string.IsNullOrWhiteSpace(request.SourceType) && !string.IsNullOrWhiteSpace(request.SourceId))
         {
@@ -150,6 +161,9 @@ public sealed class AccountingPostingService(YemenDriveDbContext db)
             if (existing is not null) return new AccountingPostingResult(existing.Id, existing.EntryNumber, true);
             throw;
         }
+        await ApplyWalletEffectsAsync(entry, token);
+        await db.SaveChangesAsync(token);
+        if (ownsTransaction) await transaction!.CommitAsync(token);
         return new AccountingPostingResult(entry.Id, entry.EntryNumber, false);
     }
 
@@ -165,6 +179,7 @@ public sealed class AccountingPostingService(YemenDriveDbContext db)
             ?? throw new ServiceException("journal_entry_not_found", "القيد المراد عكسه غير موجود.");
         if (!original.IsPosted || original.Status != JournalEntryStatus.Posted)
             throw new ServiceException("journal_entry_not_posted", "لا يمكن عكس قيد غير منشور.");
+        await ApplyWalletEffectsAsync(original, token);
         return await PostAsync(new AccountingPostingRequest(
             JournalEntryType.Reversal,
             reference,

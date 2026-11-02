@@ -131,6 +131,7 @@ try
     var customer = new User { PhoneNumber = "700000092", DisplayName = "Fixture Customer", PasswordHash = "fixture", Role = UserRole.Customer, IsActive = true };
     db.Users.AddRange(admin, customer);
     await db.SaveChangesAsync();
+    db.AdministratorPermissions.Add(new() { UserId = admin.Id, Permission = "*" }); await db.SaveChangesAsync();
     var methodService = new PaymentMethodService(db, configuration, new CurrentUser(admin.Id),
         new FinancialAccountProvisioningService(db), configurationService);
     var model = new PaymentMethodModel(Code: "fixture-floosak", NameAr: "فلوسك تجريبية", DescriptionAr: "fixture",

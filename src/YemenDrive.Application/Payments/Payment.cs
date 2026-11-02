@@ -48,7 +48,7 @@ public sealed class Payment(
         await new RideWaitingCoordinator(dbContext).EnsureSettledAsync(ride, cancellationToken);
         var fare = (ride.CustomerPrice ?? ride.ServerPrice
             ?? throw new ServiceException("fare_not_set", "لا يوجد مبلغ متفق عليه لهذه الرحلة.")) + ride.WaitingFee;
-        var totalDue = ride.TotalAmount ?? fare + ride.ServiceFee;
+        var totalDue = (await RideFinancialState.ReadAsync(dbContext, ride, cancellationToken)).OutstandingAmount;
         if (model.Amount != totalDue)
             throw new ServiceException("invalid_payment_amount", "مبلغ الدفع لا يطابق إجمالي الرحلة المستحق.");
         var provider = string.IsNullOrWhiteSpace(model.Provider) ? "YemenDriveWallet" : model.Provider.Trim();
@@ -70,35 +70,19 @@ public sealed class Payment(
         if (!string.Equals(customerWallet.Currency, driverWallet.Currency, StringComparison.OrdinalIgnoreCase))
             throw new ServiceException("currency_mismatch", "عملة محفظة السائق لا تطابق عملة العميل.");
 
+        var entity = new PaymentTransaction { RideId = ride.Id, UserId = userId.Value, Amount = totalDue,
+            Currency = customerWallet.Currency, Provider = "YemenDriveWallet", Status = PaymentStatus.Paid,
+            ProviderReference = model.ProviderReference?.Trim(), IdempotencyKey = idempotencyKey ?? Guid.NewGuid().ToString("N") };
+        var allocation = await RideFinancialState.AllocateReceiptAsync(dbContext, ride, entity, cancellationToken);
         customerWallet.Balance -= totalDue;
-        var customerDebit = new WalletTransaction
-        {
-            WalletId = customerWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Debit,
-            Amount = totalDue, BalanceAfter = customerWallet.Balance,
-            Description = "دفع إجمالي الرحلة من محفظة يمن درايف"
-        };
+        var customerDebit = new WalletTransaction { WalletId = customerWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Debit,
+            Amount = totalDue, BalanceAfter = customerWallet.Balance, Description = "سداد المتبقي من الرحلة من محفظة يمن درايف" };
         dbContext.WalletTransactions.Add(customerDebit);
-        var driverNetAmount = ride.DriverShare ?? fare - ride.DriverCommissionAmount;
+        var driverNetAmount = entity.DriverNetAmount ?? 0m;
         driverWallet.Balance += driverNetAmount;
-        var driverCredit = new WalletTransaction
-        {
-            WalletId = driverWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Credit,
-            Amount = driverNetAmount, BalanceAfter = driverWallet.Balance,
-            Description = "إضافة صافي مستحق السائق من الرحلة"
-        };
-        dbContext.WalletTransactions.Add(driverCredit);
-
-        var entity = new PaymentTransaction
-        {
-            RideId = ride.Id,
-            UserId = userId.Value,
-            Amount = totalDue,
-            Currency = customerWallet.Currency,
-            Provider = "YemenDriveWallet",
-            Status = PaymentStatus.Paid,
-            ProviderReference = model.ProviderReference?.Trim(),
-            IdempotencyKey = idempotencyKey
-        };
+        var driverCredit = new WalletTransaction { WalletId = driverWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Credit,
+            Amount = driverNetAmount, BalanceAfter = driverWallet.Balance, Description = "مستحق السائق من المبلغ المحصل فعلياً" };
+        if (driverNetAmount > 0) dbContext.WalletTransactions.Add(driverCredit);
         dbContext.PaymentTransactions.Add(entity);
         ride.PaymentMethodCode = "wallet";
         ride.PaymentRequiredBeforeStart = false;
@@ -110,16 +94,19 @@ public sealed class Payment(
             PeriodStartUtc = DateTime.UtcNow,
             PeriodEndUtc = DateTime.UtcNow,
             GrossRideAmount = totalDue,
-            PlatformCommission = ride.PlatformShare ?? ride.ServiceFee + ride.DriverCommissionAmount,
+            PlatformCommission = totalDue - driverNetAmount,
             Adjustments = 0,
             NetPayable = driverNetAmount,
             Status = PaymentStatus.Paid,
             PaymentReference = $"wallet:ride:{ride.Id}:payment:{idempotencyKey ?? Guid.NewGuid().ToString("N")}" 
         });
-        await accounting.PostWalletPaymentAsync(ride, entity, userId.Value, cancellationToken);
+        await accounting.PostWalletPaymentAsync(allocation, entity, userId.Value, cancellationToken);
         try
         {
             await dbContext.SaveChangesAsync(cancellationToken);
+            await RideRouteSettlement.CompleteApprovedAsync(dbContext, ride, cancellationToken);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await RideFinancialState.SynchronizeAsync(dbContext, ride, userId.Value, cancellationToken);
             dbContext.Notifications.AddRange(
                 new Notification
                 {

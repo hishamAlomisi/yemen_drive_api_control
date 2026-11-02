@@ -46,6 +46,15 @@ public sealed class FinancialAccountProvisioningService(YemenDriveDbContext db)
                 party: userParty,
                 parentCode: "1100",
                 token);
+            await EnsureAccountAsync($"2100-DRV-PENDING-{user.Id}", $"مستحق غير محصل للسائق: {DisplayName(user)}",
+                LedgerAccountType.Liability, LedgerAccountPurpose.DriverUncollectedEntitlement, userParty, "2100", token);
+        }
+        else
+        {
+            await EnsureAccountAsync($"1100-CUSTOMER-{user.Id}", $"مستحقات على العميل: {DisplayName(user)}",
+                LedgerAccountType.Asset, LedgerAccountPurpose.CustomerReceivable, userParty, "1100", token);
+            await EnsureAccountAsync($"2100-REFUND-{user.Id}", $"مبالغ مستحقة للإعادة للعميل: {DisplayName(user)}",
+                LedgerAccountType.Liability, LedgerAccountPurpose.CustomerRefundPayable, userParty, "2100", token);
         }
     }
 
@@ -147,6 +156,7 @@ public sealed class FinancialAccountProvisioningService(YemenDriveDbContext db)
             ("1200", "حسابات تسوية المحافظ الخارجية", LedgerAccountType.Asset, LedgerAccountPurpose.ExternalWallet, true),
             ("2100", "التزامات محافظ العملاء", LedgerAccountType.Liability, LedgerAccountPurpose.CustomerWallet, false),
             ("4100", "رسوم الخدمة", LedgerAccountType.Revenue, LedgerAccountPurpose.ServiceFee, true),
+            ("4110", "رسوم تحويل المحافظ", LedgerAccountType.Revenue, LedgerAccountPurpose.ServiceFee, true),
             ("4200", "تحصيل الخدمة", LedgerAccountType.Revenue, LedgerAccountPurpose.ServiceCollection, true),
             ("5100", "عمولات السائقين", LedgerAccountType.Expense, LedgerAccountPurpose.DriverCommission, true)
         };

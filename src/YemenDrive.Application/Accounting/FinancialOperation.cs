@@ -29,7 +29,8 @@ public sealed class FinancialOperation(
         var adminId = await AccountingAccess.RequireAdminAsync(db, currentUser, token);
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         var original = await FindEditableEntryAsync(model.JournalEntryId, token);
-
+        accounting.DeferredWalletEntries = [];
+        try {
         var reversal = await accounting.ReverseAsync(
             original.Id,
             $"FIN-EDIT-{original.Id}-{Guid.NewGuid():N}",
@@ -37,6 +38,7 @@ public sealed class FinancialOperation(
             adminId,
             token);
         var replacement = await PostOperationAsync(model, adminId, token);
+        await accounting.FlushWalletEffectsAsync(token);
         await transaction.CommitAsync(token);
 
         return new
@@ -45,6 +47,7 @@ public sealed class FinancialOperation(
             reversalEntryNumber = reversal.EntryNumber,
             replacement
         };
+        } finally { accounting.DeferredWalletEntries = null; }
     }
 
     protected override async Task<object?> DeleteAsync(FinancialOperationModel model, CancellationToken token)

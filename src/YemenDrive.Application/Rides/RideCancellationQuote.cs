@@ -3,6 +3,7 @@ using YemenDrive.Database;
 using YemenDrive.Database.Entities;
 using YemenDrive.Shared.Api;
 using YemenDrive.Application.Pricing;
+using YemenDrive.Application.Payments;
 using RideEntity = YemenDrive.Database.Entities.Ride;
 
 namespace YemenDrive.Application.Rides;
@@ -20,23 +21,24 @@ public static class RideCancellationQuote
         decimal? reviewedTravelledFare = null)
     {
         var payment = await db.PaymentTransactions.AsNoTracking()
-            .SingleOrDefaultAsync(x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid, token);
+            .Where(x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid).OrderBy(x => x.Id).FirstOrDefaultAsync(token);
         var pending = await db.PaymentWalletOperations.AsNoTracking()
             .AnyAsync(x => x.RideId == ride.Id && x.IsOpen && x.Status != "Succeeded", token);
         var started = (request?.RideStatusAtRequest ?? ride.Status) == RideStatus.InProgress || ride.StartedAtUtc is not null;
-        var amount = payment?.Amount ?? 0m;
+        var money = await RideFinancialState.ReadAsync(db, ride, token);
+        var amount = Math.Max(0m, money.PaidAmount - money.RefundedAmount);
         var currency = payment?.Currency ?? "YER";
-        var serviceFee = Math.Max(0m, ride.ServiceFee);
-        var cancellationFee = Math.Max(0m, ride.CancellationFee);
+        var serviceFee = request?.WaiveCancellationFees == true ? 0m : Math.Max(0m, ride.ServiceFee);
+        var cancellationFee = request?.WaiveCancellationFees == true ? 0m : Math.Max(0m, ride.CancellationFee);
         var waitingFee = started ? Math.Max(0m, ride.WaitingFee) : 0m;
         var changeFees = started ? Math.Max(0m, ride.RouteChangeFees) : 0m;
         var fare = Math.Max(0m, (ride.CustomerPrice ?? ride.ServerPrice ?? 0m) - ride.RouteChangeFees);
         var cutoff = request?.CreatedAtUtc ?? DateTime.UtcNow;
-        decimal? travelledFare = 0m;
+        decimal? travelledFare = reviewedTravelledFare ?? request?.TravelledFareSnapshot ?? (started ? null : 0m);
         double? distance = 0d;
         DriverLiveLocation? location = null;
         string? message = null;
-        if (payment is not null && started && request?.RequestedRefundAmount is null && reviewedTravelledFare is null)
+        if (started)
         {
             try
             {
@@ -62,11 +64,11 @@ public static class RideCancellationQuote
                     ride.RoutePerMinute * (decimal)(ride.RouteQuotedDurationSeconds / 60d);
                 if (rawOriginal <= 0 || ride.RouteOriginalFare <= 0) throw new ServiceException("route_pricing_unavailable", "تحتاج الإدارة إلى مراجعة تسعيرة الجزء المقطوع.");
                 var factor = ride.RouteOriginalFare / rawOriginal;
-                travelledFare = ride.RouteCompletedFare + RidePricingPolicy.Round(((ride.RouteVersion == 0 ? ride.RouteBaseFare : 0m) +
+                travelledFare ??= ride.RouteCompletedFare + RidePricingPolicy.Round(((ride.RouteVersion == 0 ? ride.RouteBaseFare : 0m) +
                     ride.RoutePerKilometer * (decimal)(travelled.Meters / 1000d) + ride.RoutePerMinute * (decimal)(travelled.Seconds / 60d)) * factor);
                 distance = ride.RouteCompletedDistanceMeters + travelled.Meters;
             }
-            catch (ServiceException error) { travelledFare = null; distance = null; message = error.Message; }
+            catch (ServiceException error) { distance = null; message = error.Message; }
         }
         if (reviewedTravelledFare is not null)
         {
@@ -75,27 +77,11 @@ public static class RideCancellationQuote
             travelledFare = reviewedTravelledFare;
         }
         var fixedFees = serviceFee + cancellationFee + waitingFee + changeFees;
-        decimal? refund = payment is null ? 0m : travelledFare is null ? null :
+        decimal? refund = travelledFare is null ? null :
             Math.Max(0m, amount - fixedFees - Math.Min(fare, travelledFare.Value));
-        if (request?.RequestedRefundAmount is { } frozenRefund)
-        {
-            refund = Math.Clamp(frozenRefund, 0m, amount);
-            travelledFare = Math.Max(0m, amount - refund.Value - fixedFees);
-            if (started)
-            {
-                distance = null;
-                if (ride.HasRoutePricingSnapshot && request.LocationObservedAtUtc is { } observed &&
-                    request.CancellationLatitude is { } latitude && request.CancellationLongitude is { } longitude)
-                {
-                    location = new DriverLiveLocation { Latitude = latitude, Longitude = longitude, ObservedAtUtc = observed };
-                    try { distance = ride.RouteCompletedDistanceMeters + (await RideRouteChangePolicy.MeasureAsync(db, ride, location, token)).Meters; }
-                    catch (ServiceException) { }
-                }
-            }
-        }
-        return new RideCancellationQuoteView(ride.Id, payment is not null, pending, started, amount,
+        return new RideCancellationQuoteView(ride.Id, money.PaymentCompleted, pending, started, amount,
             serviceFee, cancellationFee, waitingFee, changeFees, travelledFare, distance,
-            refund is null ? null : amount - refund.Value, refund, currency, refund is not null, message,
+            travelledFare is null ? null : fixedFees + Math.Min(fare, travelledFare.Value), refund, currency, refund is not null, message,
             location?.Latitude, location?.Longitude, location?.ObservedAtUtc);
     }
 }

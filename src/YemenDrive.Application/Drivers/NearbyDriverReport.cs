@@ -25,14 +25,14 @@ public sealed class NearbyDriverReport(
         var radiusMeters = Math.Clamp(model.RadiusMeters, 250, 25000);
         var locationFreshAfter = DateTime.UtcNow.AddMinutes(-5);
         var query = dbContext.DriverProfiles.AsNoTracking()
-            .Where(profile => profile.User.IsActive && profile.IsAvailable)
+            .Where(profile => profile.User.IsActive && profile.IsAvailable && profile.AcceptsNewRequests && profile.IsApproved)
             .Join(
                 dbContext.DriverLiveLocations.AsNoTracking().Where(location => location.IsOnline && location.ObservedAtUtc >= locationFreshAfter),
                 profile => profile.UserId,
                 location => location.DriverId,
                 (profile, location) => new { profile, location })
             .Where(item => !dbContext.Rides.Any(ride =>
-                ride.DriverId == item.profile.UserId &&
+                ride.DriverId == item.profile.UserId && ride.ServiceEndedAtUtc == null &&
                 (ride.Status == RideStatus.DriverAssigned ||
                  ride.Status == RideStatus.DriverEnRoute ||
                  ride.Status == RideStatus.DriverArrived ||

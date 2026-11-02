@@ -22,7 +22,8 @@ internal static class WorkflowAcceptanceScenarios
         var customer = new User { PhoneNumber = "+967711111101", DisplayName = "Workflow passenger", PasswordHash = "test", Role = UserRole.Customer };
         var driver = new User { PhoneNumber = "+967711111102", DisplayName = "Workflow driver", PasswordHash = "test", Role = UserRole.Driver };
         db.Users.AddRange(customer, driver); await db.SaveChangesAsync();
-        var profile = new DriverProfile { UserId = driver.Id, ServiceKindId = kind, ServiceCatalogItemId = catalog, VehicleModel = "test", PlateNumber = "WF-1", IsAvailable = true };
+        db.Wallets.AddRange(new Wallet { UserId = customer.Id, Currency = "YER" }, new Wallet { UserId = driver.Id, Currency = "YER" }); await db.SaveChangesAsync();
+        var profile = new DriverProfile { ApprovedPassengerSeats = 4, UserId = driver.Id, ServiceKindId = kind, ServiceCatalogItemId = catalog, VehicleModel = "test", PlateNumber = "WF-1", IsAvailable = true };
         var location = new DriverLiveLocation { DriverId = driver.Id, Latitude = 15, Longitude = 44, IsOnline = true, ObservedAtUtc = DateTime.UtcNow };
         db.DriverProfiles.Add(profile); db.DriverLiveLocations.Add(location); await db.SaveChangesAsync();
         var accounting = new RideAccountingPostingService(db, new AccountingPostingService(db));
@@ -37,22 +38,23 @@ internal static class WorkflowAcceptanceScenarios
             var trip = new RideEntity { CustomerId = customer.Id, DriverId = driver.Id, ServiceKindId = kind,
                 ServiceCatalogItemId = catalog, Status = status, CustomerPrice = 1000, TotalAmount = 1000,
                 PickupLatitude = 15, PickupLongitude = 44, PickupAddress = "pickup", DestinationAddress = "destination",
+                ArrivalToleranceMeters = 100,
                 StartedAtUtc = status == RideStatus.InProgress ? DateTime.UtcNow.AddMinutes(-5) : null };
-            db.Rides.Add(trip); profile.IsAvailable = false; await db.SaveChangesAsync(); return trip;
+            db.Rides.Add(trip); await db.SaveChangesAsync(); return trip;
         }
 
         var trip = await Trip(RideStatus.InProgress);
-        var requested = Data(await Call(chauffeur, "add", new RideCancellationRequestModel(RideId: trip.Id, Reason: "عطل مفاجئ")));
+        var requested = Data(await Call(chauffeur, "add", new RideCancellationRequestModel(SafeStopConfirmed: true,RideId: trip.Id, Reason: "عطل مفاجئ")));
         var requestId = requested.GetProperty("id").GetInt32();
-        Check(trip.Status == RideStatus.InProgress && !profile.IsAvailable, "driver request keeps trip running pending passenger consent");
+        Check(trip.Status == RideStatus.Cancelled && profile.IsAvailable, "safe stop closes transport independently of passenger financial consent");
         Check(!(await Call(chauffeur, "accept", new RideCancellationRequestModel(Id: requestId))).Success, "driver cannot approve own request");
         Ok(await Call(passenger, "reject", new RideCancellationRequestModel(Id: requestId)));
-        Check(trip.Status == RideStatus.CancellationPending, "passenger refusal keeps cancellation pending administration");
+        Check(trip.Status == RideStatus.Cancelled, "passenger refusal keeps cancellation pending administration");
         Check(await db.RideCancellationRequests.AnyAsync(x => x.Id == requestId && x.Status == RideCancellationStatus.AdminReviewPending), "passenger refusal escalates directly");
-        Ok(await Call(administration, "adminApprove", new RideCancellationRequestModel(Id: requestId)));
+        Ok(await Call(administration, "adminApprove", new RideCancellationRequestModel(Note: "اختبار مراجعة المسؤولية والأدلة", ReviewedTravelledFare: 250, Id: requestId)));
         Check(trip.Status == RideStatus.Cancelled && profile.IsAvailable, "administration finalizes unpaid cancellation");
         trip = await Trip(RideStatus.InProgress);
-        requestId = Data(await Call(chauffeur, "add", new RideCancellationRequestModel(RideId: trip.Id, Reason: "عطل مستمر"))).GetProperty("id").GetInt32();
+        requestId = Data(await Call(chauffeur, "add", new RideCancellationRequestModel(SafeStopConfirmed: true,RideId: trip.Id, Reason: "عطل مستمر"))).GetProperty("id").GetInt32();
         Ok(await Call(passenger, "accept", new RideCancellationRequestModel(Id: requestId)));
         Ok(await Call(passenger, "accept", new RideCancellationRequestModel(Id: requestId)));
         Check(trip.Status == RideStatus.Cancelled && profile.IsAvailable, "consent cancels exactly once and releases driver");
@@ -60,21 +62,22 @@ internal static class WorkflowAcceptanceScenarios
         trip = await Trip(RideStatus.DriverEnRoute);
         Check(!(await Call(driverRides, "update", new RideModel(Id: trip.Id, Status: RideStatus.InProgress))).Success, "arrival is required before trip start");
         Check(!(await Call(passengerRides, "update", new RideModel(Id: trip.Id, Status: RideStatus.DriverArrived))).Success, "passenger cannot confirm driver arrival");
+        location.ObservedAtUtc = DateTime.UtcNow; await db.SaveChangesAsync();
         Ok(await Call(driverRides, "update", new RideModel(Id: trip.Id, Status: RideStatus.DriverArrived)));
         Check(trip.StartedAtUtc == null && trip.Status == RideStatus.DriverArrived, "arrival does not start the trip");
         Check(await new TrackingHubAccessPolicy(db).CanJoinRideAsync(customer.Id, trip.Id, CancellationToken.None), "arrived trip still supports live tracking");
         Check(await db.Notifications.AnyAsync(n => n.UserId == customer.Id && n.Body.Contains("وصل السائق")), "passenger notified of arrival");
-        Ok(await Call(chauffeur, "add", new RideCancellationRequestModel(RideId: trip.Id, Reason: "تعذر الانطلاق")));
+        Ok(await Call(chauffeur, "add", new RideCancellationRequestModel(SafeStopConfirmed: true,RideId: trip.Id, Reason: "تعذر الانطلاق")));
         Check(trip.Status == RideStatus.Cancelled && profile.IsAvailable, "driver cancels pre-start ride immediately");
 
         trip = await Trip(RideStatus.InProgress);
-        requestId = Data(await Call(passenger, "add", new RideCancellationRequestModel(RideId: trip.Id, Reason: "تغيير الخطة"))).GetProperty("id").GetInt32();
+        requestId = Data(await Call(passenger, "add", new RideCancellationRequestModel(SafeStopConfirmed: true,RideId: trip.Id, Reason: "تغيير الخطة"))).GetProperty("id").GetInt32();
         Ok(await Call(chauffeur, "accept", new RideCancellationRequestModel(Id: requestId)));
         Check(trip.Status == RideStatus.Cancelled && profile.IsAvailable, "driver approval releases driver from passenger cancellation");
         trip = await Trip(RideStatus.InProgress);
-        requestId = Data(await Call(passenger, "add", new RideCancellationRequestModel(RideId: trip.Id, Reason: "طلب مراجعة"))).GetProperty("id").GetInt32();
+        requestId = Data(await Call(passenger, "add", new RideCancellationRequestModel(SafeStopConfirmed: true,RideId: trip.Id, Reason: "طلب مراجعة"))).GetProperty("id").GetInt32();
         Ok(await Call(chauffeur, "refer", new RideCancellationRequestModel(Id: requestId)));
-        Ok(await Call(administration, "adminApprove", new RideCancellationRequestModel(Id: requestId)));
+        Ok(await Call(administration, "adminApprove", new RideCancellationRequestModel(Note: "اختبار مراجعة المسؤولية والأدلة", ReviewedTravelledFare: 250, Id: requestId)));
         Check(trip.Status == RideStatus.Cancelled && profile.IsAvailable, "admin approval releases driver from passenger cancellation");
 
         trip = await Trip(RideStatus.Completed);
@@ -82,11 +85,14 @@ internal static class WorkflowAcceptanceScenarios
         var draft = new RideModel(ServiceKindId: kind, ServiceCatalogItemId: catalog, PickupAddress: "pickup", DestinationAddress: "destination", PickupLatitude: 15, PickupLongitude: 44, DestinationLatitude: 15.01, DestinationLongitude: 44.01, CustomerPrice: 1000);
         var pending = new PendingRideRating(db, config, new Actor(customer.Id));
         Check(Data(await Call(pending, "get", new PendingRideRatingModel())).GetProperty("rideId").GetInt32() == trip.Id, "pending review is restored from server");
-        Check((await Call(passengerRides, "add", draft)).Code == "rating_required", "server blocks new booking until rating");
+        Check((await Call(passengerRides, "add", draft)).Code == "rating_required", "required rating blocks new booking");
         var rating = new RatingService(db, config, new Actor(customer.Id));
         Ok(await Call(rating, "add", new DriverRatingModel(RideId: trip.Id, Score: 5)));
         Ok(await Call(rating, "add", new DriverRatingModel(RideId: trip.Id, Score: 5)));
         Check((await Call(pending, "get", new PendingRideRatingModel())).Data == null, "review not requested twice");
+        var cash = new YemenDrive.Application.DriverPayments.DriverCashPayment(db, config, new Actor(driver.Id), accounting);
+        foreach (var debt in await db.RideFinancialCases.Where(x => x.CustomerId == customer.Id && x.Kind == "Receivable" && x.Status == "Open" && x.Amount > 0).ToListAsync())
+            Ok(await Call(cash, "add", new YemenDrive.Application.DriverPayments.DriverCashPaymentModel(debt.RideId, debt.Amount, "YER", IdempotencyKey: "workflow-settle-"+debt.Id)));
         var quote = new RidePricingQuote { CustomerId = customer.Id, ServiceKindId = kind, ServiceCatalogItemId = catalog,
             PickupLatitude = 15, PickupLongitude = 44, DestinationLatitude = 15.01, DestinationLongitude = 44.01,
             Amount = 1000, MinPrice = 800, MaxPrice = 1200, ExpiresAtUtc = DateTime.UtcNow.AddMinutes(5) };

@@ -44,13 +44,13 @@ public static class RideRequestNotificationPolicy
         var ids = requestedIds.Distinct().Where(id => id > 0).ToArray();
         if (ids.Length == 0) return [];
         var profile = await db.DriverProfiles.AsNoTracking()
-            .Where(profile => profile.UserId == driverId && profile.IsAvailable &&
+            .Where(profile => profile.UserId == driverId && profile.IsAvailable && profile.AcceptsNewRequests && profile.IsApproved &&
                 profile.User.IsActive && profile.User.Role == UserRole.Driver &&
-                !db.Rides.Any(active => active.DriverId == driverId &&
+                !db.Rides.Any(active => active.DriverId == driverId && active.ServiceEndedAtUtc == null &&
                     (active.Status == RideStatus.DriverAssigned || active.Status == RideStatus.DriverEnRoute ||
                      active.Status == RideStatus.DriverArrived || active.Status == RideStatus.InProgress ||
                      active.Status == RideStatus.CancellationPending)))
-            .Select(profile => new { profile.ServiceKindId, profile.ServiceCatalogItemId })
+            .Select(profile => new { profile.ServiceKindId, profile.ServiceCatalogItemId, profile.ApprovedPassengerSeats })
             .SingleOrDefaultAsync(token);
         if (profile is null) return [];
         var now = DateTime.UtcNow;
@@ -62,7 +62,8 @@ public static class RideRequestNotificationPolicy
         var rides = await db.Rides.AsNoTracking()
             .Where(ride => ids.Contains(ride.Id) && ride.DriverId == null &&
                 (ride.Status == RideStatus.Searching || ride.Status == RideStatus.Negotiating) &&
-                ride.ServiceKindId == profile.ServiceKindId && ride.ServiceCatalogItemId == profile.ServiceCatalogItemId)
+                ride.ServiceKindId == profile.ServiceKindId && ride.ServiceCatalogItemId == profile.ServiceCatalogItemId &&
+                profile.ApprovedPassengerSeats != null && profile.ApprovedPassengerSeats >= (ride.PassengerCount ?? (ride.MoreThanFourPassengers ? 5 : 1)))
             .ToListAsync(token);
         return rides.Where(ride => RideDriverProximity.IsWithinRadius(ride, location.Latitude, location.Longitude, now))
             .Select(ride => ride.Id).ToHashSet();

@@ -29,7 +29,10 @@ public sealed class FirebaseAdminPushSender(IConfiguration configuration)
             // Android must not display an obsolete request directly from its tray.
             data["title"] = Truncate(notification.Title, 100);
             data["body"] = Truncate(notification.Body, 700);
-            data["createdAtUtc"] = notification.CreatedAtUtc.ToUniversalTime().ToString("O");
+            var createdAtUtc = notification.CreatedAtUtc.Kind == DateTimeKind.Unspecified
+                ? DateTime.SpecifyKind(notification.CreatedAtUtc, DateTimeKind.Utc)
+                : notification.CreatedAtUtc.ToUniversalTime();
+            data["createdAtUtc"] = createdAtUtc.ToString("O");
         }
         return new Message
         {

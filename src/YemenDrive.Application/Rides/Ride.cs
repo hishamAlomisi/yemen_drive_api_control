@@ -85,11 +85,16 @@ public sealed class Ride(
             CustomerPrice = model.CustomerPrice,
             PaymentMethodCode = await RidePaymentPolicy.NormalizeChoiceAsync(dbContext, model.PaymentMethodCode, cancellationToken),
             MoreThanFourPassengers = model.MoreThanFourPassengers ?? false,
+            PassengerCount = model.PassengerCount ?? (model.MoreThanFourPassengers == true ? 5 : 1),
             PassengerNotes = model.PassengerNotes?.Trim(),
             IdempotencyKey = idempotencyKey,
             Status = model.Status ?? RideStatus.Searching
         };
         await RidePricingPolicy.ApplyQuoteAsync(dbContext, entity, model.PricingQuoteToken, cancellationToken);
+        var operationalPolicy = await dbContext.OperationalPolicies.AsNoTracking().OrderByDescending(x => x.Id).FirstOrDefaultAsync(cancellationToken);
+        entity.ArrivalToleranceMeters = operationalPolicy?.ArrivalToleranceMeters;
+        entity.PickupGraceMinutes = operationalPolicy?.PickupGraceMinutes;
+        entity.DecisionResponseMinutes = operationalPolicy?.DecisionResponseMinutes;
         dbContext.Rides.Add(entity);
         await StoreRecentDestinationAsync(entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -110,7 +115,7 @@ public sealed class Ride(
         await using var transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         if (model.Id is int rideId) await RidePaymentGuard.LockAsync(dbContext, rideId, cancellationToken);
         var entity = await FindAsync(model.Id, cancellationToken);
-        if (model.CustomerPaymentEnabled == true || model.Status == RideStatus.Completed)
+        if (model.CustomerPaymentEnabled == true && model.Status != RideStatus.Completed)
             await new RideWaitingCoordinator(dbContext).EnsureSettledAsync(entity, cancellationToken);
         var isAdmin = await IsAdminAsync(cancellationToken);
         if (HasDraftDetails(model))
@@ -131,9 +136,11 @@ public sealed class Ride(
         {
             if (currentUser.UserId != entity.CustomerId)
                 throw new ServiceException("ride_access_denied", "تغيير وسيلة الدفع متاح لصاحب الطلب فقط.");
-            if (entity.Status is not (RideStatus.Draft or RideStatus.Searching or RideStatus.Negotiating or RideStatus.InProgress or RideStatus.Completed) &&
+            if (entity.Status is not (RideStatus.Draft or RideStatus.Searching or RideStatus.Negotiating or RideStatus.InProgress or RideStatus.Completed or RideStatus.Cancelled) &&
                 !RidePaymentPolicy.IsBeforeStart(entity.Status))
                 throw new ServiceException("payment_method_locked", "لا يمكن تغيير وسيلة الدفع في حالة الرحلة الحالية.");
+            if (entity.Status == RideStatus.Cancelled && entity.FinancialAmountDue == null)
+                throw new ServiceException("cancellation_amount_under_review", "راجع مبلغ الإلغاء مع الإدارة قبل اختيار طريقة تحصيله.");
             await WalletPaymentCancellationPolicy.CancelUnsubmittedAsync(dbContext, entity.Id, cancellationToken);
             await RidePaymentGuard.EnsureAvailableAsync(dbContext, entity.Id, cancellationToken);
             await RidePaymentPolicy.EnsureNoPendingDecisionAsync(dbContext, entity.Id, cancellationToken);
@@ -163,10 +170,14 @@ public sealed class Ride(
             if (model.Status.Value == RideStatus.Searching && entity.Status != RideStatus.Searching)
                 await PendingRideRating.EnsureCompletedAsync(dbContext, entity.CustomerId, cancellationToken);
             if (model.Status.Value == RideStatus.InProgress && entity.Status != RideStatus.InProgress)
-                await RidePaymentPolicy.EnsureCanStartAsync(dbContext, entity, cancellationToken);
-            if (model.Status.Value == RideStatus.Completed &&
-                !await dbContext.PaymentTransactions.AnyAsync(x => x.RideId == entity.Id && x.Status == PaymentStatus.Paid, cancellationToken))
-                throw new ServiceException("payment_required", "لا يمكن إنهاء الرحلة قبل تسجيل تحصيل المبلغ.");
+                await RidePaymentPolicy.EnsureCanStartAsync(dbContext, entity, cancellationToken, model.ConfirmPassengerBoarding);
+            if (model.Status.Value == RideStatus.DriverArrived && entity.Status != RideStatus.DriverArrived)
+            {
+                await RidePickupService.VerifyArrivalAsync(dbContext, entity, cancellationToken);
+                entity.DriverArrivedAtUtc = DateTime.UtcNow;
+            }
+            if (model.Status.Value == RideStatus.Completed)
+                await RideFinancialState.CloseServiceAsync(dbContext, entity, "destination_reached", cancellationToken);
             statusChanged = entity.Status != model.Status.Value;
             if (model.Status.Value == RideStatus.Cancelled)
             {
@@ -211,6 +222,8 @@ public sealed class Ride(
         if (statusChanged && entity.Status is RideStatus.Completed or RideStatus.Cancelled)
             await RideDriverAvailability.ReleaseAsync(dbContext, entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
+        if (entity.ServiceEndedAtUtc != null)
+            await RideFinancialState.SynchronizeAsync(dbContext, entity, currentUser.UserId ?? entity.CustomerId, cancellationToken);
         if (statusChanged)
             await NotifyRideStatusRecipientsAsync(entity, "تحديث حالة الرحلة", StatusMessage(entity.Status), cancellationToken);
         if (statusChanged && entity.Status == RideStatus.DriverArrived && presence is not null &&
@@ -495,6 +508,7 @@ public sealed class Ride(
             ? await dbContext.DriverRatings.AsNoTracking().Where(x => x.DriverUserId == ratedDriverId)
                 .Select(x => (decimal?)x.Score).AverageAsync(cancellationToken)
             : null;
+        var finance = await RideFinancialState.ReadAsync(dbContext, entity, cancellationToken);
         return new
         {
             ride = ToResult(entity),
@@ -507,6 +521,7 @@ public sealed class Ride(
                 phoneNumber = entity.Driver.PhoneNumber,
                 vehicleModel = entity.Driver.DriverProfile == null ? null : entity.Driver.DriverProfile.VehicleModel,
                 plateNumber = entity.Driver.DriverProfile == null ? null : entity.Driver.DriverProfile.PlateNumber,
+                approvedPassengerSeats = entity.Driver.DriverProfile == null ? null : entity.Driver.DriverProfile.ApprovedPassengerSeats,
                 rating = entity.Driver.DriverProfile == null ? null : driverRating,
                 photoUrl = entity.Driver.DriverProfile == null ? null : entity.Driver.DriverProfile.PhotoUrl
             },
@@ -527,7 +542,11 @@ public sealed class Ride(
             entity.ServiceFee,
             entity.TotalAmount,
             payments,
-            paymentCompleted = payments.Any(x => x.Status == PaymentStatus.Paid),
+            finance,
+            outstandingAmount = finance.OutstandingAmount,
+            paidAmount = finance.PaidAmount,
+            refundedAmount = finance.RefundedAmount,
+            paymentCompleted = finance.PaymentCompleted,
             paymentMethodNameAr = paidMethod?.PaymentMethodNameAr,
             selectedPaymentMethodNameAr = selectedMethods.GetValueOrDefault(entity.PaymentMethodCode, "محفظة خارجية"),
             paymentProvider = paidMethod?.PaymentProvider,
@@ -562,7 +581,7 @@ public sealed class Ride(
         model.PickupLabel is not null ||
         model.PickupAddress is not null ||
         model.DestinationLabel is not null ||
-        model.DestinationAddress is not null || model.MoreThanFourPassengers is not null || model.PassengerNotes is not null;
+        model.DestinationAddress is not null || model.PassengerCount is not null || model.MoreThanFourPassengers is not null || model.PassengerNotes is not null;
 
     private async Task ApplyDraftDetailsAsync(
         RideEntity entity,
@@ -572,6 +591,7 @@ public sealed class Ride(
         if (model.PassengerNotes?.Trim().Length > 1000)
             throw new ServiceException("passenger_notes_too_long", "الملاحظات لا تتجاوز 1000 حرف.");
         if (model.PassengerNotes is not null) entity.PassengerNotes = model.PassengerNotes.Trim();
+        if (model.PassengerCount is int count) { if (count < 1 || count > 100) throw new ServiceException("invalid_passenger_count", "عدد الركاب غير صالح."); entity.PassengerCount = count; }
         if (model.MoreThanFourPassengers is bool moreThanFour) entity.MoreThanFourPassengers = moreThanFour;
         if (model.CustomerId is int customerId && customerId != entity.CustomerId)
         {
@@ -650,7 +670,7 @@ public sealed class Ride(
         RideStatus.DriverEnRoute => "السائق في طريقه إليك.",
         RideStatus.DriverArrived => "وصل السائق إلى نقطة الانطلاق. يرجى التوجه إليه.",
         RideStatus.InProgress => "بدأت الرحلة الآن.",
-        RideStatus.Completed => "اكتملت الرحلة. يرجى تقييم السائق لاستكمال رحلتك.",
+        RideStatus.Completed => "انتهت خدمة النقل. راجع فاتورتك؛ التقييم اختياري.",
         RideStatus.DriverAssigned => "تم تعيين سائق للرحلة.",
         _ => "تم تحديث حالة الرحلة."
     };
@@ -660,7 +680,7 @@ public sealed class Ride(
         x.RouteVersion, x.RouteChangeFee, x.RouteChangeFees, x.RouteCompletedFare, x.RouteSegmentStartedAtUtc, x.RoutePolyline,
         x.QuotedPrice, x.MinCustomerPrice, x.MaxCustomerPrice,
         x.WaitingFreeMinutes, x.WaitingPricePerMinute, x.WaitingMaxFee, x.WaitingFee,
-        x.MoreThanFourPassengers, x.PassengerNotes,
+        x.MoreThanFourPassengers, x.PassengerCount, x.PassengerNotes,
         x.Id, x.CustomerId, x.DriverId, x.Status, x.ServiceKindId, x.ServiceCatalogItemId,
         serviceKindCode = x.ServiceKind?.Code, serviceKindNameAr = x.ServiceKind?.NameAr,
         serviceCode = x.ServiceCatalogItem?.Code, serviceNameAr = x.ServiceCatalogItem?.NameAr,
@@ -673,6 +693,7 @@ public sealed class Ride(
         x.CustomerPaymentEnabled, x.PaymentMethodCode,
         paymentRequiredBeforeStart = RidePaymentPolicy.RequiresBeforeStart(x),
         x.StartedAtUtc, x.CompletedAtUtc, x.CreatedAtUtc, x.UpdatedAtUtc,
+        x.ServiceEndedAtUtc, x.PassengerBoardedAtUtc, x.DriverArrivedAtUtc, x.RiderVerifiedPickupAtUtc, x.ArrivalToleranceMeters, x.PickupGraceMinutes, x.FinancialAmountDue,
         notifiedDriverCount
     };
 

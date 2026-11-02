@@ -14,6 +14,8 @@
 
 إعداد تسجيل دخول محافظ الدفع من لوحة التحكم موضح في [دليل المحافظ](docs/wallet-login.md).
 
+السلوك التشغيلي والمالي المحدث وتقرير التحقق في [تصحيحات 2 نوفمبر 2026](docs/operational-corrections-2026-11-02.md)، وتفاصيل الإلغاء في [دليل الإلغاء والاسترداد](docs/cancellation-refunds.md).
+
 ```powershell
 dotnet run --project src/YemenDrive.Api
 ```

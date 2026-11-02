@@ -17,6 +17,7 @@ public sealed class RideWaitingWorker(IServiceScopeFactory scopes, ILogger<RideW
                 await using var scope = scopes.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<YemenDriveDbContext>();
                 var waiting = scope.ServiceProvider.GetRequiredService<RideWaitingCoordinator>();
+                await OperationalReviewCoordinator.ReconcileAsync(db, stoppingToken);
                 var ids = await db.RideWaitingSessions.AsNoTracking().Where(x => x.IsOpen).Select(x => x.RideId)
                     .Union(db.RideRouteChanges.AsNoTracking().Where(x => x.IsOpen).Select(x => x.RideId)).ToListAsync(stoppingToken);
                 foreach (var id in ids)

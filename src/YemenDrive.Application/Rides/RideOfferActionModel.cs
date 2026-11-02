@@ -35,7 +35,7 @@ public sealed class RideOfferAction(
         await EnsureCustomerOrAdminAsync(ride.CustomerId, token);
         if (ride.DriverId is not null || ride.Status is not (RideStatus.Searching or RideStatus.Negotiating))
             throw new ServiceException("ride_not_open_for_offers", "الرحلة لم تعد تستقبل عروضًا.");
-        if (await db.Rides.AnyAsync(x => x.DriverId == offer.DriverId && x.Id != ride.Id &&
+        if (await db.Rides.AnyAsync(x => x.DriverId == offer.DriverId && x.Id != ride.Id && x.ServiceEndedAtUtc == null &&
             (x.Status == RideStatus.DriverAssigned || x.Status == RideStatus.DriverEnRoute || x.Status == RideStatus.DriverArrived || x.Status == RideStatus.InProgress || x.Status == RideStatus.CancellationPending), token))
             throw new ServiceException("driver_not_available", "ارتبط السائق برحلة أخرى. اختر عرضًا آخر.");
         if (offer.Status != OfferStatus.Pending)

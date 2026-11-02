@@ -6,4 +6,7 @@ public sealed record SupportTicketModel(
     string? Category = null,
     string? Message = null,
     string? Status = null,
-    string? AdminReply = null);
+    string? AdminReply = null,
+    int? RideId = null,
+    int? AssignedAdminId = null,
+    string? EvidenceReference = null);

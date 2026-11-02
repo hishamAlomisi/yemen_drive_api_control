@@ -127,6 +127,8 @@ public sealed class User(
             throw new ServiceException("admin_required", "حذف المستخدمين متاح للإدارة فقط.");
         if (entity.Id == requesterId)
             throw new ServiceException("cannot_delete_current_admin", "لا يمكن حذف حساب المدير الذي تستخدمه حالياً.");
+        if (entity.IsSystemAdministrator)
+            throw new ServiceException("system_administrator_protected", "حساب مسؤول النظام الأساسي محمي من الحذف.");
         if (entity.Role == UserRole.Admin &&
             await dbContext.Users.CountAsync(x => x.Role == UserRole.Admin && x.IsActive, cancellationToken) <= 1)
             throw new ServiceException("last_admin_required", "لا يمكن حذف آخر حساب مدير نشط في النظام.");
@@ -180,6 +182,8 @@ public sealed class User(
         int requesterId,
         CancellationToken cancellationToken)
     {
+        if (entity.IsSystemAdministrator && (model.Role != UserRole.Admin || !model.IsActive))
+            throw new ServiceException("system_administrator_protected", "لا يمكن تعطيل مسؤول النظام أو تغيير دوره الأصلي.");
         if (entity.Id == requesterId && (model.Role != UserRole.Admin || !model.IsActive))
             throw new ServiceException("cannot_disable_current_admin", "لا يمكن خفض صلاحية أو إيقاف حساب المدير الذي تستخدمه حالياً.");
 

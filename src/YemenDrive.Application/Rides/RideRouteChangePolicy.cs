@@ -8,21 +8,35 @@ namespace YemenDrive.Application.Rides;
 
 public static class RideRouteChangePolicy
 {
+    // Apply the existing movement rule to displacement supported by the GPS
+    // measurement, rather than treating reported uncertainty as actual travel.
+    public static async Task<bool> MovedBeyondQuoteAsync(YemenDriveDbContext db, RideRouteChange request, DriverLiveLocation location, CancellationToken ct)
+    {
+        var distance = RideWaitingCoordinator.DistanceMeters(request.ChangeLatitude, request.ChangeLongitude, location.Latitude, location.Longitude);
+        if (distance <= 80) return false;
+        var accuracy = await db.LocationUpdates.AsNoTracking().Where(x => x.ActorId == location.DriverId && x.RideId == request.RideId &&
+            x.ObservedAtUtc >= location.ObservedAtUtc.AddSeconds(-5) && x.ObservedAtUtc <= location.ObservedAtUtc.AddSeconds(5) &&
+            x.Latitude == location.Latitude && x.Longitude == location.Longitude)
+            .OrderByDescending(x => x.ObservedAtUtc).Select(x => x.Accuracy).FirstOrDefaultAsync(ct);
+        return distance - Math.Max(0, accuracy ?? 0) > 80;
+    }
     public static async Task ExpireAsync(YemenDriveDbContext db, RideEntity ride, DateTime now, CancellationToken ct)
     {
         var request = await db.RideRouteChanges.SingleOrDefaultAsync(x => x.RideId == ride.Id && x.IsOpen, ct);
         if (request == null) return;
+        if (ride.ServiceEndedAtUtc == null && request.Status == "awaiting_payment" && await db.PaymentWalletOperations.AnyAsync(x => x.RideId == ride.Id && x.IsOpen, ct)) return;
         var location = await db.DriverLiveLocations.AsNoTracking().SingleOrDefaultAsync(x => x.DriverId == ride.DriverId, ct);
-        if (request.ExpiresAtUtc > now && ride.Status == RideStatus.InProgress && !ride.CustomerPaymentEnabled &&
+        if (ride.ServiceEndedAtUtc == null && request.ExpiresAtUtc > now && ride.Status == RideStatus.InProgress &&
             request.RouteVersion == ride.RouteVersion && request.PreviousTotal == ride.TotalAmount &&
-            (location == null || RideWaitingCoordinator.DistanceMeters(request.ChangeLatitude, request.ChangeLongitude, location.Latitude, location.Longitude) <= 80)) return;
-        var notified = request.Status == "pending";
+            (location == null || !await MovedBeyondQuoteAsync(db, request, location, ct))) return;
+        var notified = request.Status is "pending" or "awaiting_payment";
+        if (request.Status == "awaiting_payment") ride.CustomerPaymentEnabled = false;
         request.IsOpen = false; request.Status = "expired"; request.DecidedAtUtc = now; request.UpdatedAtUtc = now;
         if (notified) new RideWaitingCoordinator(db).Notify(ride, "انتهى عرض تغيير المسار", "بقي المسار الحالي؛ يلزم عرض جديد لاعتماد وجهة أخرى.");
     }
     public static async Task EnsureNoOpenAsync(YemenDriveDbContext db, int rideId, CancellationToken ct)
     {
-        if (await db.RideRouteChanges.AnyAsync(x => x.RideId == rideId && x.IsOpen && x.ExpiresAtUtc > DateTime.UtcNow, ct))
+        if (await db.RideRouteChanges.AnyAsync(x => x.RideId == rideId && x.IsOpen && x.Status != "awaiting_payment" && x.ExpiresAtUtc > DateTime.UtcNow, ct))
             throw new ServiceException("route_change_pending", "أكمل أو ألغِ طلب تغيير المسار قبل الانتظار أو فتح الدفع.");
     }
 

@@ -9,9 +9,16 @@ public static class WalletPaymentEndpoints
     public sealed record ConfirmWalletPayment(bool Approved);
     public sealed record CompleteWalletPayment(string? Code);
     public sealed record StartWalletTopUp(int PaymentMethodId, decimal Amount, Guid RequestId);
+    public sealed record ReviewProviderOutcome(string Outcome, decimal Amount, string ProviderReference, string EvidenceReference, string Reason);
 
     public static void MapWalletPaymentEndpoints(this WebApplication app)
     {
+        app.MapPost("/api/admin/wallet-payments/{paymentId:int}/review", async (int paymentId, ReviewProviderOutcome request,
+            WalletPaymentService service, CancellationToken token) =>
+        {
+            try { return Results.Ok(ApiResult.Ok(await service.ReviewOutcomeAsync(paymentId, request.Outcome, request.Amount, request.ProviderReference, request.EvidenceReference, request.Reason, token))); }
+            catch (ServiceException ex) { return Results.BadRequest(ApiResult.Fail(ex.Code, ex.Message)); }
+        });
         var topUps = app.MapGroup("/api/wallet/top-ups");
         topUps.AddEndpointFilter(async (context, next) =>
         {

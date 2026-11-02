@@ -39,6 +39,11 @@ public sealed class ExternalWalletPaymentSettlement(
         if (operation.Status == "Succeeded" && operation.PaymentTransactionId is int existingId)
         {
             var existing = await db.PaymentTransactions.SingleAsync(x => x.Id == existingId, token);
+            if (operation.IsOpen)
+            {
+                operation.IsOpen = false;
+                await db.SaveChangesAsync(token);
+            }
             await transaction.CommitAsync(token);
             return existing;
         }
@@ -48,18 +53,17 @@ public sealed class ExternalWalletPaymentSettlement(
         var ride = await db.Rides.SingleAsync(x => x.Id == operation.RideId, token);
         await db.Entry(ride).ReloadAsync(token);
         if (ride.CustomerId != operation.CustomerId || ride.DriverId is null ||
-            ride.Status is not (RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.DriverArrived or RideStatus.InProgress or RideStatus.Completed or RideStatus.CancellationPending))
+            ride.Status is not (RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.DriverArrived or RideStatus.InProgress or RideStatus.Completed or RideStatus.CancellationPending or RideStatus.Cancelled))
             throw new ServiceException("wallet_settlement_requires_review", "تحتاج الدفعة المؤكدة إلى مراجعة بيانات الرحلة.");
         // A debit dispatched before cancellation must still be recorded when its
         // provider confirms it. The cancellation review then refunds that payment.
         if (ride.Status == RideStatus.CancellationPending && !await db.RideCancellationRequests.AnyAsync(
                 x => x.RideId == ride.Id, token))
             throw new ServiceException("wallet_settlement_requires_review", "تحتاج الدفعة المؤكدة إلى مراجعة طلب الإلغاء.");
-        var totalDue = ride.TotalAmount ?? (ride.CustomerPrice ?? ride.ServerPrice ?? 0m) + ride.WaitingFee + ride.ServiceFee;
-        if (operation.Amount <= 0 || operation.Amount != totalDue || operation.Currency != "YER")
+        var totalDue = operation.Amount;
+        if (operation.Amount <= 0 || operation.Currency != "YER")
             throw new ServiceException("wallet_settlement_amount_mismatch", "تحتاج الدفعة المؤكدة إلى مراجعة المبلغ أو العملة.");
-        if (await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid, token))
-            throw new ServiceException("ride_already_paid", "توجد دفعة أخرى معتمدة لهذه الرحلة؛ يلزم مراجعتها.");
+
         var method = await db.PaymentMethods.SingleAsync(x => x.Id == operation.PaymentMethodId, token);
         if (!string.Equals(method.ProviderCode, operation.ProviderCode, StringComparison.Ordinal))
             throw new ServiceException("wallet_settlement_provider_mismatch", "مزود الدفعة لا يطابق حساب طريقة الدفع؛ يلزم مراجعتها.");
@@ -72,7 +76,7 @@ public sealed class ExternalWalletPaymentSettlement(
             throw new ServiceException("currency_mismatch", "عملة محفظة السائق لا تطابق عملة الدفعة.");
         var fare = (ride.CustomerPrice ?? ride.ServerPrice ?? 0m) + ride.WaitingFee;
         var driverNet = ride.DriverShare ?? fare - ride.DriverCommissionAmount;
-        if (driverNet < 0 || driverNet > totalDue)
+        if (driverNet < 0)
             throw new ServiceException("invalid_driver_share", "صافي مستحق السائق يحتاج إلى مراجعة.");
         var now = DateTime.UtcNow;
         var payment = new PaymentTransaction
@@ -86,6 +90,8 @@ public sealed class ExternalWalletPaymentSettlement(
                 SHA256.HashData(Encoding.UTF8.GetBytes(operation.ProviderReference ?? operation.RequestId))),
             IdempotencyKey = $"external-wallet:{operation.Id}"
         };
+        var allocation = await RideFinancialState.AllocateReceiptAsync(db, ride, payment, token, providerConfirmed: true);
+        driverNet = payment.DriverNetAmount ?? 0m;
         db.PaymentTransactions.Add(payment);
         driverWallet.Balance += driverNet;
         if (driverNet > 0) db.WalletTransactions.Add(new WalletTransaction
@@ -97,13 +103,14 @@ public sealed class ExternalWalletPaymentSettlement(
         db.DriverSettlements.Add(new DriverSettlement
         {
             DriverId = ride.DriverId.Value, PeriodStartUtc = now, PeriodEndUtc = now,
-            GrossRideAmount = totalDue, PlatformCommission = ride.PlatformShare ?? ride.ServiceFee + ride.DriverCommissionAmount,
+            GrossRideAmount = totalDue, PlatformCommission = totalDue - driverNet,
             NetPayable = driverNet, Status = PaymentStatus.Paid,
             PaymentReference = $"external-wallet:ride:{ride.Id}:operation:{operation.Id}"
         });
-        await accounting.PostExternalWalletPaymentAsync(ride, payment, method.Id, ride.CustomerId, token);
+        await accounting.PostExternalWalletPaymentAsync(allocation, payment, method.Id, ride.CustomerId, token);
         await db.SaveChangesAsync(token);
         operation.Status = "Succeeded";
+        operation.IsOpen = false;
         operation.NextAction = "None";
         operation.ErrorCode = null;
         operation.PaymentTransactionId = payment.Id;
@@ -138,6 +145,25 @@ public sealed class ExternalWalletPaymentSettlement(
                 Body = "تم الدفع وأُضيف صافي مستحقك إلى محفظتك. لا يلزم تحصيل مبلغ نقدي من الراكب.",
                 DataJson = $"{{\"action\":\"open_active_ride\",\"rideId\":{ride.Id},\"paymentId\":{payment.Id}}}" });
         await db.SaveChangesAsync(token);
+        await RideRouteSettlement.CompleteApprovedAsync(db, ride, token);
+            await db.SaveChangesAsync(token);
+            await RideFinancialState.SynchronizeAsync(db, ride, ride.CustomerId, token);
+        var financial = await RideFinancialState.ReadAsync(db, ride, token);
+        var cancellation = ride.Status == RideStatus.Cancelled ? await db.RideCancellationRequests.OrderByDescending(x => x.Id).FirstOrDefaultAsync(x => x.RideId == ride.Id, token) : null;
+        if (cancellation != null && financial.RefundDue > 0 && cancellation.Status is RideCancellationStatus.AdminApproved or RideCancellationStatus.CustomerApproved)
+        {
+            cancellation.Status = RideCancellationStatus.FinancialReviewPending;
+            cancellation.AssignedAdminId ??= await OperationalReviewCoordinator.OwnerAsync(db, "refunds.write", token);
+            db.OperationalDecisionAudits.Add(new() { Subject = "RideCancellation", SubjectId = cancellation.Id, Action = "late_provider_receipt", Reason = "ثبت القبض الأصلي بعد القرار. أعيد فتح المعالجة المالية فقط؛ يبقى النقل منتهياً." });
+            await db.SaveChangesAsync(token);
+        }
+        if (cancellation == null && financial.RefundDue > 0 && !await db.RideFinancialCases.AnyAsync(x => x.RideId == ride.Id && x.Kind == "FareDecrease" && x.Status != "Resolved", token))
+        {
+            db.RideFinancialCases.Add(new() { RideId = ride.Id, CustomerId = ride.CustomerId, DriverId = ride.DriverId,
+                Kind = "FareDecrease", Status = "AwaitingConsent", Amount = financial.RefundDue,
+                SourceReference = $"provider-overpayment:{operation.Id}", Note = "ثبت خصم المزود بعد تغير الخدمة. الزيادة حق للراكب؛ يلزم اختيار وجهة الاسترداد أو معالجة الإدارة." });
+            await db.SaveChangesAsync(token);
+        }
         await transaction.CommitAsync(token);
         if (realtimePublisher is not null)
         {

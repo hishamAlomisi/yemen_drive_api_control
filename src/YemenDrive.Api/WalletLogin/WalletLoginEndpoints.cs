@@ -13,19 +13,32 @@ public static class WalletLoginEndpoints
 {
     public static void MapWalletLoginEndpoints(this WebApplication app)
     {
+        var adminMethods = app.MapGroup("/api/admin/payment-methods");
+        adminMethods.AddEndpointFilter(async (context, next) =>
+        {
+            context.HttpContext.Response.Headers.CacheControl = "no-store";
+            var user = context.HttpContext.RequestServices.GetRequiredService<ICurrentUserContext>();
+            var db = context.HttpContext.RequestServices.GetRequiredService<YemenDriveDbContext>();
+            if (!await IsAdminAsync(user, db, context.HttpContext.RequestAborted)) return Results.Unauthorized();
+            try { await YemenDrive.Application.Administration.AdministratorAccess.RequireAsync(db, user.RequireUserId(), context.HttpContext.Request.Method == "GET" ? "finance.read" : "finance.write", context.HttpContext.RequestAborted); }
+            catch (ServiceException ex) { return Results.Json(ApiResult.Fail(ex.Code, ex.Message), statusCode: 403); }
+            return await next(context);
+        });
         app.MapGet("/api/admin/wallet-providers", async (HttpContext context,
             ICurrentUserContext user, YemenDriveDbContext db, WalletProviderCatalog catalog, CancellationToken token) =>
         {
             context.Response.Headers.CacheControl = "no-store";
             if (!await IsAdminAsync(user, db, token)) return Results.Unauthorized();
+            await YemenDrive.Application.Administration.AdministratorAccess.RequireAsync(db, user.RequireUserId(), "finance.read", token);
             return Results.Ok(ApiResult.Ok(catalog.Providers));
         });
 
-        app.MapGet("/api/admin/payment-methods/{id:int}/wallet-login", async (int id, HttpContext context,
+        adminMethods.MapGet("/{id:int}/wallet-login", async (int id, HttpContext context,
             ICurrentUserContext user, YemenDriveDbContext db, WalletLoginRuntime runtime, CancellationToken token) =>
         {
             context.Response.Headers.CacheControl = "no-store";
             if (!await IsAdminAsync(user, db, token)) return Results.Unauthorized();
+            await YemenDrive.Application.Administration.AdministratorAccess.RequireAsync(db, user.RequireUserId(), "finance.read", token);
             var method = await db.PaymentMethods.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, token);
             if (method is null) return Results.NotFound(ApiResult.Fail("payment_method_not_found", "طريقة الدفع غير موجودة."));
             var account = await db.PaymentProviderAccounts.AsNoTracking().SingleOrDefaultAsync(x => x.PaymentMethodId == id, token);
@@ -42,11 +55,12 @@ public static class WalletLoginEndpoints
             }));
         });
 
-        app.MapGet("/api/admin/payment-methods/{id:int}/wallet-login/configuration", async (int id, HttpContext context,
+        adminMethods.MapGet("/{id:int}/wallet-login/configuration", async (int id, HttpContext context,
             ICurrentUserContext user, YemenDriveDbContext db, WalletCredentialsProtector protector, CancellationToken token) =>
         {
             context.Response.Headers.CacheControl = "no-store";
             if (!await IsAdminAsync(user, db, token)) return Results.Unauthorized();
+            await YemenDrive.Application.Administration.AdministratorAccess.RequireAsync(db, user.RequireUserId(), "finance.read", token);
             var method = await db.PaymentMethods.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, token);
             if (method is null) return Results.NotFound(ApiResult.Fail("payment_method_not_found", "طريقة الدفع غير موجودة."));
             var account = await db.PaymentProviderAccounts.AsNoTracking().SingleOrDefaultAsync(x => x.PaymentMethodId == id, token);
@@ -74,11 +88,12 @@ public static class WalletLoginEndpoints
             return Results.Ok(ApiResult.Ok(new { providerCode = method.ProviderCode, providerOptionsJson = json }));
         });
 
-        app.MapPost("/api/admin/payment-methods/{id:int}/wallet-login/retry", async (int id, HttpContext context,
+        adminMethods.MapPost("/{id:int}/wallet-login/retry", async (int id, HttpContext context,
             ICurrentUserContext user, YemenDriveDbContext db, CancellationToken token) =>
         {
             context.Response.Headers.CacheControl = "no-store";
             if (!await IsAdminAsync(user, db, token)) return Results.Unauthorized();
+            await YemenDrive.Application.Administration.AdministratorAccess.RequireAsync(db, user.RequireUserId(), "finance.write", token);
             var version = Guid.NewGuid();
             var changed = await db.PaymentProviderAccounts.Where(x => x.PaymentMethodId == id &&
                 x.IsEnabled && x.PaymentMethod.IsActive && x.PaymentMethod.Kind == PaymentMethodKind.ExternalWallet)

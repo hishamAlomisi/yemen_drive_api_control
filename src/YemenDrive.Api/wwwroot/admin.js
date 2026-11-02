@@ -21,6 +21,25 @@ const state = {
 const busySafetyActions = new Set();
 const safetyAudioUrls = new Map();
 let pageScrollDirection = 'down';
+let administratorPermissions = null;
+let currentAdministratorId = null;
+let administratorChoices = [];
+let operationalUserNames = new Map();
+let operationalRideChoices = [];
+function canAdmin(permission) { return administratorPermissions !== null && (administratorPermissions.has('*') || administratorPermissions.has(permission)); }
+async function loadMyAdministratorPermissions() {
+  if (administratorPermissions !== null) return;
+  const result = await execute('AdministratorPermissionModel', 'mine', {});
+  administratorPermissions = new Set(result.data.permissions || []);
+  currentAdministratorId = Number(result.data.userId);
+  const scopes = { 'transfer-fees': ['finance.read'], 'operational-policy': ['policy.read'], 'access-governance': ['personal_data.read', 'permissions.read', 'permissions.write'], 'operational-review': ['finance.read', 'refunds.read', 'support.read'] };
+  for (const [view, permissions] of Object.entries(scopes)) {
+    $$(`.nav-item[data-view="${view}"]`).forEach(node => { node.hidden = !permissions.some(canAdmin); });
+  }
+  $('#operational-policy-form').querySelectorAll('input,textarea,button').forEach(node => { node.disabled = !canAdmin('policy.write'); });
+  $('#administrator-permissions-panel').hidden = !canAdmin('permissions.read') && !canAdmin('permissions.write');
+  $('#administrator-permissions-form').querySelectorAll('input,select,textarea,button').forEach(node => { node.disabled = node.name === 'userId' ? !canAdmin('permissions.read') && !canAdmin('permissions.write') : !canAdmin(node.dataset.permission || 'permissions.write'); });
+}
 let lastPageScrollPosition = 0;
 let pageScrollUpdatePending = false;
 let safetyMapTimer = null;
@@ -48,12 +67,16 @@ const livePassengerAnimations = new Map();
 const pendingLiveRideSnapshots = new Set();
 
 const titles = {
+  'transfer-fees': ['رسوم تحويل المحافظ', 'شرائح الرسوم الثابتة والنسبية للتحويل بين المحافظ'],
   overview: ['نظرة عامة', 'متابعة حالة النظام والعمليات الأخيرة'],
   users: ['المستخدمون', 'إدارة حسابات العملاء والسائقين'],
   customers: ['العملاء', 'بيانات العملاء ومؤشرات النشاط والتقييم'],
   drivers: ['السائقون', 'المركبات والخدمات وحالة التوفر'],
   'driver-ratings': ['تقييمات السائقين', 'تقييمات العملاء وإضافة تقييم الإدارة'],
   rides: ['الرحلات', 'متابعة الطلبات وحالات التنفيذ'],
+  'operational-review': ['المتابعة المالية والشكاوى', 'المقبوض والمتبقي والاسترداد والنزاعات بصورة مستقلة عن النقل'],
+  'operational-policy': ['سياسة الوصول والمهل', 'اعتماد القيم الناقصة دون ابتكار رسوم جديدة'],
+  'access-governance': ['الصلاحيات وحذف الحساب', 'التفويض وقرارات تعطيل الحساب مع حفظ التاريخ'],
   cancellations: ['طلبات الإلغاء', 'مراجعة القرارات والإحالات قبل اعتماد الإدارة'],
   safety: ['بلاغات السلامة', 'بلاغات الرحلات التي تحتاج متابعة فورية'],
   'safety-recordings': ['تسجيلات السلامة', 'مراجعة التسجيلات المكتملة التي وافق أصحابها على تسجيلها'],
@@ -89,7 +112,7 @@ const financialOperationDefinitions = {
 };
 
 const rideStatuses = ['مسودة', 'جاري البحث', 'تفاوض', 'تم تعيين سائق', 'السائق في الطريق', 'قيد التنفيذ', 'مكتملة', 'ملغاة', 'الإلغاء قيد المراجعة', 'وصل السائق إلى نقطة الانطلاق'];
-const cancellationStatuses = ['بانتظار قرار السائق', 'رفض السائق', 'قيد مراجعة الإدارة', 'وافقت الإدارة', 'رفضت الإدارة', 'بانتظار موافقة الراكب', 'وافق الراكب', 'رفض الراكب', 'ألغى السائق قبل البدء'];
+const cancellationStatuses = ['بانتظار قرار السائق', 'رفض السائق', 'قيد مراجعة الإدارة', 'وافقت الإدارة', 'رفضت الإدارة', 'بانتظار موافقة الراكب', 'وافق الراكب', 'رفض الراكب', 'ألغى السائق قبل البدء', 'بانتظار اختيار وجهة الاسترداد', 'بانتظار موافقة الراكب على الوجهة', 'بانتظار إثبات استلام النقد', 'معالجة مالية مستقلة'];
 const cancellationDriverDecisions = ['—', 'وافق السائق', 'رفض السائق', 'أحال السائق للإدارة'];
 const cancellationRefundMethods = { 1: 'استرداد نقدي مباشر من السائق', 2: 'إضافة الاسترداد إلى محفظة العميل' };
 const safetyStatuses = ['جديد', 'تم الاستلام', 'مغلق'];
@@ -117,7 +140,7 @@ const formConfigs = {
       ['vehicleModel','موديل المركبة','text',true], ['plateNumber','رقم اللوحة','text',true],
       ['commissionRate','نسبة العمولة','number',false,'0.20','0.01'],
       ['imageFile','صورة السائق أو المركبة','file'], ['photoUrl','رابط الصورة (اختياري)','url'],
-      ['isAvailable','متاح للعمل','checkbox',false,true]
+      ['isAvailable','مسموح بالعمل من الإدارة','checkbox',false,true], ['isApproved','اعتماد السائق والمركبة والوثائق','checkbox',false,true], ['approvedPassengerSeats','عدد مقاعد الركاب المعتمد دون السائق','number',true,'','1']
     ], imageField: 'photoUrl'
   },
   ride: {
@@ -402,6 +425,7 @@ async function adminLogin(phoneNumber, password) {
 }
 
 function clearAdminSession() {
+  administratorPermissions = null;
   sessionStorage.removeItem(ADMIN_TOKEN_KEY);
   sessionStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
   localStorage.removeItem(ADMIN_TOKEN_KEY);
@@ -784,7 +808,7 @@ async function loadDrivers() {
       ? iconActionButton('suspend', 'إيقاف حساب السائق', `setDriverAccountStatus(${userId}, false)`, { tone: 'warning' })
       : iconActionButton('activate', 'تفعيل حساب السائق', `setDriverAccountStatus(${userId}, true)`, { tone: 'success' });
     const actions = `<div class="driver-actions">${status}${iconActionButton('statement', 'كشف حساب السائق', `openDriverAccountStatement(${userId})`, { tone: 'info' })}${iconActionButton('wallet', 'كشف محفظة السائق', `openDriverWallet(${userId})`, { tone: 'success' })}${recordActions('driver', item.id)}</div>`;
-    return `<tr><td><span class="cell-main">${escapeHtml(item.displayName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.userId)}</span></td><td>${escapeHtml(item.phoneNumber)}</td><td><span class="cell-main">${escapeHtml(item.vehicleModel)}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${escapeHtml(item.plateNumber)}</td><td>${number(item.rating)}</td><td>${badge(item.isActive ? 'الحساب نشط' : 'الحساب موقوف', item.isActive ? 'success' : 'danger')}<span class="cell-sub">${item.isAvailable ? 'متاح' : 'غير متاح'}</span></td><td>${actions}</td></tr>`;
+    return `<tr><td><span class="cell-main">${escapeHtml(item.displayName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.userId)}</span></td><td>${escapeHtml(item.phoneNumber)}</td><td><span class="cell-main">${escapeHtml(item.vehicleModel)}</span>${Number(item.approvedPassengerSeats) > 0 ? `<span class="cell-sub">${Number(item.approvedPassengerSeats)} مقاعد ركاب</span>` : '<span class="badge warning">اعتمد مقاعد الركاب لاستقبال الطلبات</span>'}</td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${escapeHtml(item.plateNumber)}</td><td>${number(item.rating)}</td><td>${badge(item.isActive ? 'الحساب نشط' : 'الحساب موقوف', item.isActive ? 'success' : 'danger')}<span class="cell-sub">${item.isAvailable ? 'متاح' : 'غير متاح'}</span></td><td>${actions}</td></tr>`;
   });
   toggleEmpty('#drivers-body', '#drivers-empty', rows);
 }
@@ -1174,6 +1198,7 @@ async function loadWallet() {
   const wallet = result.data;
   $('#wallet-summary').classList.remove('hidden');
   $('#wallet-balance').textContent = number(wallet.balance);
+  $('#wallet-ledger-debt').textContent = number(wallet.ledgerDebt || 0);
   $('#wallet-currency').textContent = wallet.currency;
   $('#wallet-transactions-count').textContent = number(wallet.transactions.length);
   const owner = wallet.owner || {};
@@ -1531,23 +1556,30 @@ window.openSafetyMap = async id => {
 };
 
 window.decideCancellation = async (id, approve) => {
-  const note = window.prompt('ملاحظة الإدارة (اختيارية):') || undefined;
+  const note = window.prompt('أساس القرار والمسؤولية والأدلة (مطلوب):');
+  if (!note?.trim()) return;
+  const responsibility = await reviewChoice('المسؤولية المثبتة بالأدلة', [['Undetermined', 'تحتاج مراجعة إضافية'], ['Customer', 'الراكب'], ['Driver', 'السائق'], ['Company', 'الشركة'], ['Shared', 'مسؤولية مشتركة']]);
+  if (responsibility === null) return;
+  const waiveCancellationFees = window.confirm('هل ثبت أن سبب الإلغاء خطأ السائق أو المنصة، وتريد إسقاط رسوم الخدمة والإلغاء عن الراكب؟');
   try {
     const item = state.cancellations.find(row => Number(row.id) === Number(id));
     let reviewedTravelledFare;
     let quote = item?.refundQuote;
-    if (approve && quote?.paymentCompleted) {
+    if (approve && Number(quote?.paidAmount) > 0) {
       if (!quote.canCalculateRefund) {
         const entered = window.prompt('راجع سجل الرحلة وحدد أجرة الجزء المقطوع بالريال اليمني قبل اعتماد الاسترداد:');
         if (entered === null) return;
         reviewedTravelledFare = Number(entered);
         if (!entered.trim() || !Number.isFinite(reviewedTravelledFare) || reviewedTravelledFare < 0) throw new Error('أدخل مبلغاً صحيحاً للجزء المقطوع.');
-        const preview = await execute('RideCancellationRequestModel', 'get', { rideId: item.rideId, previewOnly: true, reviewedTravelledFare });
+        const preview = await execute('RideCancellationRequestModel', 'get', { id, previewOnly: true, reviewedTravelledFare, waiveCancellationFees });
         quote = preview.data;
       }
-      if (!window.confirm(`المبلغ المدفوع: ${number(quote.paidAmount)} YER\nإجمالي الخصم: ${number(quote.totalDeductions)} YER\nالمبلغ الذي سيضاف إلى محفظة الراكب: ${number(quote.refundAmount)} YER\nاعتماد الإلغاء والاسترداد؟`)) return;
+      const reviewedPreview = await execute('RideCancellationRequestModel', 'get', { id, previewOnly: true, reviewedTravelledFare, waiveCancellationFees });
+      quote = reviewedPreview.data;
+      if (!window.confirm(`المبلغ المدفوع: ${number(quote.paidAmount)} YER\nإجمالي الخصم: ${number(quote.totalDeductions)} YER\nصافي حق الاسترداد (وجهته تحتاج موافقة الراكب): ${number(quote.refundAmount)} YER\nاعتماد الإلغاء والاسترداد؟`)) return;
     }
-    const result = await execute('RideCancellationRequestModel', approve ? 'adminApprove' : 'adminReject', { id, note, reviewedTravelledFare });
+    const payout = approve && Number(quote?.refundAmount) > 0 ? await verifiedPayoutFields(quote.refundAmount) : {};
+    const result = await execute('RideCancellationRequestModel', approve ? 'adminApprove' : 'adminReject', { id, note, reviewedTravelledFare, responsibility, waiveCancellationFees, ...payout });
     toast(result.message || 'تم حفظ قرار الإدارة.');
     await loadCancellations();
   } catch (error) { if (!isAdminOperationCancelled(error)) toast(error.message, true); }
@@ -2154,6 +2186,7 @@ async function loadView(view, quiet = false) {
     return;
   }
   try {
+    await loadMyAdministratorPermissions();
     if (view === 'overview') await loadDashboard();
     if (view === 'users') await loadUsers($('#user-search').value.trim());
     if (view === 'customers') await loadCustomers($('#customer-search').value.trim());
@@ -2165,12 +2198,17 @@ async function loadView(view, quiet = false) {
       await loadActiveRideSnapshot();
       if (liveRidesMap) setTimeout(() => liveRidesMap.invalidateSize(), 0);
     }
+    if (view === 'operational-review') await loadOperationalReview();
+    if (view === 'operational-policy') await loadOperationalPolicy();
+    if (view === 'access-governance') await loadAccessGovernance();
     if (view === 'cancellations') await loadCancellations();
     if (view === 'safety') await loadSafety();
     if (view === 'safety-recordings') await loadSafetyRecordings();
     if (view === 'catalog') await loadCatalog();
     if (view === 'pricing') await loadPricing();
     if (view === 'payment-methods') await loadPaymentMethods();
+    if (view === 'wallet' && $('#wallet-phone-number').value.trim()) await loadWallet();
+    if (view === 'transfer-fees') await loadTransferFees();
     if (view === 'settlements') await loadSettlements();
     if (view === 'ledger') { await loadLedgerAccounts(); await loadAccountStatement(); }
     if (view === 'financial-operations') {
@@ -2184,8 +2222,8 @@ async function loadView(view, quiet = false) {
     if (view === 'places') await loadPlaces();
     if (view === 'areas') await loadAreas();
     if (view === 'history') await loadHistory();
-    if (view === 'waiting-report') await loadWaitingReport();
-    if (view === 'route-change-report') await loadRouteChangeReport();
+    if (view === 'waiting-report') { await loadRideSelector('#waiting-report-ride', 'operations'); await loadWaitingReport(); }
+    if (view === 'route-change-report') { await loadRideSelector('#route-change-report-ride', 'operations'); await loadRouteChangeReport(); }
   } catch (error) { if (!quiet) toast(error.message, true); }
 }
 
@@ -2644,6 +2682,15 @@ async function openForm(name, entity = null) {
     : config.subtitle;
   $('#modal-submit').textContent = name === 'notificationCampaign' ? 'إرسال الإشعار' : 'حفظ';
   $('#modal-fields').innerHTML = fields.map(buildField).join('');
+  if (!editing && config.operation === 'add') {
+    const identity = document.createElement('div'); identity.className = 'record-identity-preview';
+    identity.textContent = 'معرف السجل: يولد تلقائياً عند الحفظ';
+    $('#modal-fields').prepend(identity);
+    try { const preview = await execute('AdminRecordIdentityModel', 'get', { entityModel: config.model });
+      if (openGeneration !== formOpenGeneration) return;
+      identity.textContent = `معرف السجل التالي: ${preview.data.nextId} — ${preview.data.notice}`;
+    } catch { /* Saving still uses the database identity sequence. */ }
+  }
   if (name === 'pricingRule') {
     const limits = { routeChangeFee: [0,999999999], waitingFreeMinutes: [0,120], waitingPricePerMinute: [0,999999999], waitingMaxFee: [0,999999999], maxPriceDecreasePercent: [0,100], maxPriceIncreasePercent: [0,1000] };
     for (const [field, [min,max]] of Object.entries(limits)) {
@@ -3135,3 +3182,188 @@ document.addEventListener('click', async event => {
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; }
 });
+
+function reviewStatus(value) { return ({ReviewRequired:'تحتاج حسم نتيجة المزود',Pending:'قيد المعالجة',Succeeded:'قبض مؤكد',Failed:'مرفوضة',Rejected:'مرفوضة',Investigating:'تجري المراجعة',Assigned:'أُسند إلى مسؤول',AwaitingCustomer:'بانتظار العميل',Resolved:'تمت المعالجة',Closed:'أُغلقت',Open:'مفتوحة',Payment:'دفع',Refund:'استرداد',Cancellation:'إلغاء',Safety:'سلامة',General:'عام',Approved:'مقبول'})[value] || value; }
+let operationalReview = { financialCases: [] };
+function requiredReviewText(label) { const value = window.prompt(label); if (!value?.trim()) throw new Error('القرار يحتاج معلومات وأدلة كاملة.'); return value.trim(); }
+async function reviewChoice(title, choices) {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'panel review-dialog';
+  dialog.innerHTML = `<form method="dialog"><h3>${escapeHtml(title)}</h3><select name="choice" class="filter-select">${choices.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')}</select><div class="command-row"><button class="button" value="cancel">رجوع</button><button class="button primary" value="choose">متابعة</button></div></form>`;
+  document.body.append(dialog);
+  dialog.showModal();
+  return await new Promise(resolve => dialog.addEventListener('close', () => {
+    const value = dialog.returnValue === 'choose' ? dialog.querySelector('select').value : null;
+    dialog.remove(); resolve(value);
+  }, { once: true }));
+}
+async function verifiedPayoutFields(amount) {
+  const choice = await reviewChoice('وجهة الاسترداد', [['consent', 'طلب موافقة العميل على محفظة التطبيق / متابعة النقد'], ['verified', 'تسجيل تحويل بديل تم فعلياً وثبت استلام العميل له']]);
+  if (!choice) throw new Error('أُلغي القرار.');
+  if (choice === 'consent') return {};
+  const list = await execute('LedgerAccountModel', 'list', {});
+  const accounts = (list.data || []).filter(x => x.isActive && x.isPosting && Number(x.type) === 0 && x.currency === 'YER' && [3, 4, 5].includes(Number(x.financialPartyType)));
+  if (!accounts.length) throw new Error('لا يتوفر حساب مصدر صرف معتمد. راجع حسابات النقد والبنك والمزود أولاً.');
+  const account = await reviewChoice('مصدر الأموال المحولة فعلياً', accounts.map(x => [String(x.id), `${x.name} (${x.code})`]));
+  if (!account) throw new Error('أُلغي القرار.');
+  const verifiedPayoutAmount = Number(requiredReviewText('المبلغ المحول فعلياً بالريال اليمني:'));
+  const evidenceReference = requiredReviewText('مرجع دليل التحويل واستلام العميل الذي راجعته:');
+  if (!window.confirm(`ثبت استلام العميل ${number(verifiedPayoutAmount)} YER فعلياً؟ يسجل صرف من المصدر المحدد؛ لا ينفذ تحويل جديد.`)) throw new Error('أُلغي القرار.');
+  return { fundingLedgerAccountId: Number(account), verifiedPayoutAmount, verifiedAmount: verifiedPayoutAmount, evidenceReference };
+}
+function reviewCard(title, body, buttons = '') { return `<article class="review-card"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(body)}</p></div>${buttons ? `<div class="review-card-actions">${buttons}</div>` : ''}</article>`; }
+
+function operationalUserName(id) { return id ? operationalUserNames.get(Number(id)) || `حساب ${id}` : 'لم يسند بعد'; }
+function rideChoiceLabel(ride) {
+  return `#${ride.id} · ${ride.customerName || operationalUserName(ride.customerId)} · ${ride.driverName || (ride.driverId ? operationalUserName(ride.driverId) : 'لم يعين سائق')} · ${ride.pickupLabel || ride.pickupAddress || 'الانطلاق'} ← ${ride.destinationLabel || ride.destinationAddress || 'الوجهة'} · ${rideStatuses[ride.status] || ride.status} · ${date(ride.createdAtUtc)}`;
+}
+async function loadRideSelector(selector, scope) {
+  const result = await execute('AdministrativeLookupModel', 'list', { kind: 'rides', scope });
+  const node = $(selector); const selected = node.value;
+  node.innerHTML = '<option value="">كل الرحلات</option>' + (result.data || []).map(ride => `<option value="${Number(ride.id)}">${escapeHtml(rideChoiceLabel(ride))}</option>`).join('');
+  node.value = selected;
+  return result.data || [];
+}
+async function chooseAdministrator(scope) {
+  const result = await execute('AdministrativeLookupModel', 'list', { scope });
+  const value = await reviewChoice('المسؤول عن المعالجة', [['', 'إبقاء المسؤول الحالي / الإسناد التلقائي'], ...(result.data || []).map(x => [String(x.id), `${x.displayName || 'مسؤول'}${x.isSystemAdministrator ? ' · مسؤول النظام' : ''}`])]);
+  if (value === null) throw new Error('ألغي القرار.');
+  return value;
+}
+
+async function loadOperationalReview() {
+  try {
+    const scope = canAdmin('finance.read') ? 'finance' : canAdmin('refunds.read') ? 'refunds' : 'support';
+    const lookups = await Promise.allSettled([execute('AdministrativeLookupModel', 'list', { kind: 'users', scope }), loadRideSelector('#financial-ride-filter', scope)]);
+    if (lookups[0].status === 'fulfilled') operationalUserNames = new Map((lookups[0].value.data || []).map(x => [Number(x.id), x.displayName || 'بدون اسم']));
+    if (lookups[1].status === 'fulfilled') operationalRideChoices = lookups[1].value;
+    const selectedRide = Number($('#financial-ride-filter').value) || null;
+    const filter = selectedRide ? { rideId: selectedRide } : {};
+    const reports = await Promise.allSettled([execute('OperationalReviewModel', 'list', filter)]);
+    const report = reports[0].status === 'fulfilled' ? reports[0].value : { data: { totals: {}, rides: [], pendingProviderOperations: [], audit: [] } };
+    const results = await Promise.allSettled([execute('RideFinancialCaseModel', 'list', filter), execute('SupportTicketModel', 'list', {})]);
+    operationalReview = { ...report.data, financialCases: results[0].status === 'fulfilled' ? results[0].value.data || [] : [], support: results[1].status === 'fulfilled' ? results[1].value.data || [] : [] };
+    const t = operationalReview.totals;
+    $('#operational-totals').innerHTML = [['verifiedReceipts','المقبوض المؤكد'],['completedRefunds','المسترد'],['outstanding','المتبقي'],['confirmedReceivable','دين مثبت'],['disputedReceivable','اعتراضات'],['amountUnderReview','قيد الاعتماد'],['refundEntitlement','حق الاسترداد'],['uncollectedDriverEntitlement','مستحق السائق غير المحصل'],['cashChangeOwed','باقي نقدي مستحق']].map(([key,label]) => `<div class="operational-metric"><span>${label}</span><strong>${number(t[key])}<small> YER</small></strong></div>`).join('');
+    renderFinancialCases();
+    if (reports[0].status === 'rejected') $('#operational-totals').textContent = 'لا يتوفر تفويض التقرير المالي أو تعذر تحميله. تعرض أدناه الأقسام المتاحة لتفويضك.';
+    if (results[0].status === 'rejected') $('#financial-cases-body').innerHTML = '<tr><td colspan="4">لا يتوفر تفويض عرض المعالجات المالية أو تعذر تحميلها. التقرير المالي مستقل؛ أعد المحاولة بعد التحقق.</td></tr>';
+    $('#provider-review-list').innerHTML = operationalReview.pendingProviderOperations.map(x => reviewCard(`محاولة #${x.id} / ${x.providerCode} / ${x.rideId ? 'رحلة '+x.rideId : 'شحن'}`, `المبلغ ${number(x.amount)} ${x.currency}، الحالة ${reviewStatus(x.status)}، مرجع الطلب ${x.requestId}، مرجع المزود ${x.providerReference || 'غير متاح'}، آخر تحديث ${date(x.updatedAtUtc)}`, x.status === 'ReviewRequired' && canAdmin('finance.write') ? `<button class="button" onclick="reviewProviderOutcome(${Number(x.id)})">مراجعة نتيجة المصدر بدليل</button>` : x.status === 'ReviewRequired' ? 'تحتاج مراجعة موظف مالي مفوض؛ لا ينفذ سحب بديل.' : 'خطوات العميل أو التسجيل المحاسبي ما زالت قابلة للاستكمال.')).join('') || 'لا توجد محاولات مفتوحة.';
+    $('#support-review-list').innerHTML = operationalReview.support.map(x => reviewCard(`بلاغ #${x.id} / ${reviewStatus(x.category)} / ${reviewStatus(x.status)}`, `العميل ${operationalUserName(x.userId)}، الرحلة ${x.rideId || '—'}، المسؤول ${operationalUserName(x.assignedAdminId)}، ${x.message}، الرد: ${x.adminReply || '—'}`, `<button class="button" onclick="reviewSupportTicket(${Number(x.id)})">${canAdmin('support.write') ? 'سجل المعالجة والرد والإسناد' : 'عرض سجل المعالجة'}</button>`)).join('') || 'لا توجد بلاغات.';
+    if (reports[0].status === 'rejected') $('#provider-review-list').textContent = 'قسم المزود يتطلب صلاحية مالية؛ تعذر تحميله.';
+    if (results[1].status === 'rejected') $('#support-review-list').textContent = 'قسم البلاغات غير متاح بتفويضك أو تعذر تحميله؛ أعد المحاولة بعد التحقق.';
+    $('#operational-rides').innerHTML = operationalReview.rides.map(x => `<tr><td><span class="cell-main">رحلة #${x.id}</span><span class="cell-sub">${escapeHtml(x.pickupLabel || x.pickupAddress || 'الانطلاق')} ← ${escapeHtml(x.destinationLabel || x.destinationAddress || 'الوجهة')}</span><span class="cell-sub">${date(x.createdAtUtc)}</span></td><td><span class="cell-main">${escapeHtml(x.customerName || operationalUserName(x.customerId))}</span><span class="cell-sub">${escapeHtml(x.driverName || operationalUserName(x.driverId))}</span></td><td>${rideBadge(x.status)}${x.serviceEndedAtUtc ? '<span class="cell-sub">النقل منتهٍ</span>' : ''}</td>${['amountDue','paidAmount','refundedAmount','outstandingAmount','refundDue'].map(key => `<td class="money-cell">${number(x.financial[key])}<span class="cell-sub">${key === 'amountDue' && x.financial.amountUnderReview ? 'قيد الاعتماد' : 'YER'}</span></td>`).join('')}</tr>`).join('') || '<tr><td colspan="8">لا توجد رحلات مطابقة.</td></tr>';
+    $('#operational-audit').innerHTML = operationalReview.audit.map(x => `<tr><td>${escapeHtml(x.subject)} #${x.subjectId}</td><td>${escapeHtml(x.action)}</td><td>${escapeHtml(operationalUserName(x.actorUserId))}</td><td>${date(x.createdAtUtc)}</td><td>${escapeHtml(x.reason)}<span class="cell-sub">${escapeHtml(x.resultJson || '')}</span></td></tr>`).join('') || '<tr><td colspan="5">لا توجد قرارات مسجلة.</td></tr>';
+  } catch (error) { toast(error.message, true); }
+}
+function renderFinancialCases() {
+  const query = $('#financial-case-search').value.toLowerCase().trim();
+  const kinds = {Receivable:'مبلغ غير محصل',Dispute:'اعتراض مالي',CashChange:'باقي نقدي',FareDecrease:'فرق انخفاض الأجرة'};
+  const statuses = {Open:'مستحق غير مسدد',Confirmed:'مستحق أثبتته الإدارة',Disputed:'محل اعتراض',ManualReview:'مراجعة إدارية',AwaitingCustomer:'بانتظار اختيار العميل',AwaitingConsent:'بانتظار الموافقة',AwaitingCashReturn:'اختار الراكب الاسترداد النقدي',Superseded:'استبدل بتسوية أحدث',AwaitingCashReceipt:'بانتظار إثبات استلام النقد',AwaitingProvider:'نتيجة المزود غير محسومة',Resolved:'تمت التسوية'};
+  const rows = operationalReview.financialCases.map(x => ({...x, trip: operationalRideChoices.find(r => Number(r.id) === Number(x.rideId))})).filter(x => `${JSON.stringify(x)} ${operationalUserName(x.customerId)} ${operationalUserName(x.assignedAdminId)} ${statuses[x.status] || ''} ${kinds[x.kind] || ''}`.toLowerCase().includes(query));
+  $('#financial-cases-body').innerHTML = rows.map(x => `<tr><td><span class="cell-main">${escapeHtml(kinds[x.kind] || x.kind)} #${x.id}</span><span class="cell-sub">${escapeHtml(x.trip ? rideChoiceLabel(x.trip) : `رحلة #${x.rideId}`)}</span></td><td><span class="badge ${x.status === 'Resolved' ? 'success' : 'warning'}">${escapeHtml(statuses[x.status] || x.status)}</span><span class="cell-sub">${escapeHtml(operationalUserName(x.assignedAdminId))}</span></td><td><span class="cell-main money-cell">${number(x.amount)} ${escapeHtml(x.currency)}</span><span class="cell-sub">${escapeHtml(x.note || 'لم يسجل أساس القرار بعد')}</span></td><td>${!['Resolved', 'Superseded'].includes(x.status) && canAdmin('refunds.write') ? `<button class="button" onclick="decideFinancialCase(${Number(x.id)})">قرار وإسناد</button>` : x.status === 'Resolved' ? 'أغلقت المعالجة' : 'عرض فقط'}</td></tr>`).join('') || '<tr><td colspan="4">لا توجد معالجات مطابقة.</td></tr>';
+}
+async function decideFinancialCase(id) {
+  if (!canAdmin('refunds.write')) { toast('لا تملك تفويض هذا القرار.', true); return; }
+  try {
+    const item = operationalReview.financialCases.find(x => x.id === id);
+    const choices = [['Assign', 'إسناد المعالجة إلى مسؤول'], ['ManualReview', 'متابعة مراجعة الأدلة']];
+    if (item.kind === 'Receivable') choices.push(['ConfirmDebt', 'إثبات المبلغ المستحق بعد المراجعة'], ['WaiveDebt', 'إسقاط المبلغ وفق قرار موثق']);
+    if (['CashChange', 'FareDecrease'].includes(item.kind)) choices.push(['CashReceiptConfirmed', 'إثبات استلام الباقي النقدي بدليل مستقل']);
+    if (canAdmin('finance.write') && canAdmin('finance.read') && ['CashChange', 'FareDecrease'].includes(item.kind)) choices.push(['VerifiedPayout', 'تسجيل استرداد بديل تم فعلياً بدليل']);
+    const resolution = await reviewChoice('قرار المعالجة المالية', choices); if (!resolution) return;
+    const note = requiredReviewText('أساس القرار والأدلة:');
+    const owner = await chooseAdministrator('refunds');
+    const payout = resolution === 'VerifiedPayout' ? await verifiedPayoutFields(item.amount) : {};
+    const evidenceReference = resolution === 'CashReceiptConfirmed' ? requiredReviewText('مرجع دليل استلام العميل للنقد:') : payout.evidenceReference;
+    await execute('RideFinancialCaseModel', 'update', { id, resolution, note, ...payout, evidenceReference, assignedAdminId: owner ? Number(owner) : undefined });
+    await loadOperationalReview();
+  } catch (error) { toast(error.message, true); }
+}
+async function reviewProviderOutcome(id) {
+  if (!canAdmin('finance.write')) { toast('لا تملك تفويض هذا القرار.', true); return; }
+  try {
+    const item = operationalReview.pendingProviderOperations.find(x => x.id === id);
+    const outcome = await reviewChoice('نتيجة المحاولة في كشف المزود الأصلي', [['Succeeded', 'قبض مؤكد'], ['Failed', 'رفض مؤكد دون قبض']]); if (!outcome) return;
+    const amount = Number(requiredReviewText('المبلغ المثبت في كشف المزود:'));
+    const providerReference = outcome === 'Succeeded' ? requiredReviewText('مرجع القبض لدى المزود (يجب أن يطابق المحاولة):') : (window.prompt('مرجع المزود إن وجد؛ مرجع كشف الرفض مطلوب في الحقل التالي:', item.providerReference || '') || '');
+    const evidenceReference = requiredReviewText('مرجع كشف المزود أو الدليل الذي راجعته:');
+    const reason = requiredReviewText('أساس القرار:');
+    if (!window.confirm(`تأكيد نتيجة ${outcome === 'Succeeded' ? 'قبض مؤكد' : 'رفض مؤكد'} للمحاولة الأصلية ${item.requestId}؟ لا ينفذ أي سحب جديد.`)) return;
+    await walletAdminRequest(`/api/admin/wallet-payments/${id}/review`, { method: 'POST', body: JSON.stringify({ outcome, amount, providerReference, evidenceReference, reason }) });
+    await loadOperationalReview();
+  } catch (error) { toast(error.message, true); }
+}
+async function reviewSupportTicket(id) {
+  try {
+    const result = await execute('SupportTicketModel', 'get', { id });
+    const history = result.data.entries.map(x => `${date(x.createdAtUtc)}: ${x.status} ${x.message}`).join('\n');
+    if (!canAdmin('support.write')) { window.alert(history || 'لا توجد تحديثات بعد.'); return; }
+    const adminReply = requiredReviewText('سجل البلاغ:\n'+history+'\nالرد أو أساس القرار:');
+    const status = await reviewChoice('حالة البلاغ بعد المراجعة', [['Investigating', 'تجري المراجعة'], ['Assigned', 'أُسند إلى مسؤول'], ['AwaitingCustomer', 'بانتظار معلومات العميل'], ['Resolved', 'تمت المعالجة'], ['Closed', 'أُغلق وفق القرار'], ['Open', 'إعادة فتح البلاغ']]); if (!status) return;
+    const owner = await chooseAdministrator('support');
+    const evidenceReference = window.prompt('مرجع دليل (اختياري):') || undefined;
+    await execute('SupportTicketModel', 'update', { id, status, adminReply, evidenceReference, assignedAdminId: owner ? Number(owner) : undefined });
+    await loadOperationalReview();
+  } catch (error) { toast(error.message, true); }
+}
+async function loadOperationalPolicy() {
+  const result = await execute('OperationalPolicyModel', 'get', {});
+  const item = result.data.current || {};
+  const form = $('#operational-policy-form');
+  for (const key of ['arrivalToleranceMeters', 'pickupGraceMinutes', 'decisionResponseMinutes', 'approvalBasis']) form.elements[key].value = item[key] ?? '';
+  $('#operational-policy-result').textContent = result.data.notice;
+}
+async function saveOperationalPolicy(event) {
+  if (!canAdmin('policy.write')) { toast('لا تملك تفويض هذا القرار.', true); return; }
+  event.preventDefault();
+  const form = event.target;
+  try {
+    const data = { approvalBasis: form.elements.approvalBasis.value.trim() };
+    for (const key of ['arrivalToleranceMeters', 'pickupGraceMinutes', 'decisionResponseMinutes']) data[key] = form.elements[key].value.trim() === '' ? null : Number(form.elements[key].value);
+    await execute('OperationalPolicyModel', 'update', data); await loadOperationalPolicy(); toast('حفظت نسخة سياسة جديدة للرحلات الجديدة.');
+  } catch (error) { toast(error.message, true); }
+}
+async function loadAccessGovernance() {
+  if (canAdmin('permissions.read')) {
+    const admins = await execute('AdministratorPermissionModel', 'list', {});
+    administratorChoices = admins.data || [];
+    const select = $('#administrator-permissions-form').elements.userId; const selected = select.value;
+    select.innerHTML = '<option value="">اختر المسؤول بالاسم</option>' + administratorChoices.map(x => `<option value="${Number(x.id)}">${escapeHtml(x.displayName || 'مسؤول')} ${x.isSystemAdministrator ? '· مسؤول النظام' : ''}</option>`).join('');
+    select.value = selected || (administratorChoices.some(x => Number(x.id) === currentAdministratorId) ? String(currentAdministratorId) : '');
+    await readAdministratorPermissions(select.form);
+  }
+  if (canAdmin('personal_data.read')) { const names = await execute('AdministrativeLookupModel', 'list', {kind:'users',scope:'personal_data'}); operationalUserNames = new Map((names.data || []).map(x => [Number(x.id),x.displayName || 'بدون اسم'])); }
+  if (!canAdmin('personal_data.read')) { $('#deletion-request-list').textContent = 'قسم طلبات الحذف يتطلب تفويض البيانات الشخصية.'; return; }
+  const result = await execute('AccountDeletionModel', 'list', {});
+  $('#deletion-request-list').innerHTML = (result.data || []).map(x => reviewCard(`طلب #${x.id} / ${operationalUserName(x.userId)} / ${reviewStatus(x.status)}`, `${x.reason}، قرار الإدارة: ${x.adminNote || 'لم يقرر بعد'}`, x.status === 'Pending' && canAdmin('personal_data.write') ? `<button class="button" onclick="decideDeletionRequest(${x.id})">مراجعة الالتزامات والقرار</button>` : '')).join('') || 'لا توجد طلبات.';
+}
+async function decideDeletionRequest(id) {
+  if (!canAdmin('personal_data.write')) { toast('لا تملك تفويض هذا القرار.', true); return; }
+  try {
+    const state = await execute('AccountDeletionModel', 'get', { id });
+    window.alert(`رصيد المحفظة ${number(state.data.walletBalance)} YER، مراجعة التزامات: ${state.data.financialReviewRequired ? 'نعم' : 'لا'}\n${state.data.notice}`);
+    const decision = await reviewChoice('قرار طلب حذف الحساب', [['Approve', 'تعطيل الحساب بعد التسوية ومراجعة الاحتفاظ'], ['Reject', 'رفض الطلب مع بيان السبب']]); if (!decision) return;
+    const reason = requiredReviewText('سبب القرار والأساس النظامي للاحتفاظ:');
+    await execute('AccountDeletionModel', 'update', { id, decision, reason }); await loadAccessGovernance();
+  } catch (error) { toast(error.message, true); }
+}
+async function readAdministratorPermissions(form) {
+  if (!form.elements.userId.value) return;
+  try {
+    const result = await execute('AdministratorPermissionModel', 'get', { userId: Number(form.elements.userId.value) });
+    const protectedAccount = result.data.isSystemAdministrator || Number(result.data.userId) === currentAdministratorId;
+    form.dataset.protectedAccount = protectedAccount ? 'true' : 'false';
+    form.querySelectorAll('[name=permission]').forEach(input => { input.checked = result.data.permissions.includes('*') || result.data.permissions.includes(input.value); input.disabled = protectedAccount || !canAdmin('permissions.write'); });
+    form.elements.reason.disabled = protectedAccount || !canAdmin('permissions.write');
+    form.querySelector('[type=submit]').disabled = protectedAccount || !canAdmin('permissions.write');
+    $('#administrator-permissions-notice').textContent = result.data.isSystemAdministrator ? 'مسؤول النظام: جميع الصلاحيات الأصلية ممنوحة تلقائياً ومحمية من التعديل. اختر حساباً آخر لإدارة تفويضه.' : protectedAccount ? 'لا يمكنك تعديل تفويض حسابك بنفسك. اختر موظفاً آخر.' : 'يمكنك تعديل تفويض هذا المسؤول وتوثيق سبب التغيير.';
+  } catch (error) { form.querySelector('[type=submit]').disabled = true; toast(error.message, true); }
+}
+async function saveAdministratorPermissions(event) {
+  if (event.target.dataset.protectedAccount === 'true') { event.preventDefault(); return; }
+  if (!canAdmin('permissions.write')) { toast('لا تملك تفويض هذا القرار.', true); return; }
+  event.preventDefault(); const form = event.target;
+  try { await execute('AdministratorPermissionModel', 'update', { userId: Number(form.elements.userId.value), permissions: Array.from(form.querySelectorAll('[name=permission]:checked'), input => input.value), reason: form.elements.reason.value }); toast('حفظ التفويض مع سجل القرار.'); await readAdministratorPermissions(form); }
+  catch (error) { toast(error.message, true); }
+}

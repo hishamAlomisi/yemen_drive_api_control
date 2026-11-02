@@ -124,7 +124,7 @@ public sealed class RideWaiting(
     private async Task<bool> HasPaymentStartedAsync(int rideId, CancellationToken ct) =>
         await db.PaymentWalletOperations.AnyAsync(x => x.RideId == rideId && x.IsOpen, ct) ||
         await db.PaymentTransactions.AnyAsync(x => x.RideId == rideId &&
-            (x.Status == PaymentStatus.Pending || x.Status == PaymentStatus.Authorized || x.Status == PaymentStatus.Paid), ct) ||
+            (x.Status == PaymentStatus.Pending || x.Status == PaymentStatus.Authorized), ct) ||
         await db.CashPaymentRequests.AnyAsync(x => x.RideId == rideId &&
             (x.Status == CashPaymentRequestStatus.Pending || x.Status == CashPaymentRequestStatus.DriverConfirmed), ct) ||
         await db.CashCollectionApprovals.AnyAsync(x => x.RideId == rideId &&

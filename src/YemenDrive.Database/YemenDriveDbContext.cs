@@ -7,6 +7,8 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     : DbContext(options)
 {
     public DbSet<User> Users => Set<User>();
+    public DbSet<OperationalPolicy> OperationalPolicies => Set<OperationalPolicy>();
+    public DbSet<PickupContactAttempt> PickupContactAttempts => Set<PickupContactAttempt>();
     public DbSet<TrustedDevice> TrustedDevices => Set<TrustedDevice>();
     public DbSet<AuthSession> AuthSessions => Set<AuthSession>();
     public DbSet<DriverProfile> DriverProfiles => Set<DriverProfile>();
@@ -18,6 +20,9 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<RideOffer> RideOffers => Set<RideOffer>();
     public DbSet<RideSearchView> RideSearchViews => Set<RideSearchView>();
     public DbSet<Wallet> Wallets => Set<Wallet>();
+    public DbSet<WalletTransfer> WalletTransfers => Set<WalletTransfer>();
+    public DbSet<WalletLedgerApplication> WalletLedgerApplications => Set<WalletLedgerApplication>();
+    public DbSet<WalletTransferFeeRule> WalletTransferFeeRules => Set<WalletTransferFeeRule>();
     public DbSet<WalletTransaction> WalletTransactions => Set<WalletTransaction>();
     public DbSet<LocationUpdate> LocationUpdates => Set<LocationUpdate>();
     public DbSet<Notification> Notifications => Set<Notification>();
@@ -35,6 +40,11 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<PaymentWalletOperation> PaymentWalletOperations => Set<PaymentWalletOperation>();
     public DbSet<Promotion> Promotions => Set<Promotion>();
     public DbSet<SupportTicket> SupportTickets => Set<SupportTicket>();
+    public DbSet<RideFinancialCase> RideFinancialCases => Set<RideFinancialCase>();
+    public DbSet<OperationalDecisionAudit> OperationalDecisionAudits => Set<OperationalDecisionAudit>();
+    public DbSet<AccountDeletionRequest> AccountDeletionRequests => Set<AccountDeletionRequest>();
+    public DbSet<SupportTicketEntry> SupportTicketEntries => Set<SupportTicketEntry>();
+    public DbSet<AdministratorPermission> AdministratorPermissions => Set<AdministratorPermission>();
     public DbSet<ReferralRedemption> ReferralRedemptions => Set<ReferralRedemption>();
     public DbSet<PricingRule> PricingRules => Set<PricingRule>();
     public DbSet<RidePricingQuote> RidePricingQuotes => Set<RidePricingQuote>();
@@ -72,8 +82,21 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
+    private void NormalizeWalletDebtCredits()
+    {
+        foreach (var entry in ChangeTracker.Entries<Wallet>().Where(x => x.State is EntityState.Added or EntityState.Modified).ToArray()) {
+            var wallet = entry.Entity;
+            if (wallet.LedgerDebt <= 0 || wallet.Balance <= 0) continue;
+            var debtBeforeCredit = wallet.LedgerDebt;
+            var settled = Math.Min(wallet.Balance, debtBeforeCredit);
+            wallet.Balance -= settled; wallet.LedgerDebt -= settled;
+            foreach (var movement in ChangeTracker.Entries<WalletTransaction>().Where(x => x.State == EntityState.Added && x.Entity.WalletId == wallet.Id))
+                movement.Entity.BalanceAfter -= debtBeforeCredit;
+        }
+    }
     private void EnforceJournalImmutability()
     {
+        NormalizeWalletDebtCredits();
         foreach (var entry in ChangeTracker.Entries<JournalEntry>())
         {
             if (entry.State is not (EntityState.Modified or EntityState.Deleted)) continue;
@@ -147,7 +170,7 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<SavedPlace>().HasIndex(x => new { x.UserId, x.Label });
         modelBuilder.Entity<SavedPlace>().Property(x => x.Kind).HasMaxLength(32).IsRequired();
         modelBuilder.Entity<SavedPlace>().Property(x => x.LocationKey).HasMaxLength(48).IsRequired();
-        modelBuilder.Entity<SavedPlace>().HasIndex(x => new { x.UserId, x.LocationKey }).IsUnique();
+        modelBuilder.Entity<SavedPlace>().HasIndex(x => new { x.UserId, x.LocationKey });
         modelBuilder.Entity<ServiceArea>().HasIndex(x => new { x.CountryCode, x.CityNameAr }).IsUnique();
         modelBuilder.Entity<ServiceArea>().Property(x => x.CountryCode).HasMaxLength(8).IsRequired();
         modelBuilder.Entity<ServiceArea>().Property(x => x.CountryNameAr).HasMaxLength(100).IsRequired();
@@ -172,7 +195,25 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
             .HasOne(x => x.Ride).WithMany().HasForeignKey(x => x.RideId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<DriverLiveLocation>().HasIndex(x => x.DriverId).IsUnique();
         modelBuilder.Entity<Wallet>().HasIndex(x => x.UserId).IsUnique();
+        modelBuilder.Entity<WalletLedgerApplication>().HasIndex(x => new { x.JournalEntryId, x.WalletId }).IsUnique();
+        modelBuilder.Entity<WalletLedgerApplication>().Property(x => x.DebtApprovalReason).HasMaxLength(1000);
+        modelBuilder.Entity<WalletLedgerApplication>().HasOne(x => x.JournalEntry).WithMany().HasForeignKey(x => x.JournalEntryId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<WalletLedgerApplication>().HasOne(x => x.Wallet).WithMany().HasForeignKey(x => x.WalletId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<WalletTransfer>().HasIndex(x => x.Reference).IsUnique();
+        modelBuilder.Entity<WalletTransfer>().HasIndex(x => new { x.SenderUserId, x.RequestId }).IsUnique();
+        modelBuilder.Entity<WalletTransfer>().Property(x => x.RecipientName).HasMaxLength(250);
+        modelBuilder.Entity<WalletTransfer>().Property(x => x.RecipientPhone).HasMaxLength(30);
+        modelBuilder.Entity<WalletTransfer>().Property(x => x.Note).HasMaxLength(500);
+        modelBuilder.Entity<WalletTransfer>().Property(x => x.Currency).HasMaxLength(12);
+        modelBuilder.Entity<WalletTransfer>().Property(x => x.FeeKind).HasMaxLength(16);
+        modelBuilder.Entity<WalletTransferFeeRule>().Property(x => x.FeeKind).HasMaxLength(16);
+        modelBuilder.Entity<WalletTransfer>().HasOne<User>().WithMany().HasForeignKey(x => x.SenderUserId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<WalletTransfer>().HasOne<User>().WithMany().HasForeignKey(x => x.RecipientUserId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<WalletTransfer>().HasOne<WalletTransferFeeRule>().WithMany().HasForeignKey(x => x.FeeRuleId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<WalletTransfer>().ToTable(t => t.HasCheckConstraint("CK_WalletTransfer_Amounts", "[Amount] > 0 AND [Fee] >= 0 AND [SenderUserId] <> [RecipientUserId]"));
+        modelBuilder.Entity<WalletTransferFeeRule>().ToTable(t => t.HasCheckConstraint("CK_WalletTransferFeeRule_Range", "[FromAmount] >= 0 AND ([ToAmount] IS NULL OR [ToAmount] > [FromAmount]) AND [FeeValue] >= 0 AND [FeeKind] IN ('Fixed','Percent')"));
         modelBuilder.Entity<Wallet>().Property(x => x.RowVersion).IsRowVersion();
+        modelBuilder.Entity<Wallet>().ToTable(t => t.HasCheckConstraint("CK_Wallets_LedgerDebt", "[LedgerDebt] >= 0 AND ([LedgerDebt] = 0 OR [Balance] = 0)"));
         modelBuilder.Entity<Wallet>().ToTable(table => table.HasCheckConstraint(
             "CK_Wallets_Balance_NonNegative", "[Balance] >= 0"));
         modelBuilder.Entity<WalletTransaction>().HasIndex(x => new { x.WalletId, x.CreatedAtUtc });
@@ -185,7 +226,7 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<PaymentTransaction>().HasIndex(x => new { x.UserId, x.IdempotencyKey })
             .IsUnique().HasFilter("[IdempotencyKey] IS NOT NULL");
         modelBuilder.Entity<PaymentTransaction>().HasIndex(x => x.RideId)
-            .IsUnique().HasFilter("[RideId] IS NOT NULL AND [Status] = 2");
+            .IsUnique().HasFilter("[RideId] IS NOT NULL AND [Status] = 2 AND [IsSupplemental] = 0");
         modelBuilder.Entity<PaymentTransaction>().ToTable(table => table.HasCheckConstraint(
             "CK_PaymentTransactions_Amount_Positive", "[Amount] > 0"));
         modelBuilder.Entity<PaymentMethod>().HasIndex(x => x.Code).IsUnique();
@@ -249,6 +290,8 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<CashPaymentRequest>().Property(x => x.DecisionNote).HasMaxLength(500);
         modelBuilder.Entity<CashPaymentRequest>().ToTable(table => table.HasCheckConstraint(
             "CK_CashPaymentRequests_Amount_Positive", "[Amount] > 0"));
+        modelBuilder.Entity<RideCancellationRequest>().Property(x => x.RefundPayoutEvidenceReference).HasMaxLength(1000);
+        modelBuilder.Entity<RideCancellationRequest>().HasOne<LedgerAccount>().WithMany().HasForeignKey(x => x.RefundFundingLedgerAccountId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<RideCancellationRequest>().Property(x => x.RowVersion).IsRowVersion();
         modelBuilder.Entity<RideCancellationRequest>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
         modelBuilder.Entity<RideCancellationRequest>().HasIndex(x => new { x.RideId, x.Status })
@@ -316,9 +359,30 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<Promotion>().HasIndex(x => x.Code).IsUnique();
         modelBuilder.Entity<SupportTicket>().HasIndex(x => new { x.UserId, x.CreatedAtUtc });
         modelBuilder.Entity<SupportTicket>().Property(x => x.Category).HasMaxLength(100).IsRequired();
-        modelBuilder.Entity<SupportTicket>().Property(x => x.Message).HasMaxLength(2000).IsRequired();
+        modelBuilder.Entity<SupportTicket>().Property(x => x.Message).HasMaxLength(10000).IsRequired();
         modelBuilder.Entity<SupportTicket>().Property(x => x.Status).HasMaxLength(32).IsRequired();
-        modelBuilder.Entity<SupportTicket>().Property(x => x.AdminReply).HasMaxLength(2000);
+        modelBuilder.Entity<SupportTicket>().Property(x => x.AdminReply).HasMaxLength(10000);
+        modelBuilder.Entity<OperationalPolicy>().Property(x => x.ApprovalBasis).HasMaxLength(2000).IsRequired();
+        modelBuilder.Entity<OperationalPolicy>().HasOne<User>().WithMany().HasForeignKey(x => x.ApprovedByUserId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<PickupContactAttempt>().Property(x => x.Outcome).HasMaxLength(1000).IsRequired();
+        modelBuilder.Entity<PickupContactAttempt>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
+        modelBuilder.Entity<PickupContactAttempt>().HasOne<Ride>().WithMany().HasForeignKey(x => x.RideId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<PickupContactAttempt>().HasOne<User>().WithMany().HasForeignKey(x => x.ActorUserId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<RideCancellationRequest>().HasOne<User>().WithMany().HasForeignKey(x => x.AssignedAdminId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<RideCancellationRequest>().HasIndex(x => new { x.Status, x.ReviewDueAtUtc });
+        modelBuilder.Entity<RideFinancialCase>().HasOne<User>().WithMany().HasForeignKey(x => x.AssignedAdminId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<RideFinancialCase>().Property(x => x.Kind).HasMaxLength(40);
+        modelBuilder.Entity<RideFinancialCase>().Property(x => x.Status).HasMaxLength(40);
+        modelBuilder.Entity<RideFinancialCase>().Property(x => x.Note).HasMaxLength(10000);
+        modelBuilder.Entity<RideFinancialCase>().Property(x => x.EvidenceReference).HasMaxLength(1000);
+        modelBuilder.Entity<RideFinancialCase>().Property(x => x.RowVersion).IsRowVersion();
+        modelBuilder.Entity<RideFinancialCase>().Property(x => x.SourceReference).HasMaxLength(160);
+        modelBuilder.Entity<RideFinancialCase>().HasIndex(x => x.SourceReference).IsUnique();
+        modelBuilder.Entity<RideFinancialCase>().HasOne(x => x.Ride).WithMany().HasForeignKey(x => x.RideId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<AdministratorPermission>().Property(x => x.Permission).HasMaxLength(80);
+        modelBuilder.Entity<AdministratorPermission>().HasIndex(x => new { x.UserId, x.Permission }).IsUnique();
+        modelBuilder.Entity<AccountDeletionRequest>().HasIndex(x => x.UserId).IsUnique().HasFilter("[Status] = 'Pending'");
+        modelBuilder.Entity<SupportTicketEntry>().HasOne<SupportTicket>().WithMany().HasForeignKey(x => x.SupportTicketId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<ReferralRedemption>().HasIndex(x => new { x.UserId, x.Code });
         modelBuilder.Entity<ReferralRedemption>().Property(x => x.Code).HasMaxLength(100).IsRequired();
         modelBuilder.Entity<ReferralRedemption>().Property(x => x.Status).HasMaxLength(32).IsRequired();

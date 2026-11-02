@@ -111,7 +111,9 @@ internal static class RouteChangeScenarios
         // Every paid collection is made against the final authoritative total.
         Ok(await Execute(collection, "add", new DriverCashPaymentModel(ride.Id, 1279, "YER", null, "route-final")));
         Is(await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && x.Amount == 1279 && x.Status == PaymentStatus.Paid), "collection includes both changes and waiting exactly once");
-        Is(!(await Execute(passenger, "quote", quote with { RequestKey = Guid.NewGuid() })).Success, "paid ride cannot be repriced");
+        ride.CustomerPaymentEnabled = true; await db.SaveChangesAsync();
+        var afterPaidQuote = Data(await Execute(passenger, "quote", quote with { RequestKey = Guid.NewGuid(), NewDestinationLatitude = 15.33, NewDestinationLongitude = 44.33, NewDestinationLabel = "وجهة إضافية بعد الدفع" }));
+        Is(afterPaidQuote.GetProperty("request").GetProperty("invoice").GetProperty("netPaid").GetDecimal() == 1279, "enabled payment does not block route quote and paid amount is credited in invoice");
         Console.WriteLine("PASS: route preview/consent, GPS travelled fare, waiting exclusion, negotiated rate, successive changes, stale/expired/rejected requests, payment locks, report and collection.");
     }
     private static Task<ApiResult> Execute<T>(ModelService<T> service, string operation, T model) where T : class => service.ExecuteAsync(operation, JsonSerializer.SerializeToElement(model), CancellationToken.None);

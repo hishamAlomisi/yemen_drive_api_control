@@ -9,279 +9,77 @@ using YemenDrive.Application.Payments;
 using YemenDrive.Services.Operations;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
-using CashCollectionApprovalEntity = YemenDrive.Database.Entities.CashCollectionApproval;
-using CashPaymentRequestEntity = YemenDrive.Database.Entities.CashPaymentRequest;
 
 namespace YemenDrive.Application.DriverPayments;
 
-public sealed class DriverCashPayment(
-    YemenDriveDbContext db,
-    DatabaseConfigurationStore config,
-    ICurrentUserContext currentUser,
-    RideAccountingPostingService accounting,
+public sealed class DriverCashPayment(YemenDriveDbContext db, DatabaseConfigurationStore config,
+    ICurrentUserContext currentUser, RideAccountingPostingService accounting,
     IRideRealtimePublisher? realtimePublisher = null) : OperationsService<DriverCashPaymentModel>(config)
 {
     protected override async Task<object?> AddAsync(DriverCashPaymentModel model, CancellationToken token)
     {
-        var driverId = currentUser.UserId ?? throw new ServiceException(
-            "authentication_required", "يجب تسجيل الدخول كسائق.");
-        if (model.RideId is null || model.CashReceived < 0)
-            throw new ServiceException("invalid_cash_payment", "الرحلة والمبلغ المقبوض مطلوبان.");
-
-        var idempotencyKey = NormalizeIdempotencyKey(model.IdempotencyKey);
-        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+        var driverId = currentUser.RequireUserId();
+        if (model.RideId == null || model.CashReceived <= 0 || string.IsNullOrWhiteSpace(model.IdempotencyKey) || model.IdempotencyKey.Length > 128)
+            throw new ServiceException("invalid_cash_payment", "حدد الرحلة والنقد المقبوض فعلياً ومرجع تحصيل جديداً لكل قبض.");
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         await RidePaymentGuard.LockAsync(db, model.RideId.Value, token);
-        var ride = await db.Rides.SingleOrDefaultAsync(x => x.Id == model.RideId.Value, token)
-            ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
-
-        if (ride.DriverId != driverId)
-            throw new ServiceException("ride_access_denied", "هذه الرحلة ليست مسندة إلى السائق الحالي.");
-
-        var cashReference = $"cash:ride:{ride.Id}:driver:{driverId}";
-        if (idempotencyKey is not null)
-        {
-            var existing = await db.PaymentTransactions.AsNoTracking()
-                .SingleOrDefaultAsync(x => x.UserId == ride.CustomerId && x.RideId == ride.Id &&
-                    x.Provider == "Cash" && x.IdempotencyKey == idempotencyKey, token);
-            if (existing is not null)
-                return await ToExistingResultAsync(existing, token);
-        }
-
-        var existingCashPayment = await db.PaymentTransactions.AsNoTracking()
-            .SingleOrDefaultAsync(x => x.ProviderReference == cashReference, token);
-        if (existingCashPayment is not null)
-            return await ToExistingResultAsync(existingCashPayment, token);
-
-        if (ride.DriverId != driverId)
-            throw new ServiceException("ride_access_denied", "هذه الرحلة ليست مسندة إلى السائق الحالي.");
+        var ride = await db.Rides.SingleAsync(x => x.Id == model.RideId, token);
+        if (ride.DriverId != driverId) throw new ServiceException("ride_access_denied", "الرحلة ليست مسندة إليك.");
+        var reference = $"cash:ride:{ride.Id}:{model.IdempotencyKey}";
+        var existing = await db.PaymentTransactions.SingleOrDefaultAsync(x => x.ProviderReference == reference, token);
+        if (existing != null) { if (existing.PhysicalCashReceived != model.CashReceived) throw new ServiceException("cash_reference_conflict", "مرجع التحصيل مستخدم بمبلغ آخر. لم تسجل دفعة جديدة."); await tx.CommitAsync(token); return await ResultAsync(ride, existing, model.CashReceived, true, token); }
+        if (ride.Status is not (RideStatus.InProgress or RideStatus.Completed or RideStatus.Cancelled))
+            throw new ServiceException("ride_payment_not_ready", "التحصيل النقدي متاح أثناء النقل أو بعد انتهائه.");
+        if (ride.PaymentMethodCode != "cash") throw new ServiceException("cash_payment_not_selected", "يجب أن يختار الراكب النقد قبل تسجيل التحصيل.");
         await RidePaymentGuard.EnsureAvailableAsync(db, ride.Id, token);
-        if (!string.Equals(ride.PaymentMethodCode, "cash", StringComparison.OrdinalIgnoreCase))
-            throw new ServiceException("cash_payment_not_selected", "اختار الراكب الدفع بالمحفظة. يجب أن يختار النقد بنفسه قبل تسجيل تحصيل نقدي.");
-        CashPaymentRequestEntity? confirmedCustomerCashRequest = null;
-        if (ride.Status != RideStatus.InProgress)
-        {
-            if (ride.Status != RideStatus.Completed)
-                throw new ServiceException("ride_payment_not_ready", "لا يمكن تسجيل التحصيل النقدي في حالة الرحلة الحالية.");
-            confirmedCustomerCashRequest = await db.CashPaymentRequests.SingleOrDefaultAsync(x =>
-                x.RideId == ride.Id && x.DriverId == driverId &&
-                x.Status == CashPaymentRequestStatus.DriverConfirmed, token);
-            if (confirmedCustomerCashRequest is null)
-                throw new ServiceException("cash_confirmation_required", "يلزم تأكيد طلب العميل للدفع النقدي أولاً.");
-        }
-
+        await RidePaymentPolicy.EnsureNoPendingDecisionAsync(db, ride.Id, token, collectingConfirmedCash: true);
+        var confirmedCash = await db.CashPaymentRequests.SingleOrDefaultAsync(x => x.RideId == ride.Id && x.Status == CashPaymentRequestStatus.DriverConfirmed, token);
+        if (confirmedCash != null && model.CashReceived < confirmedCash.Amount) throw new ServiceException("cash_confirmation_amount_conflict", "النقد أقل من المبلغ الذي أكدت استلامه سابقاً. تحتاج المطالبة إلى مراجعة قبل تسجيل مبلغ مختلف.");
         await new RideWaitingCoordinator(db).EnsureSettledAsync(ride, token);
-        var fare = (ride.CustomerPrice ?? ride.ServerPrice
-            ?? throw new ServiceException("fare_not_set", "لا يوجد مبلغ متفق عليه لهذه الرحلة.")) + ride.WaitingFee;
-        var totalDue = ride.TotalAmount ?? fare + ride.ServiceFee;
-        var wallet = await db.Wallets.SingleOrDefaultAsync(x => x.UserId == ride.CustomerId, token)
-            ?? throw new ServiceException("wallet_not_found", "محفظة العميل غير موجودة.");
-        var currency = string.IsNullOrWhiteSpace(model.Currency) ? wallet.Currency : model.Currency.Trim();
-        if (!string.Equals(currency, wallet.Currency, StringComparison.OrdinalIgnoreCase))
-            throw new ServiceException("currency_mismatch", "عملة التحصيل لا تطابق عملة محفظة العميل.");
-        var difference = model.CashReceived - totalDue;
-        CashCollectionApprovalEntity? approvedShortfall = null;
-        if (difference < 0)
-        {
-            var shortfall = Math.Abs(difference);
-            approvedShortfall = await db.CashCollectionApprovals.SingleOrDefaultAsync(x =>
-                x.RideId == ride.Id && x.DriverId == driverId &&
-                x.Status == CashCollectionApprovalStatus.Approved &&
-                x.CashReceived == model.CashReceived && x.WalletDebitAmount == shortfall, token);
-            if (approvedShortfall is null)
-            {
-                var pending = await db.CashCollectionApprovals.SingleOrDefaultAsync(x =>
-                    x.RideId == ride.Id && x.Status == CashCollectionApprovalStatus.Pending, token);
-                if (pending is not null)
-                {
-                    await transaction.CommitAsync(token);
-                    return new { rideId = ride.Id, requiresCustomerApproval = true, approvalId = pending.Id, walletDebitAmount = pending.WalletDebitAmount, message = "بانتظار موافقة العميل على خصم الفرق من محفظته." };
-                }
-                if (wallet.Balance < shortfall)
-                {
-                    db.Notifications.Add(new Notification { UserId = ride.CustomerId, Type = NotificationType.Payment, Title = "تعذر تغطية فرق الرحلة", Body = "رصيد محفظتك لا يكفي لتغطية الفرق المطلوب من الدفع النقدي.", DataJson = $"{{\"action\":\"open_wallet\",\"rideId\":{ride.Id}}}" });
-                    await db.SaveChangesAsync(token);
-                    await transaction.CommitAsync(token);
-                    if (realtimePublisher is not null)
-                        await realtimePublisher.PublishPaymentUpdatedAsync(
-                            [ride.CustomerId, driverId],
-                            new PaymentRealtimeEvent(
-                                ride.Id, "cashCollectionInsufficientBalance", DateTime.UtcNow),
-                            token);
-                    return new { rideId = ride.Id, rejected = true, reason = "insufficient_wallet_balance", message = "رصيد محفظة العميل لا يكفي لتغطية الفرق؛ لم تسجل العملية." };
-                }
-                var approval = new CashCollectionApprovalEntity
-                {
-                    RideId = ride.Id, DriverId = driverId, CustomerId = ride.CustomerId,
-                    CashReceived = model.CashReceived, WalletDebitAmount = shortfall,
-                    Currency = currency, IdempotencyKey = idempotencyKey
-                };
-                db.CashCollectionApprovals.Add(approval);
-                await db.SaveChangesAsync(token);
-                db.Notifications.Add(new Notification { UserId = ride.CustomerId, Type = NotificationType.Payment, Title = "موافقة مطلوبة لتغطية فرق الرحلة", Body = $"استلم السائق مبلغاً أقل من إجمالي الرحلة. وافق على خصم {shortfall:0.##} {currency} من محفظتك لإتمام التحصيل.", DataJson = $"{{\"action\":\"approve_cash_shortfall\",\"cashCollectionApprovalId\":{approval.Id},\"rideId\":{ride.Id}}}" });
-                await db.SaveChangesAsync(token);
-                await transaction.CommitAsync(token);
-                if (realtimePublisher is not null)
-                    await realtimePublisher.PublishCashApprovalUpdatedAsync(
-                        [ride.CustomerId, driverId],
-                        new PaymentRealtimeEvent(
-                            ride.Id,
-                            "cashShortfallRequested",
-                            DateTime.UtcNow,
-                            CashCollectionApprovalId: approval.Id),
-                        token);
-                return new { rideId = ride.Id, requiresCustomerApproval = true, approvalId = approval.Id, walletDebitAmount = shortfall, message = "أُرسل طلب موافقة للعميل؛ لن تكتمل الرحلة قبل قراره." };
-            }
-        }
-
-        if (difference > 0)
-        {
-            wallet.Balance += difference;
-            db.WalletTransactions.Add(new WalletTransaction
-            {
-                WalletId = wallet.Id, RideId = ride.Id,
-                Type = WalletTransactionType.Credit, Amount = difference,
-                BalanceAfter = wallet.Balance,
-                Description = "إرجاع المبلغ الزائد من الدفع النقدي"
-            });
-            db.Notifications.Add(new Notification
-            {
-                UserId = ride.CustomerId,
-                Type = NotificationType.Payment,
-                Title = "أُضيف المبلغ الزائد إلى محفظتك",
-                Body = $"أعاد السائق {difference:0.##} {currency} إلى محفظتك من الرحلة #{ride.Id}.",
-                DataJson = $"{{\"action\":\"open_wallet\",\"rideId\":{ride.Id}}}"
-            });
-        }
-        else if (difference < 0)
-        {
-            var debit = Math.Abs(difference);
-            wallet.Balance -= debit;
-            db.WalletTransactions.Add(new WalletTransaction
-            {
-                WalletId = wallet.Id, RideId = ride.Id,
-                Type = WalletTransactionType.Debit, Amount = debit,
-                BalanceAfter = wallet.Balance,
-                Description = "خصم الفرق المتبقي من أجرة الرحلة"
-            });
-            db.Notifications.Add(new Notification
-            {
-                UserId = ride.CustomerId,
-                Type = NotificationType.Payment,
-                Title = "خُصم الفرق من محفظتك",
-                Body = $"خُصم {debit:0.##} {currency} لإكمال دفع الرحلة #{ride.Id}.",
-                DataJson = $"{{\"action\":\"open_wallet\",\"rideId\":{ride.Id}}}"
-            });
-        }
-
-        var platformReceivable = ride.PlatformShare ?? ride.ServiceFee + ride.DriverCommissionAmount;
-        var payment = new PaymentTransaction
-        {
-            UserId = ride.CustomerId, RideId = ride.Id, Amount = totalDue,
-            Currency = currency,
-            Provider = "Cash", Status = PaymentStatus.Paid,
-            ProviderReference = cashReference,
-            IdempotencyKey = idempotencyKey
-        };
+        var money = await RideFinancialState.ReadAsync(db, ride, token);
+        if (money.AmountUnderReview) throw new ServiceException("cancellation_amount_under_review", "تحتاج أجرة الإلغاء إلى مراجعة الجزء المنفذ والمسؤولية قبل التحصيل.");
+        if (money.OutstandingAmount <= 0) throw new ServiceException("ride_already_paid", "لا يوجد مبلغ رحلة متبقٍ للتحصيل. لا تسجل النقد مرة أخرى.");
+        var applied = Math.Min(model.CashReceived, money.OutstandingAmount);
+        var excess = model.CashReceived - applied;
+        var payment = new PaymentTransaction { RideId = ride.Id, UserId = ride.CustomerId, Amount = applied,
+            Currency = "YER", Provider = "Cash", PhysicalCashReceived = model.CashReceived, Status = PaymentStatus.Paid,
+            ProviderReference = reference, IdempotencyKey = model.IdempotencyKey.Trim() };
+        var allocation = await RideFinancialState.AllocateReceiptAsync(db, ride, payment, token);
         db.PaymentTransactions.Add(payment);
-        // The driver physically holds every cash amount received. Besides the
-        // platform share, any excess returned to the customer's wallet is a
-        // separate receivable from that same driver; it must therefore appear
-        // in the settlement balance as well as in the ledger journal.
-        var customerWalletExcess = Math.Max(0m, difference);
-        var driverNet = ride.DriverShare ?? fare - ride.DriverCommissionAmount;
-        var driverSettlementReceivable = Math.Max(0m, model.CashReceived - driverNet);
-        var driverWalletCredit = Math.Max(0m, driverNet - model.CashReceived);
-        if (driverWalletCredit > 0)
+        await accounting.PostCashCollectionAsync(allocation, payment, applied, 0m, driverId, token);
+        var driverDebt = applied - (payment.DriverNetAmount ?? 0m);
+        if (driverDebt > 0) db.DriverSettlements.Add(new() { DriverId = driverId, PeriodStartUtc = DateTime.UtcNow,
+            PeriodEndUtc = DateTime.UtcNow, GrossRideAmount = applied, PlatformCommission = driverDebt,
+            NetPayable = -driverDebt, Status = PaymentStatus.Pending, PaymentReference = reference });
+        RideFinancialCase? change = null;
+        if (excess > 0)
         {
-            var driverWallet = await db.Wallets.SingleAsync(x => x.UserId == driverId, token);
-            if (driverWallet.Currency != currency) throw new ServiceException("currency_mismatch", "عملة محفظة السائق لا تطابق الدفعة.");
-            driverWallet.Balance += driverWalletCredit;
-            db.WalletTransactions.Add(new WalletTransaction { WalletId = driverWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Credit,
-                Amount = driverWalletCredit, BalanceAfter = driverWallet.Balance, Description = "مستحق السائق المغطى من محفظة العميل" });
+            change = new() { RideId = ride.Id, CustomerId = ride.CustomerId, DriverId = driverId, Kind = "CashChange",
+                Status = "AwaitingCustomer", Amount = excess, SourceReference = $"cash-change:{ride.Id}:{model.IdempotencyKey}",
+                Note = "الباقي النقدي حق للعميل. الأصل إعادته نقداً؛ إضافته للمحفظة تتطلب اختياره الصريح." };
+            db.RideFinancialCases.Add(change);
+            await RideFinancialCaseService.CashChangePostingAsync(db, change, false, driverId, token, hold: true);
         }
-        if (driverSettlementReceivable > 0)
-        {
-            // With cash, the driver physically holds the whole amount. The
-            // platform share and any excess credited to the customer wallet
-            // remain documented debts; no driver wallet is debited.
-            db.DriverSettlements.Add(new DriverSettlement
-            {
-                DriverId = driverId,
-                PeriodStartUtc = DateTime.UtcNow,
-                PeriodEndUtc = DateTime.UtcNow,
-                GrossRideAmount = totalDue,
-                PlatformCommission = platformReceivable,
-                Adjustments = customerWalletExcess,
-                NetPayable = -driverSettlementReceivable,
-                Status = PaymentStatus.Pending,
-                PaymentReference = cashReference
-            });
-        }
-        await accounting.PostCashCollectionAsync(ride, payment, model.CashReceived, difference, driverId, token);
-        if (confirmedCustomerCashRequest is not null)
-        {
-            confirmedCustomerCashRequest.Status = CashPaymentRequestStatus.Collected;
-            confirmedCustomerCashRequest.DecidedAtUtc = DateTime.UtcNow;
-        }
-        // Cash collection is financial, not operational: the driver still
-        // chooses when the trip reaches its real completion state.
-        ride.UpdatedAtUtc = DateTime.UtcNow;
-        try
-        {
+        await db.SaveChangesAsync(token);
+        await RideRouteSettlement.CompleteApprovedAsync(db, ride, token);
+        if (confirmedCash != null) { confirmedCash.Status = CashPaymentRequestStatus.Collected; confirmedCash.DecidedAtUtc = DateTime.UtcNow; }
             await db.SaveChangesAsync(token);
-            await transaction.CommitAsync(token);
-        }
-        catch (DbUpdateException)
-        {
-            await transaction.RollbackAsync(token);
-            db.ChangeTracker.Clear();
-            var concurrentPayment = await db.PaymentTransactions.AsNoTracking()
-                .SingleOrDefaultAsync(x => x.ProviderReference == cashReference, token);
-            if (concurrentPayment is not null)
-                return await ToExistingResultAsync(concurrentPayment, token);
-            throw;
-        }
-
-        if (realtimePublisher is not null)
-            await realtimePublisher.PublishPaymentUpdatedAsync(
-                [ride.CustomerId, driverId],
-                new PaymentRealtimeEvent(
-                    ride.Id,
-                    "cashPaymentRecorded",
-                    DateTime.UtcNow,
-                    PaymentId: payment.Id),
-                token);
-
-        return ToResult(ride.Id, payment.Id, totalDue, model.CashReceived, difference, wallet.Balance, ride.Status, false,
-            ride.ServiceFee, ride.DriverCommissionAmount, platformReceivable);
+            await RideFinancialState.SynchronizeAsync(db, ride, driverId, token);
+        db.Notifications.Add(new() { UserId = ride.CustomerId, Type = NotificationType.Payment,
+            Title = excess > 0 ? "اختر طريقة استلام الباقي النقدي" : "تم تسجيل النقد المقبوض",
+            Body = excess > 0 ? $"الباقي {excess:0.##} ر.ي: استلمه نقداً، أو اختر إضافته لمحفظتك." : $"المقبوض {applied:0.##} ر.ي. المتبقي {Math.Max(0, money.OutstandingAmount - applied):0.##} ر.ي.",
+            DataJson = $"{{\"action\":\"open_ride_payment\",\"rideId\":{ride.Id},\"financialCaseId\":{change?.Id ?? 0}}}" });
+        await db.SaveChangesAsync(token); await tx.CommitAsync(token);
+        if (realtimePublisher != null) await realtimePublisher.PublishPaymentUpdatedAsync([ride.CustomerId, driverId], new(ride.Id, "cashPaymentRecorded", DateTime.UtcNow, PaymentId: payment.Id), token);
+        return await ResultAsync(ride, payment, model.CashReceived, false, token);
     }
-
-    private async Task<object> ToExistingResultAsync(PaymentTransaction payment, CancellationToken token)
+    private async Task<object> ResultAsync(YemenDrive.Database.Entities.Ride ride, PaymentTransaction payment, decimal cash, bool repeated, CancellationToken ct)
     {
-        var walletBalance = await db.Wallets.AsNoTracking()
-            .Where(x => x.UserId == payment.UserId)
-            .Select(x => x.Balance)
-            .SingleOrDefaultAsync(token);
-        var ride = payment.RideId is int rideId
-            ? await db.Rides.AsNoTracking().SingleOrDefaultAsync(x => x.Id == rideId, token)
-            : null;
-        return ToResult(payment.RideId, payment.Id, payment.Amount, null, 0, walletBalance, ride?.Status, true);
-    }
-
-    private static object ToResult(int? rideId, int paymentId, decimal fare, decimal? cashReceived,
-        decimal walletAdjustment, decimal walletBalance, RideStatus? rideStatus, bool alreadyProcessed,
-        decimal serviceFee = 0, decimal driverCommission = 0, decimal platformReceivable = 0) => new
-    {
-        rideId, paymentId, totalDue = fare, cashReceived, walletAdjustment, walletBalance, rideStatus,
-        serviceFee, driverCommission, platformReceivable, alreadyProcessed
-    };
-
-    private static string? NormalizeIdempotencyKey(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        var key = value.Trim();
-        if (key.Length > 128)
-            throw new ServiceException("invalid_idempotency_key", "مفتاح منع التكرار لا يمكن أن يتجاوز 128 حرفاً.");
-        return key;
+        var money = await RideFinancialState.ReadAsync(db, ride, ct);
+        return new { rideId = ride.Id, paymentId = payment.Id, totalDue = money.AmountDue, cashReceived = cash,
+            collectedAmount = payment.Amount, money.OutstandingAmount, money.PaymentCompleted,
+            walletAdjustment = 0m, walletBalance = await db.Wallets.Where(x => x.UserId == ride.CustomerId).Select(x => x.Balance).FirstAsync(ct),
+            rideStatus = ride.Status, alreadyProcessed = repeated,
+            message = money.PaymentCompleted ? "سُجل التحصيل بالكامل." : "سُجل النقد المقبوض فقط؛ يبقى الفرق مستحقاً ويمكن إنهاء النقل عند اكتماله فعلياً." };
     }
 }

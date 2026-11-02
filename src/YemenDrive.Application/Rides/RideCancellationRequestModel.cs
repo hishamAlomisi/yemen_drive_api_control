@@ -12,4 +12,10 @@ public sealed record RideCancellationRequestModel(
     bool PreviewOnly = false,
     decimal? ReviewedTravelledFare = null,
     int? RefundChoiceRevision = null,
-    bool CashReturned = false);
+    bool CashReturned = false,
+    bool SafeStopConfirmed = false,
+    string? Responsibility = null,
+    bool? WaiveCancellationFees = null,
+    bool CashReceiptConfirmed = false,
+    string? EvidenceReference = null, int? FundingLedgerAccountId = null, decimal? VerifiedPayoutAmount = null,
+    bool PendingOnly = false);

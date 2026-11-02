@@ -101,7 +101,8 @@ internal static class PricingWaitingScenarios
         Is(ride.WaitingFee == 150 && ride.TotalAmount == 1250 && ride.DriverShare == 1035, "five minutes includes two free; fee and financial totals recorded once");
         Ok(await Execute(cash, "add", new DriverCashPaymentModel(ride.Id, 1250, "YER", null, "wait-settlement")));
         Is(await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && x.Amount == 1250 && x.Status == PaymentStatus.Paid), "collected amount includes waiting");
-        Is(!(await Execute(driverWaiting, "add", request with { RequestKey = Guid.NewGuid() })).Success, "no extra waiting after settlement");
+        Ok(await Execute(driverWaiting, "add", request with { RequestKey = Guid.NewGuid() }));
+        Is(await db.RideWaitingSessions.AnyAsync(x => x.RideId == ride.Id && x.IsOpen), "prepayment does not prohibit a new mutually approved waiting request");
 
         await AutomaticEnd(db, config, coordinator, customer, driver, kind, catalog, "connection_lost");
         await AutomaticEnd(db, config, coordinator, customer, driver, kind, catalog, "fee_cap");

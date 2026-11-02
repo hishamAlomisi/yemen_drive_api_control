@@ -10,9 +10,9 @@ namespace YemenDrive.Api;
 public sealed class TrackingHub(
     YemenDriveDbContext db,
     TrackingHubAccessPolicy accessPolicy,
-    IRideRealtimePublisher realtimePublisher,
     NearbyDriverSubscriptionStore nearbySubscriptions,
     ILogger<TrackingHub> logger,
+    DriverLocationIngestionService locationIngestion,
     RideParticipantPresence? presence = null) : Hub
 {
     private static readonly RideStatus[] TrackableRideStatuses =
@@ -136,141 +136,11 @@ public sealed class TrackingHub(
     {
         if (!TryGetAuthenticatedUserId(out var driverId))
             throw new HubException("يجب تسجيل الدخول لإرسال موقع السائق.");
-        if (!double.IsFinite(sample.Latitude) || !double.IsFinite(sample.Longitude) ||
-            sample.Latitude is < -90 or > 90 || sample.Longitude is < -180 or > 180 ||
-            !double.IsFinite(sample.Accuracy) || sample.Accuracy is <= 0 or > 75 ||
-            sample.Bearing is double bearing && (!double.IsFinite(bearing) || bearing is < 0 or >= 360) ||
-            sample.Speed is double speed && (!double.IsFinite(speed) || speed is < 0 or > 75))
-            throw new HubException("بيانات الموقع غير صالحة أو دقتها منخفضة.");
-
-        var now = DateTime.UtcNow;
-        var observedAtUtc = sample.ObservedAtUtc?.ToUniversalTime() ?? now;
-        if (observedAtUtc < now.AddSeconds(-30) || observedAtUtc > now.AddSeconds(5))
-            throw new HubException("عينة الموقع قديمة أو وقتها غير صالح.");
-
-        var profile = await db.DriverProfiles.AsNoTracking()
-            .Where(item => item.UserId == driverId && item.User.IsActive)
-            .Select(item => new
-            {
-                item.IsAvailable,
-                item.ServiceKindId,
-                item.ServiceCatalogItemId,
-                name = item.User.DisplayName,
-                photoUrl = item.PhotoUrl,
-                vehicleModel = item.VehicleModel,
-                plateNumber = item.PlateNumber,
-                rating = db.DriverRatings.Where(rating => rating.DriverUserId == item.UserId)
-                    .Select(rating => (decimal?)rating.Score).Average() ?? 0m,
-                serviceCode = item.ServiceCatalogItem.Code
-            })
-            .SingleOrDefaultAsync(Context.ConnectionAborted);
-        if (profile is null)
-            throw new HubException("الحساب لا يملك ملف سائق نشطًا.");
-
-        var activeRides = db.Rides.AsNoTracking()
-            .Where(ride => ride.DriverId == driverId && TrackableRideStatuses.Contains(ride.Status));
-        if (sample.RideId is int requestedRideId)
-            activeRides = activeRides.Where(ride => ride.Id == requestedRideId);
-        var activeRide = await activeRides
-            .OrderByDescending(ride => ride.UpdatedAtUtc)
-            .Select(ride => new { ride.Id, ride.CustomerId, ride.Status })
-            .FirstOrDefaultAsync(Context.ConnectionAborted);
-        if (sample.RideId is not null && activeRide is null)
-            throw new HubException("الرحلة غير مسندة إليك أو لم تعد نشطة.");
-        var location = await db.DriverLiveLocations
-            .SingleOrDefaultAsync(item => item.DriverId == driverId, Context.ConnectionAborted);
-        if (location is not null && observedAtUtc <= location.ObservedAtUtc)
-            return;
-        if (location is not null &&
-            observedAtUtc - location.ObservedAtUtc < TimeSpan.FromMilliseconds(750))
-            return;
-
-        if (location is not null && HaversineMeters(location.Latitude, location.Longitude, sample.Latitude, sample.Longitude) >
-            75 * (observedAtUtc - location.ObservedAtUtc).TotalSeconds + Math.Max(50, sample.Accuracy * 2))
-            throw new HubException("قفزة موقع السائق لا تتوافق مع سرعة حركة ممكنة.");
-
-        if (location is null)
-        {
-            location = new DriverLiveLocation { DriverId = driverId };
-            db.DriverLiveLocations.Add(location);
+        try { await locationIngestion.SaveAsync(driverId, sample); }
+        catch (OperationCanceledException) {
+            logger.LogWarning("Driver location ingestion timed out or the server stopped for {DriverId}.", driverId);
+            throw new HubException("تعذر حفظ الموقع الآن؛ ستعاد المحاولة تلقائياً.");
         }
-        location.Latitude = sample.Latitude;
-        location.Longitude = sample.Longitude;
-        location.Bearing = sample.Bearing;
-        location.Speed = sample.Speed;
-        location.IsOnline = true;
-        location.ObservedAtUtc = observedAtUtc;
-        location.UpdatedAtUtc = now;
-        if (activeRide?.Status == RideStatus.InProgress)
-            db.LocationUpdates.Add(new LocationUpdate { RideId = activeRide.Id, ActorId = driverId,
-                Latitude = sample.Latitude, Longitude = sample.Longitude, Bearing = sample.Bearing,
-                Speed = sample.Speed, Accuracy = sample.Accuracy, ObservedAtUtc = observedAtUtc });
-        await db.SaveChangesAsync(Context.ConnectionAborted);
-
-        var realtimeLocation = new DriverLocationRealtimeEvent(
-                driverId,
-                activeRide?.Id,
-                activeRide?.CustomerId,
-                sample.Latitude,
-                sample.Longitude,
-                sample.Bearing,
-                sample.Speed,
-                sample.Accuracy,
-                observedAtUtc,
-                now,
-                activeRide?.Status);
-        if (activeRide is not null)
-            await realtimePublisher.PublishDriverLocationAsync(
-                realtimeLocation, Context.ConnectionAborted);
-
-        var deliveries = nearbySubscriptions.Evaluate(
-            profile.ServiceKindId,
-            profile.ServiceCatalogItemId,
-            driverId,
-            sample.Latitude,
-            sample.Longitude,
-            profile.IsAvailable && activeRide is null);
-        await Parallel.ForEachAsync(
-            deliveries,
-            new ParallelOptions { MaxDegreeOfParallelism = 16 },
-            async (delivery, _) =>
-            {
-                try
-                {
-                    if (!delivery.IsAvailable)
-                    {
-                        await Clients.Client(delivery.ConnectionId).SendAsync(
-                            "nearbyDriverAvailabilityChanged",
-                            new { driverId, isAvailable = false },
-                            CancellationToken.None);
-                        return;
-                    }
-                    await Clients.Client(delivery.ConnectionId).SendAsync(
-                        "nearbyDriverLocationUpdated",
-                        new
-                        {
-                            driverId,
-                            name = profile.name ?? "سائق يمن درايف",
-                            photoUrl = profile.photoUrl,
-                            vehicleModel = profile.vehicleModel,
-                            plateNumber = profile.plateNumber,
-                            rating = profile.rating,
-                            serviceCode = profile.serviceCode,
-                            latitude = sample.Latitude,
-                            longitude = sample.Longitude,
-                            bearing = sample.Bearing,
-                            observedAtUtc,
-                            distanceMeters = delivery.DistanceMeters,
-                            isAvailable = true
-                        },
-                        CancellationToken.None);
-                }
-                catch (Exception exception)
-                {
-                    logger.LogDebug(exception,
-                        "Could not update a nearby-driver map for driver {DriverId}.", driverId);
-                }
-            });
     }
 
     /// <summary>

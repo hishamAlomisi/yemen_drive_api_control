@@ -27,6 +27,56 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
 {
     private ExternalWalletTopUpSettlement TopUps => topUps ?? throw new ServiceException("top_up_unavailable", "خدمة الشحن غير مجهزة.");
 
+    public async Task<WalletPaymentView> ReviewOutcomeAsync(int paymentId, string outcome, decimal amount,
+        string providerReference, string evidenceReference, string reason, CancellationToken token)
+    {
+        var actor = currentUser.RequireUserId();
+        providerReference ??= string.Empty;
+        await YemenDrive.Application.Administration.AdministratorAccess.RequireAsync(db, actor, "finance.write", token);
+        if (outcome is not ("Succeeded" or "Failed") || string.IsNullOrWhiteSpace(evidenceReference) || string.IsNullOrWhiteSpace(reason) ||
+            reason.Length > 1000 || evidenceReference.Length > 1000 || providerReference.Length > 256 || outcome == "Succeeded" && string.IsNullOrWhiteSpace(providerReference))
+            throw new ServiceException("verified_provider_evidence_required", "حدد نتيجة المزود الأصلية ومرجعها والمبلغ ومرجع الدليل الذي راجعته وسبب القرار.");
+        var operation = await db.PaymentWalletOperations.SingleOrDefaultAsync(x => x.Id == paymentId, token)
+            ?? throw new ServiceException("payment_not_found", "المحاولة الأصلية غير موجودة.");
+        await using (var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token))
+        {
+            await LockScopeAsync(operation.RideId, operation.CustomerId, token);
+            await db.Entry(operation).ReloadAsync(token);
+            if (operation.Status == "Succeeded") {
+                if (outcome != "Succeeded" || amount != operation.Amount || operation.ProviderReference != providerReference)
+                    throw new ServiceException("provider_review_conflict", "القرار لا يطابق القبض الأصلي المؤكد؛ لم يعدل أي سجل.");
+                await tx.CommitAsync(token); return View(operation);
+            }
+            if (operation.Status != "ReviewRequired" || amount != operation.Amount ||
+                operation.ProviderReference != null && operation.ProviderReference != providerReference)
+                throw new ServiceException("provider_review_conflict", "الحالة أو المبلغ أو المرجع تغير. راجع محاولة المزود الأصلية؛ لا تنشئ خصماً بديلاً.");
+            if (outcome == "Succeeded" && await db.PaymentWalletOperations.AnyAsync(x => x.Id != paymentId && x.ProviderCode == operation.ProviderCode && x.ProviderReference == providerReference && (x.Status == "Succeeded" || x.Status == "ProviderSucceeded"), token))
+                throw new ServiceException("provider_reference_already_settled", "مرجع المزود مستخدم في قبض مؤكد آخر؛ راجع التعارض.");
+            if (!string.IsNullOrWhiteSpace(providerReference)) operation.ProviderReference = providerReference;
+            operation.ProviderMessageAr = reason.Trim(); operation.UpdatedAtUtc = DateTime.UtcNow;
+            operation.Status = outcome == "Succeeded" ? "ProviderSucceeded" : "Failed";
+            operation.ErrorCode = outcome == "Succeeded" ? null : "provider_rejected";
+            operation.NextAction = "None"; operation.IsOpen = outcome == "Succeeded";
+            if (outcome == "Succeeded") operation.ProviderSucceededAtUtc = DateTime.UtcNow;
+            db.OperationalDecisionAudits.Add(new() { ActorUserId = actor, Subject = "WalletProviderOutcome", SubjectId = paymentId,
+                Action = outcome, Reason = reason.Trim(), ResultJson = System.Text.Json.JsonSerializer.Serialize(new { operation.RequestId, providerReference, amount, evidenceReference }) });
+            await db.SaveChangesAsync(token); await tx.CommitAsync(token);
+        }
+        if (outcome == "Succeeded") await TrySettleAsync(operation);
+        if (operation.RideId is int rideId)
+        {
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
+            await RidePaymentGuard.LockAsync(db, rideId, token);
+            var ride = await db.Rides.SingleAsync(x => x.Id == rideId, token);
+            await RideFinancialState.SynchronizeAsync(db, ride, actor, token); await tx.CommitAsync(token);
+        }
+        db.Notifications.Add(new() { UserId = operation.CustomerId, Type = NotificationType.Payment,
+            Title = "تمت مراجعة نتيجة المحفظة", Body = outcome == "Succeeded" ? "ثبت قبض المحاولة الأصلية؛ يمكنك متابعة الفاتورة أو الاسترداد دون سحب جديد." : "ثبت رفض المحاولة الأصلية. يمكنك استخدام طريقة دفع أخرى.",
+            DataJson = operation.RideId == null ? $"{{\"action\":\"open_wallet\",\"topUpId\":{operation.Id}}}" : $"{{\"action\":\"open_ride_payment\",\"rideId\":{operation.RideId}}}" });
+        await db.SaveChangesAsync(token); await NotifyAsync(operation);
+        return View(operation);
+    }
+
     private async Task<User> RequireTopUpCustomerAsync(CancellationToken token) =>
         await db.Users.SingleOrDefaultAsync(x => x.Id == currentUser.RequireUserId() && x.IsActive && x.Role == UserRole.Customer, token)
         ?? throw new ServiceException("wallet_access_denied", "الشحن متاح لحساب الراكب فقط.");
@@ -144,7 +194,7 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
             await new RideWaitingCoordinator(db).EnsureSettledAsync(ride, token);
             await settlement.ValidateAsync(ride, paymentMethodId, token);
             var mobile = NormalizeMobile(ride.Customer.PhoneNumber, method.ProviderCode);
-            var amount = AmountDue(ride);
+            var amount = (await RideFinancialState.ReadAsync(db, ride, token)).OutstandingAmount;
             if (amount <= 0 || decimal.Round(amount, 2) != amount)
                 throw new ServiceException("invalid_payment_amount", "مبلغ الرحلة غير صالح للدفع.");
             operation = new PaymentWalletOperation
@@ -246,12 +296,12 @@ public sealed class WalletPaymentService(YemenDriveDbContext db, ICurrentUserCon
             if (rideId is int actualRideId)
             {
             var ride = await db.Rides.SingleAsync(x => x.Id == actualRideId, token);
+            await RideRouteChangePolicy.ExpireAsync(db, ride, DateTime.UtcNow, token);
             EnsureRideReady(ride);
             var paymentMethodCode = await db.PaymentMethods.AsNoTracking()
                 .Where(x => x.Id == operation.PaymentMethodId).Select(x => x.Code).SingleAsync(token);
             RidePaymentPolicy.EnsureReady(ride, paymentMethodCode);
-            if (AmountDue(ride) != operation.Amount ||
-                await db.PaymentTransactions.AnyAsync(x => x.RideId == rideId && x.Status == PaymentStatus.Paid, token))
+            if ((await RideFinancialState.ReadAsync(db, ride, token)).OutstandingAmount != operation.Amount)
                 throw new ServiceException("wallet_payment_ride_changed", "تغيرت حالة دفع الرحلة. حدّث بيانات الرحلة قبل المتابعة.");
             await settlement.ValidateAsync(ride, operation.PaymentMethodId, token);
             }

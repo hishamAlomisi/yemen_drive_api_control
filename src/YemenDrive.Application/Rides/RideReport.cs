@@ -42,7 +42,7 @@ public sealed class RideReport(
                      x.ServiceKindId == driverProfile.ServiceKindId &&
                      x.ServiceCatalogItemId == driverProfile.ServiceCatalogItemId &&
                      !dbContext.Rides.Any(activeRide =>
-                         activeRide.DriverId == userId &&
+                         activeRide.DriverId == userId && activeRide.ServiceEndedAtUtc == null &&
                          (activeRide.Status == RideStatus.DriverAssigned ||
                           activeRide.Status == RideStatus.DriverEnRoute ||
                           activeRide.Status == RideStatus.DriverArrived ||
@@ -52,11 +52,11 @@ public sealed class RideReport(
         if (!isAdmin && currentUserId is null && model.CustomerId is not null)
             query = query.Where(x => x.CustomerId == model.CustomerId);
         if (model.ActiveOnly)
-            query = query.Where(x => x.Status == RideStatus.DriverAssigned ||
+            query = query.Where(x => x.ServiceEndedAtUtc == null && (x.Status == RideStatus.DriverAssigned ||
                                      x.Status == RideStatus.DriverEnRoute ||
                                      x.Status == RideStatus.DriverArrived ||
                                      x.Status == RideStatus.InProgress ||
-                                     x.Status == RideStatus.CancellationPending);
+                                     x.Status == RideStatus.CancellationPending));
         if (model.Status is not null) query = query.Where(x => x.Status == model.Status);
         var rides = await query
             .Include(x => x.Customer)
@@ -77,12 +77,13 @@ public sealed class RideReport(
             var now = DateTime.UtcNow;
             rides = rides.Where(x =>
                 x.DriverId == driverProfile.UserId ||
-                (driverProfile.IsAvailable && driverLocation?.IsOnline == true &&
+                (driverProfile.IsAvailable && driverProfile.AcceptsNewRequests && driverProfile.IsApproved && driverProfile.ApprovedPassengerSeats >= (x.PassengerCount ?? (x.MoreThanFourPassengers ? 5 : 1)) && driverLocation?.IsOnline == true &&
                  (x.Status == RideStatus.Searching || x.Status == RideStatus.Negotiating) &&
                  RideDriverProximity.IsWithinRadius(x, driverLocation.Latitude, driverLocation.Longitude, now)))
                 .ToList();
         }
         var rideIds = rides.Select(x => x.Id).ToArray();
+        var finances = await RideFinancialState.ReadManyAsync(dbContext, rides, cancellationToken);
         var activeDriverIds = rides
             .Where(x => x.DriverId is not null &&
                         x.Status is RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.DriverArrived or
@@ -144,7 +145,7 @@ public sealed class RideReport(
                 x.PickupAddress,
                 destinationLabel = revealDestination ? x.DestinationLabel : null,
                 destinationAddress = revealDestination ? x.DestinationAddress : destinationName,
-                x.MoreThanFourPassengers, x.PassengerNotes,
+                x.MoreThanFourPassengers, x.PassengerCount, x.PassengerNotes,
                 x.PickupLatitude, x.PickupLongitude,
                 destinationLatitude = revealDestination ? x.DestinationLatitude : (double?)null,
                 destinationLongitude = revealDestination ? x.DestinationLongitude : (double?)null,
@@ -159,7 +160,12 @@ public sealed class RideReport(
                 x.QuotedPrice, x.MinCustomerPrice, x.MaxCustomerPrice, x.WaitingFee,
                 x.RouteVersion, x.RouteChangeFee, x.RouteChangeFees, x.RouteCompletedFare, x.RouteSegmentStartedAtUtc,
                 x.WaitingFreeMinutes, x.WaitingPricePerMinute, x.WaitingMaxFee,
-                x.CustomerPaymentEnabled, paymentCompleted = paidMethod is not null,
+                x.CustomerPaymentEnabled, paymentCompleted = finances[x.Id].PaymentCompleted,
+                finance = finances[x.Id],
+                outstandingAmount = finances[x.Id].OutstandingAmount,
+                paidAmount = finances[x.Id].PaidAmount,
+                refundedAmount = finances[x.Id].RefundedAmount,
+                x.ServiceEndedAtUtc, x.PassengerBoardedAtUtc,
                 paymentMethodNameAr = paidMethod?.PaymentMethodNameAr,
                 selectedPaymentMethodNameAr = selectedMethods.GetValueOrDefault(x.PaymentMethodCode, "محفظة خارجية"),
                 paymentProvider = paidMethod?.PaymentProvider,

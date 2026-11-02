@@ -30,6 +30,7 @@ public sealed class PendingRideRating(YemenDriveDbContext db, DatabaseConfigurat
     internal static async Task EnsureCompletedAsync(YemenDriveDbContext db, int customerId, CancellationToken token)
     {
         if (await Pending(db, customerId).AnyAsync(token))
-            throw new ServiceException("rating_required", "أكمل تقييم رحلتك السابقة قبل طلب رحلة جديدة.");
+            throw new ServiceException("rating_required", "أكمل تقييم الرحلة السابقة قبل طلب رحلة جديدة.");
+        await YemenDrive.Application.Payments.RideFinancialState.EnsureNoConfirmedDebtAsync(db, customerId, token);
     }
 }

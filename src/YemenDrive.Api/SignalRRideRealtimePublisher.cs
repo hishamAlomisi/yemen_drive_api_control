@@ -147,6 +147,8 @@ public sealed class SignalRRideRealtimePublisher(
             rideStatus.CustomerPaymentEnabled,
             rideStatus.PaymentMethodCode,
             rideStatus.PaymentRequiredBeforeStart,
+              rideStatus.PassengerBoardedAtUtc,
+              rideStatus.ServiceEndedAtUtc,
             rideStatus.UpdatedAtUtc
         };
         await TrySendAsync(

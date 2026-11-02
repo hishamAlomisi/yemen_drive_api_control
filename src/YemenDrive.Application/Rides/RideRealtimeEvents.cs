@@ -33,7 +33,9 @@ public sealed record RideStatusRealtimeEvent(
     bool CustomerPaymentEnabled,
     DateTime? UpdatedAtUtc,
     string PaymentMethodCode = "cash",
-    bool PaymentRequiredBeforeStart = false);
+    bool PaymentRequiredBeforeStart = false,
+    DateTime? ServiceEndedAtUtc = null,
+    DateTime? PassengerBoardedAtUtc = null);
 
 public sealed record DriverLocationRealtimeEvent(
     int DriverId,
@@ -177,7 +179,7 @@ internal static class RideRealtimeEventFactory
             ride.CustomerPaymentEnabled,
             ride.UpdatedAtUtc,
             ride.PaymentMethodCode,
-            RidePaymentPolicy.RequiresBeforeStart(ride));
+            RidePaymentPolicy.RequiresBeforeStart(ride), ride.ServiceEndedAtUtc, ride.PassengerBoardedAtUtc);
 
     public static async Task<IReadOnlyList<RideOfferRealtimeEvent>> LoadOffersAsync(
         YemenDriveDbContext db,

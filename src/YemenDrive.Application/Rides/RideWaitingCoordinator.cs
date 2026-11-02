@@ -23,6 +23,7 @@ public sealed class RideWaitingCoordinator(YemenDriveDbContext db, IRideRealtime
     {
         var session = await db.RideWaitingSessions.SingleOrDefaultAsync(x => x.RideId == ride.Id && x.IsOpen, ct);
         if (session is null) return null;
+        await YemenDrive.Application.Payments.RideFinancialState.SnapshotEntitlementAsync(db, ride, ct);
         if (ride.Status != RideStatus.InProgress)
         {
             Close(ride, session, now, "ride_closed");

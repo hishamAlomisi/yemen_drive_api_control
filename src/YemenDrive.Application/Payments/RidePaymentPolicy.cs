@@ -32,6 +32,8 @@ public static class RidePaymentPolicy
 
     public static void EnsureReady(Ride ride, string? payingMethodCode = null)
     {
+        if (ride.Status == RideStatus.Cancelled && ride.FinancialAmountDue == null)
+            throw new ServiceException("cancellation_amount_under_review", "تراجع الإدارة أجرة الجزء المنفذ والمسؤولية. لا تُحصّل الأجرة الأصلية كاملة قبل اعتماد المبلغ الصحيح.");
         if (IsBeforeStart(ride.Status))
         {
             if (!ride.PaymentRequiredBeforeStart || ride.PaymentMethodCode == "cash")
@@ -40,22 +42,24 @@ public static class RidePaymentPolicy
                 throw new ServiceException("ride_payment_method_mismatch", "اعتمد وسيلة الدفع الجديدة للرحلة قبل بدء الدفع بها.");
             return;
         }
-        if (ride.Status != RideStatus.Completed && !(ride.Status == RideStatus.InProgress && ride.CustomerPaymentEnabled))
+        if (ride.Status is not (RideStatus.Completed or RideStatus.Cancelled) && !(ride.Status == RideStatus.InProgress && ride.CustomerPaymentEnabled))
             throw new ServiceException("ride_payment_not_ready", "لم تصبح الرحلة جاهزة للدفع بعد.");
     }
 
-    public static async Task EnsureCanStartAsync(YemenDriveDbContext db, Ride ride, CancellationToken token)
+    public static async Task EnsureCanStartAsync(YemenDriveDbContext db, Ride ride, CancellationToken token, bool confirmPassengerBoarding = false)
     {
-        if (ride.PaymentMethodCode != "cash" &&
-            !await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid, token))
+        if (ride.ServiceEndedAtUtc != null) throw new ServiceException("service_ended", "انتهت خدمة النقل ولا يمكن بدءها مجدداً.");
+        if (ride.PassengerBoardedAtUtc == null && !confirmPassengerBoarding) throw new ServiceException("boarding_confirmation_required", "أكد صعود الراكب فعلياً قبل بدء الرحلة. لا يكفي تنبيه الوصول.");
+        if (ride.PaymentMethodCode != "cash" && !(await RideFinancialState.ReadAsync(db, ride, token)).PaymentCompleted)
             throw new ServiceException("payment_required_before_start", "يجب على الراكب إتمام الدفع المختار أو التحويل إلى النقد قبل بدء الرحلة.");
         if (await db.RideCancellationRequests.AnyAsync(x => x.RideId == ride.Id &&
             (x.Status == RideCancellationStatus.DriverReviewPending || x.Status == RideCancellationStatus.AdminReviewPending ||
              (x.Status == RideCancellationStatus.CustomerReviewPending || x.Status == RideCancellationStatus.RefundMethodPending || x.Status == RideCancellationStatus.RefundConsentPending)), token))
             throw new ServiceException("ride_cancellation_pending", "يجب حسم طلب الإلغاء قبل بدء الرحلة.");
+        if (confirmPassengerBoarding) ride.PassengerBoardedAtUtc ??= DateTime.UtcNow;
     }
 
-    public static async Task EnsureNoPendingDecisionAsync(YemenDriveDbContext db, int rideId, CancellationToken token)
+    public static async Task EnsureNoPendingDecisionAsync(YemenDriveDbContext db, int rideId, CancellationToken token, bool collectingConfirmedCash = false)
     {
         if (await db.RideCancellationRequests.AnyAsync(x => x.RideId == rideId &&
             (x.Status == RideCancellationStatus.DriverReviewPending || x.Status == RideCancellationStatus.AdminReviewPending ||
@@ -64,7 +68,7 @@ public static class RidePaymentPolicy
         if (await db.CashCollectionApprovals.AnyAsync(x => x.RideId == rideId &&
                 (x.Status == CashCollectionApprovalStatus.Pending || x.Status == CashCollectionApprovalStatus.Approved), token) ||
             await db.CashPaymentRequests.AnyAsync(x => x.RideId == rideId &&
-                (x.Status == CashPaymentRequestStatus.Pending || x.Status == CashPaymentRequestStatus.DriverConfirmed), token))
+                (x.Status == CashPaymentRequestStatus.Pending || !collectingConfirmedCash && x.Status == CashPaymentRequestStatus.DriverConfirmed), token))
             throw new ServiceException("cash_payment_pending", "يوجد إجراء دفع نقدي جارٍ لهذه الرحلة. أكمله أو ارفضه أولاً.");
     }
 }

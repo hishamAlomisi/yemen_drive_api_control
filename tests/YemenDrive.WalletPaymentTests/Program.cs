@@ -481,6 +481,10 @@ try
     Check(Status(recoveredReceipt) == "Succeeded" && gateway.CompleteCount == priorCompletes, "reference lookup recovers final receipt without another debit");
     gateway.AfterComplete = null;
     Console.WriteLine("PASS: Floosak/Jaib user-amount topups, ownership, reference replay, final credit, immutable balanced journal, receipt, notification and rejection recovery.");
+    var requestsBeforeReview = gateway.RequestCount;
+    var completionsBeforeReview = gateway.CompleteCount;
+    await ProviderReviewScenarios.RunAsync(options, gateway, rider.Id, driver.Id, kind.Id, catalog.Id, method.Id);
+    Check(gateway.RequestCount == requestsBeforeReview && gateway.CompleteCount == completionsBeforeReview, "provider review never dispatches another withdrawal or OTP confirmation");
 
     async Task<int> NewRide(RideStatus status = RideStatus.InProgress, string paymentMethodCode = "cash")
     {

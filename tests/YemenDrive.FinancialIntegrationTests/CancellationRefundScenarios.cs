@@ -71,14 +71,15 @@ internal static class CancellationRefundScenarios
         }
         async Task<YemenDrive.Database.Entities.RideCancellationRequest> Request(YemenDrive.Database.Entities.Ride ride)
         {
-            Ok(await Call(rider, "add", new(RideId: ride.Id, Reason: "طرأ ظرف عاجل", ReviewedTravelledFare: 0)), "customer cancellation");
+            Ok(await Call(rider, "add", new(RideId: ride.Id, Reason: "طرأ ظرف عاجل", ReviewedTravelledFare: 0, SafeStopConfirmed: ride.StartedAtUtc != null)), "customer cancellation");
             return await db.RideCancellationRequests.SingleAsync(x => x.RideId == ride.Id);
         }
         async Task Approve(YemenDrive.Database.Entities.RideCancellationRequest request, decimal? reviewed = null)
         {
             Ok(await Call(chauffeur, "accept", new(Id: request.Id)), "driver cancellation acceptance");
             Check(request.Status == RideCancellationStatus.AdminReviewPending, "paid case passes through admin review");
-            Ok(await Call(manager, "adminApprove", new(Id: request.Id, ReviewedTravelledFare: reviewed)), "admin approval");
+            Ok(await Call(manager, "adminApprove", new(Id: request.Id, ReviewedTravelledFare: reviewed, Note: "verified original policy and responsibility")), "admin approval");
+            Ok(await Call(rider, "accept", new(Id: request.Id, RefundChoiceRevision: request.RefundChoiceRevision)), "rider chooses app wallet refund");
         }
         async Task Balanced(int rideId)
         {
@@ -92,6 +93,17 @@ internal static class CancellationRefundScenarios
             Check(liability == walletMovement, "driver journal liability reconciles to actual wallet movements");
         }
 
+        var exactCancellation = await Trip();
+        exactCancellation.CancellationFee = 0; exactCancellation.DriverCommissionAmount = 0; exactCancellation.DriverShare = 900; exactCancellation.PlatformShare = 100;
+        await db.SaveChangesAsync();
+        var exactDriverBefore = driverWallet.Balance;
+        var exactRiderBefore = customerWallet.Balance;
+        await Pay(exactCancellation, "Floosak");
+        Check(driverWallet.Balance == exactDriverBefore + 900, "1000 electronic payment credits driver net 900");
+        var exactRequest = await Request(exactCancellation);
+        await Approve(exactRequest);
+        Check(customerWallet.Balance == exactRiderBefore + 900 && driverWallet.Balance == exactDriverBefore, "900 cancellation refund retains 100 fee and fully reverses driver 900");
+        await Balanced(exactCancellation.Id);
         foreach (var provider in methods.Keys)
         {
             var ride = await Trip(); var beforeCustomer = customerWallet.Balance; var beforeDriver = driverWallet.Balance;
@@ -102,12 +114,15 @@ internal static class CancellationRefundScenarios
             Check(customerWallet.Balance == beforeCustomer && request.RequestedRefundAmount == 850, "request cannot refund early");
             Ok(await Call(chauffeur, "accept", new(Id: request.Id)), "driver acceptance");
             Check(customerWallet.Balance == beforeCustomer && request.Status == RideCancellationStatus.AdminReviewPending, "driver cannot release funds");
-            Ok(await Call(manager, "adminApprove", new(Id: request.Id)), "admin releases refund");
+            Ok(await Call(manager, "adminApprove", new(Id: request.Id, Note: "verified original policy and responsibility")), "admin establishes refund");
+            Check(customerWallet.Balance == beforeCustomer, "external refund waits for informed destination consent");
+            Ok(await Call(rider, "accept", new(Id: request.Id, RefundChoiceRevision: request.RefundChoiceRevision)), "rider chooses app wallet refund");
             Check(customerWallet.Balance == beforeCustomer + 850 && driverWallet.Balance == beforeDriver, "external payment refunds internal wallet and reverses full unearned driver share");
-            Ok(await Call(manager, "adminApprove", new(Id: request.Id)), "repeated approval");
+            Check(!(await Call(manager, "adminApprove", new(Id: request.Id, Note: "duplicate"))).Success, "closed administrative approval is rejected");
             Check(await db.PaymentTransactions.CountAsync(x => x.RideId == ride.Id && x.Status == PaymentStatus.Refunded) == 1 &&
                 await db.PaymentTransactions.CountAsync(x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid && x.Amount == 1000) == 1, "original payment immutable and refund once");
-            Check(await db.Notifications.AnyAsync(x => x.UserId == customer.Id && x.Body.Contains("أُضيف 850")), "customer receives credited-refund notification");
+            Check(await db.Notifications.AnyAsync(x => x.UserId == customer.Id && x.Title == "اكتمل الإلغاء والاسترداد" &&
+                x.Body.Contains("850") && x.DataJson!.Contains($"\"rideId\":{ride.Id},")), "customer receives the confirmed refund amount and a link to its own ride");
             await Balanced(ride.Id);
         }
         var travelling = await Trip(true); await Pay(travelling, "Jaib");
@@ -126,28 +141,30 @@ internal static class CancellationRefundScenarios
         var missing = await Trip(true, false); await Pay(missing, "Floosak");
         var missingRequest = await Request(missing);
         Check(missingRequest.RequestedRefundAmount is null, "missing route permits request without invented refund");
-        Ok(await Call(chauffeur, "accept", new(Id: missingRequest.Id)), "missing-track driver acceptance");
-        Check((await Call(manager, "adminApprove", new(Id: missingRequest.Id))).Code == "cancellation_refund_review_required", "unknown fare cannot be auto-approved");
+        Ok(await Call(chauffeur, "accept", new(Id: missingRequest.Id, Note: "verified evidence and original policy")), "missing-track driver acceptance");
+        Check((await Call(manager, "adminApprove", new(Id: missingRequest.Id, Note: "verified evidence and original policy"))).Code == "cancellation_refund_review_required", "unknown fare cannot be auto-approved");
         db.ChangeTracker.Clear();
         customerWallet = await db.Wallets.SingleAsync(x => x.UserId == customer.Id);
         driverWallet = await db.Wallets.SingleAsync(x => x.UserId == driver.Id);
         driverWallet.Balance = 20; await db.SaveChangesAsync();
         var beforeMissingRefund = customerWallet.Balance;
-        Ok(await Call(manager, "adminApprove", new(Id: missingRequest.Id, ReviewedTravelledFare: 100)), "admin reviewed fare");
+        Ok(await Call(manager, "adminApprove", new(Id: missingRequest.Id, ReviewedTravelledFare: 100, Note: "verified delivered fare and original policy")), "admin reviewed fare");
+        Ok(await Call(rider, "accept", new(Id: missingRequest.Id, RefundChoiceRevision: 0)), "rider chooses refund destination after review");
         Check(customerWallet.Balance == beforeMissingRefund + 750 && driverWallet.Balance == 0, "driver shortfall does not block customer refund");
         Check(await db.DriverSettlements.AnyAsync(x => x.DriverId == driver.Id && x.Status == PaymentStatus.Pending &&
-            x.PaymentReference!.EndsWith(":driver-debt") && x.NetPayable == -700), "exact unrecovered share becomes separate driver debt");
+            x.PaymentReference!.EndsWith(":driver-current") && x.NetPayable == -700), "exact unrecovered share becomes separate driver debt");
         await Balanced(missing.Id);
 
         var late = await Trip(); var inFlight = await Pay(late, "Jaib", true);
         var lateRequest = await Request(late);
-        Ok(await Call(chauffeur, "accept", new(Id: lateRequest.Id)), "inflight cancellation reaches admin");
-        Check((await Call(manager, "adminApprove", new(Id: lateRequest.Id))).Code == "wallet_payment_in_progress", "uncertain debit prevents premature financial settlement");
+        Ok(await Call(chauffeur, "accept", new(Id: lateRequest.Id, Note: "verified original provider result")), "inflight cancellation reaches admin");
+        Check((await Call(manager, "adminApprove", new(Id: lateRequest.Id, Note: "verified original provider result"))).Code == "wallet_payment_in_progress", "uncertain debit prevents premature financial settlement");
         db.ChangeTracker.Clear();
         inFlight = await db.PaymentWalletOperations.SingleAsync(x => x.Id == inFlight.Id);
         inFlight.Status = "ProviderSucceeded"; inFlight.ProviderSucceededAtUtc = DateTime.UtcNow; await db.SaveChangesAsync();
         await settlement.SettleAsync(inFlight, CancellationToken.None);
-        Ok(await Call(manager, "adminApprove", new(Id: lateRequest.Id)), "late confirmed debit can settle and refund cancellation");
+        Ok(await Call(manager, "adminApprove", new(Id: lateRequest.Id, Note: "verified original provider result")), "late confirmed debit can settle and refund cancellation");
+        Ok(await Call(rider, "accept", new(Id: lateRequest.Id, RefundChoiceRevision: 0)), "rider chooses destination for late receipt refund");
         Check(await db.PaymentTransactions.CountAsync(x => x.RideId == late.Id && x.Status == PaymentStatus.Paid) == 1 &&
             await db.PaymentTransactions.CountAsync(x => x.RideId == late.Id && x.Status == PaymentStatus.Refunded && x.Amount == 850) == 1,
             "late debit and refund each happen once");

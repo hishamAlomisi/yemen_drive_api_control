@@ -47,12 +47,12 @@ public sealed class RideCancellationRequest(
         if (await db.RideCancellationRequests.AnyAsync(
                 x => x.RideId == ride.Id && (x.Status == RideCancellationStatus.DriverReviewPending ||
                     x.Status == RideCancellationStatus.AdminReviewPending || x.Status == RideCancellationStatus.CustomerReviewPending ||
-                    x.Status == RideCancellationStatus.RefundMethodPending || x.Status == RideCancellationStatus.RefundConsentPending), token))
+                    x.Status == RideCancellationStatus.RefundMethodPending || x.Status == RideCancellationStatus.RefundConsentPending || x.Status == RideCancellationStatus.CashReceiptPending || x.Status == RideCancellationStatus.FinancialReviewPending), token))
             throw new ServiceException("ride_cancellation_already_open", "هذه الرحلة لديها طلب إلغاء قيد المراجعة.");
 
         if (customerId == ride.DriverId)
         {
-            var driverRequest = await AddByDriverAsync(ride, reason, token);
+            var driverRequest = await AddByDriverAsync(ride, reason, model.SafeStopConfirmed, token);
             await db.SaveChangesAsync(token);
             await transaction.CommitAsync(token);
             if (realtimePublisher is not null)
@@ -65,11 +65,9 @@ public sealed class RideCancellationRequest(
             x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid, token);
         var paymentPending = await db.PaymentWalletOperations.AnyAsync(x => x.RideId == ride.Id && x.IsOpen && x.Status != "Succeeded", token);
         var directEnRouteCancellation = ride.Status is RideStatus.DriverAssigned or RideStatus.DriverEnRoute && !hasPaidPayment && !paymentPending;
-        var rejections = await db.RideCancellationRequests.CountAsync(
-            x => x.RideId == ride.Id && x.DriverDecision == RideCancellationDriverDecision.Rejected, token);
-        // A started ride is first presented to its driver. Only the third
-        // driver rejection (or an unassigned ride) escalates to administration.
-        var reviewByAdmin = ride.DriverId is null || rejections >= 3;
+        var reviewByAdmin = ride.DriverId is null;
+        if (isInProgress && !model.SafeStopConfirmed)
+            throw new ServiceException("safe_stop_confirmation_required", "اتفق على نقطة آمنة وأكد توقف النقل فعلياً قبل إرسال إلغاء الرحلة. يمكنك فتح بلاغ السلامة عند الحاجة.");
         var request = new YemenDrive.Database.Entities.RideCancellationRequest
         {
             RideId = ride.Id,
@@ -79,7 +77,7 @@ public sealed class RideCancellationRequest(
             Status = directEnRouteCancellation ? RideCancellationStatus.AdminApproved : reviewByAdmin ? RideCancellationStatus.AdminReviewPending : RideCancellationStatus.DriverReviewPending,
             DriverDecision = directEnRouteCancellation ? RideCancellationDriverDecision.Accepted : RideCancellationDriverDecision.None,
             Reason = reason,
-            RequestedRefundMethod = model.RequestedRefundMethod ?? CashCancellationRefundMethod.CreditCustomerWallet
+            RequestedRefundMethod = model.RequestedRefundMethod
         };
 
         if (isInProgress)
@@ -111,6 +109,7 @@ public sealed class RideCancellationRequest(
         {
             var quote = await RideCancellationQuote.GetAsync(db, ride, token, request);
             request.RequestedRefundAmount = quote.RefundAmount;
+            request.TravelledFareSnapshot = quote.TravelledFare;
             if (quote.ObservedAtUtc is not null)
             {
                 request.CancellationLatitude = quote.Latitude;
@@ -118,9 +117,13 @@ public sealed class RideCancellationRequest(
                 request.LocationObservedAtUtc = quote.ObservedAtUtc;
             }
         }
-        ride.Status = directEnRouteCancellation ? RideStatus.Cancelled : RideStatus.CancellationPending;
+        await RideFinancialState.CloseServiceAsync(db, ride, reason, token);
+        ride.Status = RideStatus.Cancelled;
+        if (!isInProgress && !hasPaidPayment && !paymentPending) ride.FinancialAmountDue = 0m;
         ride.UpdatedAtUtc = DateTime.UtcNow;
         if (directEnRouteCancellation) await RideDriverAvailability.ReleaseAsync(db, ride, token);
+        request.AssignedAdminId = await OperationalReviewCoordinator.OwnerAsync(db, "refunds.write", token);
+        if (ride.DecisionResponseMinutes != null) request.ReviewDueAtUtc = request.CreatedAtUtc.AddMinutes(ride.DecisionResponseMinutes.Value);
         db.RideCancellationRequests.Add(request);
         await db.SaveChangesAsync(token);
         if (directEnRouteCancellation)
@@ -149,16 +152,30 @@ public sealed class RideCancellationRequest(
 
     protected override async Task<object?> GetAsync(RideCancellationRequestModel model, CancellationToken token)
     {
-        if (model.Id is null && model.RideId is null) throw new ServiceException("id_required", "معرف طلب الإلغاء أو الرحلة مطلوب.");
+        if (!model.PendingOnly && model.Id is null && model.RideId is null) throw new ServiceException("id_required", "معرف طلب الإلغاء أو الرحلة مطلوب.");
         var userId = currentUser.UserId ?? throw new ServiceException("authentication_required", "يجب تسجيل الدخول.");
+        if (model.PendingOnly)
+        {
+            var pending = await db.RideCancellationRequests.AsNoTracking().Include(x => x.Ride)
+                .Where(x => x.CustomerId == userId &&
+                    (x.Status == RideCancellationStatus.DriverReviewPending || x.Status == RideCancellationStatus.AdminReviewPending ||
+                     x.Status == RideCancellationStatus.CustomerReviewPending || x.Status == RideCancellationStatus.RefundMethodPending ||
+                     x.Status == RideCancellationStatus.RefundConsentPending || x.Status == RideCancellationStatus.CashReceiptPending ||
+                     x.Status == RideCancellationStatus.FinancialReviewPending))
+                .OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id).FirstOrDefaultAsync(token);
+            return pending is null ? null : await ToResultAsync(pending, token);
+        }
         var isAdmin = await IsAdminAsync(userId, token);
         if (model.PreviewOnly)
         {
-            var ride = await db.Rides.AsNoTracking().SingleOrDefaultAsync(x => x.Id == model.RideId, token)
+            var previewRequest = model.Id is int previewId ? await db.RideCancellationRequests.AsNoTracking().SingleOrDefaultAsync(x => x.Id == previewId, token) : null;
+            if (model.Id != null && previewRequest == null) throw new ServiceException("cancellation_request_not_found", "طلب الإلغاء غير موجود.");
+            var ride = await db.Rides.AsNoTracking().SingleOrDefaultAsync(x => x.Id == (previewRequest == null ? model.RideId : previewRequest.RideId), token)
                 ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
             if (!isAdmin && ride.CustomerId != userId && ride.DriverId != userId)
                 throw new ServiceException("ride_access_denied", "لا تملك صلاحية مراجعة استرداد هذه الرحلة.");
-            return await RideCancellationQuote.GetAsync(db, ride, token,
+            if (isAdmin && previewRequest != null && model.WaiveCancellationFees != null) previewRequest.WaiveCancellationFees = model.WaiveCancellationFees.Value;
+            return await RideCancellationQuote.GetAsync(db, ride, token, previewRequest,
                 reviewedTravelledFare: isAdmin ? model.ReviewedTravelledFare : null);
         }
         var query = db.RideCancellationRequests.AsNoTracking().Include(x => x.Ride).AsQueryable();
@@ -195,26 +212,16 @@ public sealed class RideCancellationRequest(
         request.DriverNote = string.IsNullOrWhiteSpace(model.Note) ? null : model.Note.Trim();
         if (decision == RideCancellationDriverDecision.Rejected)
         {
-            var rejectionCount = await db.RideCancellationRequests.CountAsync(
-                x => x.RideId == request.RideId && x.DriverDecision == RideCancellationDriverDecision.Rejected, token) + 1;
-            if (rejectionCount >= 3)
-            {
-                request.Status = RideCancellationStatus.AdminReviewPending;
-                await NotifyAdminsAsync(request.Ride, request, "رفض السائق طلب الإلغاء للمرة الثالثة؛ أُحيل الطلب إلى الإدارة.", token);
-                db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "أُحيل طلب الإلغاء إلى الإدارة", Body = "رفض السائق طلب الإلغاء ثلاث مرات، لذلك أُحيل الطلب إلى الإدارة للمراجعة.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
-            }
-            else
-            {
-                request.Status = RideCancellationStatus.DriverRejected;
-                db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "رفض السائق طلب الإلغاء", Body = $"رفض السائق طلب الإلغاء. يمكنك إرسال طلب جديد؛ بعد {3 - rejectionCount} رفضاً إضافياً يُحال الطلب إلى الإدارة.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
-            }
+            request.Status = RideCancellationStatus.AdminReviewPending;
+            await NotifyAdminsAsync(request.Ride, request, "رفض السائق طلب الإلغاء؛ أول خلاف يُحال إلى الإدارة. انتهى النقل وتبقى الحقوق المالية للمراجعة.", token);
+            db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.RideStatus, Title = "أُحيل الخلاف إلى الإدارة", Body = "انتهى النقل؛ أُحيل سبب الإلغاء وحقوق الطرفين المالية للمراجعة." });
         }
         else if (decision == RideCancellationDriverDecision.Accepted)
         {
             var hasPaidPayment = await db.PaymentTransactions.AnyAsync(
                 x => x.RideId == request.RideId && x.Status == PaymentStatus.Paid, token);
             var paymentPending = await db.PaymentWalletOperations.AnyAsync(x => x.RideId == request.RideId && x.IsOpen && x.Status != "Succeeded", token);
-            if (!hasPaidPayment && !paymentPending)
+            if (!hasPaidPayment && !paymentPending && request.RideStatusAtRequest != RideStatus.InProgress)
             {
                 request.Status = RideCancellationStatus.AdminApproved;
                 request.Ride.Status = RideStatus.Cancelled;
@@ -250,6 +257,7 @@ public sealed class RideCancellationRequest(
     {
         if (model.Id is null) throw new ServiceException("id_required", "معرف طلب الإلغاء مطلوب.");
         var adminId = currentUser.UserId ?? throw new ServiceException("authentication_required", "يجب تسجيل الدخول كمدير.");
+        await YemenDrive.Application.Administration.AdministratorAccess.RequireAsync(db, adminId, "refunds.write", token);
         if (!await IsAdminAsync(adminId, token)) throw new ServiceException("admin_required", "هذه العملية متاحة للإدارة فقط.");
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         await LockRequestRideAsync(model.Id, token);
@@ -257,13 +265,30 @@ public sealed class RideCancellationRequest(
             ?? throw new ServiceException("cancellation_request_not_found", "طلب الإلغاء غير موجود.");
         var customerApprovedRefund = request.Status == RideCancellationStatus.CustomerApproved && request.AdminDecidedAtUtc == null &&
             await db.PaymentTransactions.AnyAsync(x => x.RideId == request.RideId && x.Status == PaymentStatus.Paid, token);
-        if (request.Status != RideCancellationStatus.AdminReviewPending && !customerApprovedRefund) return await ToResultAsync(request, token);
+        if (request.Status is not (RideCancellationStatus.AdminReviewPending or RideCancellationStatus.FinancialReviewPending) && !customerApprovedRefund) throw new ServiceException("cancellation_decision_closed", "لم يعد هذا القرار متاحاً؛ حدّث الطلب.");
         if (approve) await EnsureWalletPaymentSettledAsync(request.RideId, token);
         var previousRideStatus = request.Ride.Status;
         if (!customerApprovedRefund) request.Status = approve ? RideCancellationStatus.AdminApproved : RideCancellationStatus.AdminRejected;
+        request.AssignedAdminId = adminId;
         request.AdminUserId = adminId;
         request.AdminDecidedAtUtc = DateTime.UtcNow;
         request.AdminNote = string.IsNullOrWhiteSpace(model.Note) ? null : model.Note.Trim();
+        if (string.IsNullOrWhiteSpace(request.AdminNote)) throw new ServiceException("decision_reason_required", "اذكر أساس القرار والمسؤولية المالية.");
+        if (model.Responsibility != null && model.Responsibility is not ("Customer" or "Driver" or "Company" or "Shared" or "Undetermined"))
+            throw new ServiceException("invalid_responsibility", "حدد الطرف المسؤول وفق الأدلة.");
+        request.Responsibility = model.Responsibility ?? request.Responsibility;
+        if (request.Responsibility is "Driver" or "Company" && model.WaiveCancellationFees != true)
+            throw new ServiceException("fault_fees_require_waiver", "لا يتحمل الراكب رسوم إلغاء ناجم عن السائق أو الشركة؛ اعتمد إعفاء الرسوم.");
+        request.WaiveCancellationFees = model.WaiveCancellationFees ?? request.WaiveCancellationFees;
+        if (model.CashReceiptConfirmed)
+        {
+            if (request.CashReturnedAtUtc == null || string.IsNullOrWhiteSpace(model.EvidenceReference))
+                throw new ServiceException("cash_refund_evidence_required", "تحقق من دليل استلام النقد وسجل مرجعه؛ لا يكفي قول السائق.");
+            request.CustomerCashReceiptConfirmed = true;
+            request.RequestedRefundMethod = CashCancellationRefundMethod.ReturnFromDriver;
+            db.OperationalDecisionAudits.Add(new() { ActorUserId = adminId, Subject = "CashRefundEvidence", SubjectId = request.Id, Action = "verified_receipt", Reason = model.EvidenceReference });
+        }
+        db.OperationalDecisionAudits.Add(new() { ActorUserId = adminId, Subject = "RideCancellation", SubjectId = request.Id, Action = approve ? "approve" : "reject", Reason = request.AdminNote });
         CancellationSettlementResult? settlement = null;
         if (approve)
         {
@@ -272,14 +297,36 @@ public sealed class RideCancellationRequest(
             // immutable; this creates its own refund/payment record, wallet
             // movement when applicable, driver receivable and reversing
             // journal entry in the same serializable transaction.
+            var quoteForDecision = await RideCancellationQuote.GetAsync(db, request.Ride, token, request, model.ReviewedTravelledFare);
+            if (quoteForDecision.TotalDeductions is null) throw new ServiceException("cancellation_refund_review_required", quoteForDecision.CalculationMessage ?? "راجع الأجرة المقطوعة.");
+            request.TravelledFareSnapshot = quoteForDecision.TravelledFare;
+            request.Ride.FinancialAmountDue = quoteForDecision.TotalDeductions;
+            request.RequestedRefundAmount = quoteForDecision.RefundAmount;
+            var originalFareForDecision = Math.Max(0m, (request.Ride.CustomerPrice ?? request.Ride.ServerPrice ?? 0m) + request.Ride.WaitingFee);
+            request.Ride.FinancialDriverEntitlement = originalFareForDecision <= 0 ? 0m : decimal.Round(Math.Max(0m, request.Ride.DriverShare ?? 0m) * Math.Min(originalFareForDecision, (quoteForDecision.TravelledFare ?? 0m) + quoteForDecision.WaitingFee) / originalFareForDecision, 2);
+            if (model.FundingLedgerAccountId is int payoutAccount)
+            {
+                if (model.VerifiedPayoutAmount is not decimal payoutAmount || payoutAmount != request.RequestedRefundAmount) throw new ServiceException("refund_amount_changed", "المبلغ المحول لا يطابق صافي الاسترداد؛ راجع الفاتورة.");
+                await VerifiedRefundPayout.ValidateAsync(db, adminId, payoutAccount, payoutAmount, model.EvidenceReference, token);
+                request.RefundFundingLedgerAccountId = payoutAccount; request.RefundPayoutEvidenceReference = model.EvidenceReference;
+                request.RefundDestination = "VerifiedAlternative";
+                db.OperationalDecisionAudits.Add(new() { ActorUserId = adminId, Subject = "RefundPayoutEvidence", SubjectId = request.Id, Action = "verified_transfer", Reason = model.EvidenceReference! });
+            }
+            var externalPaid = await db.PaymentTransactions.AnyAsync(x => x.RideId == request.RideId && x.Status == PaymentStatus.Paid && (x.Provider == "Floosak" || x.Provider == "Jaib"), token);
             var cashPaid = await db.PaymentTransactions.AnyAsync(x => x.RideId == request.RideId && x.Status == PaymentStatus.Paid && x.Provider == "Cash", token);
-            if (cashPaid)
+            if (request.RefundFundingLedgerAccountId == null && (request.RequestedRefundAmount > 0 && cashPaid && request.CustomerCashReceiptConfirmed != true && request.RefundConsentedAtUtc == null || externalPaid && request.RefundConsentedAtUtc == null && request.RequestedRefundAmount > 0))
             {
                 var quote = await RideCancellationQuote.GetAsync(db, request.Ride, token, request, model.ReviewedTravelledFare);
                 if (quote.RefundAmount is null) throw new ServiceException("cancellation_refund_review_required", quote.CalculationMessage ?? "راجع أجرة الجزء المقطوع قبل الاعتماد.");
                 request.RequestedRefundAmount = quote.RefundAmount;
-                request.Status = RideCancellationStatus.RefundMethodPending;
-                await NotifyRefundMethodAsync(request, token);
+            request.TravelledFareSnapshot = quote.TravelledFare;
+                request.Status = cashPaid ? RideCancellationStatus.RefundMethodPending : RideCancellationStatus.RefundConsentPending;
+                request.RefundDestination = "YemenDriveWallet";
+                request.RequestedRefundMethod = CashCancellationRefundMethod.CreditCustomerWallet;
+                if (cashPaid) await NotifyRefundMethodAsync(request, token);
+                else db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.Payment,
+                    Title = "اختر وجهة الاسترداد", Body = "استرداد المصدر الخارجي غير موثق في الربط الحالي. يمكنك قبول محفظة التطبيق أو رفضها لفتح معالجة مالية مع الإدارة.",
+                    DataJson = $"{{\"action\":\"review_cancellation_request\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
             }
             else
             {
@@ -289,10 +336,16 @@ public sealed class RideCancellationRequest(
                 await RideDriverAvailability.ReleaseAsync(db, request.Ride, token);
             }
         }
+        if (!approve)
+        {
+            request.Status = RideCancellationStatus.FinancialReviewPending;
+            await NotifyAdminsAsync(request.Ride, request, "رفضت الإدارة التسوية المقترحة. النقل منتهٍ؛ تبقى الحالة المالية مفتوحة لمراجعة المسؤولية والأدلة.", token);
+        }
+        if (approve && request.Status == RideCancellationStatus.AdminApproved) await RideFinancialState.SynchronizeAsync(db, request.Ride, adminId, token);
         var customerBody = !approve
             ? "راجعت الإدارة الطلب ولم توافق على الإلغاء المالي."
             : request.Status == RideCancellationStatus.RefundMethodPending
-                ? "وافقت الإدارة على الإلغاء. يحدد السائق طريقة إعادة صافي المبلغ قبل الإلغاء النهائي."
+                ? "وافقت الإدارة على الإلغاء. انتهى النقل؛ يحدد مسار إعادة صافي المبلغ وتأكيد استلامه."
             : settlement is null
                 ? "وافقت الإدارة على طلب الإلغاء وتم إلغاء الرحلة."
                 : settlement.CreditedToWallet
@@ -335,135 +388,55 @@ public sealed class RideCancellationRequest(
         CancellationToken token,
         decimal? reviewedTravelledFare = null)
     {
-        var payment = await db.PaymentTransactions.SingleOrDefaultAsync(
-            x => x.RideId == request.RideId && x.Status == PaymentStatus.Paid, token);
-        if (payment is null) return null;
         var ride = request.Ride;
-        if (ride.DriverId is null)
-            throw new ServiceException("driver_not_assigned", "لا يمكن تسوية إلغاء رحلة مدفوعة دون سائق مسند.");
-
+        var receipts = await db.PaymentTransactions.Where(x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid).OrderByDescending(x => x.Id).ToListAsync(token);
+        if (receipts.Count == 0) return null;
+        if (ride.DriverId == null) throw new ServiceException("driver_not_assigned", "السائق المسند غير موجود.");
         var quote = await RideCancellationQuote.GetAsync(db, ride, token, request, reviewedTravelledFare);
-        if (quote.RefundAmount is not { } refundAmount)
-            throw new ServiceException("cancellation_refund_review_required", quote.CalculationMessage ?? "حدد أجرة الجزء المقطوع بعد مراجعة الإدارة قبل اعتماد الاسترداد.");
-        request.RequestedRefundAmount = refundAmount;
-        if (string.Equals(payment.Provider, "Cash", StringComparison.OrdinalIgnoreCase))
-            return await SettleCashCancellationAsync(request, payment, refundAmount, actorUserId, token);
-        if (payment.Provider is "YemenDriveWallet" or "Floosak" or "Jaib")
-            return await SettleWalletCancellationAsync(request, payment, refundAmount, actorUserId, token);
-
-        throw new ServiceException("manual_refund_required", "استرداد وسيلة الدفع هذه يحتاج معالجة مالية يدوية موثقة.");
-    }
-
-    private async Task<CancellationSettlementResult> SettleCashCancellationAsync(
-        YemenDrive.Database.Entities.RideCancellationRequest request,
-        PaymentTransaction originalPayment,
-        decimal refundAmount,
-        int actorUserId,
-        CancellationToken token)
-    {
-        var refundMethod = request.RequestedRefundMethod
-            ?? throw new ServiceException("cash_refund_method_required", "حدد العميل مسار استرداد الدفع النقدي قبل اعتماد الإلغاء.");
-        var refundReference = $"cash-cancellation:payment:{originalPayment.Id}:{refundMethod}";
-        if (await db.PaymentTransactions.AnyAsync(x => x.ProviderReference == refundReference, token))
-            throw new ServiceException("refund_already_processed", "تمت معالجة استرداد هذه الدفعة مسبقاً.");
-
-        var ride = request.Ride;
-        var creditedToWallet = refundMethod == CashCancellationRefundMethod.CreditCustomerWallet;
-        if (creditedToWallet && refundAmount > 0)
-        {
-            var wallet = await db.Wallets.SingleOrDefaultAsync(x => x.UserId == ride.CustomerId, token)
-                ?? throw new ServiceException("wallet_not_found", "محفظة العميل غير موجودة.");
-            if (!string.Equals(wallet.Currency, originalPayment.Currency, StringComparison.OrdinalIgnoreCase))
-                throw new ServiceException("currency_mismatch", "عملة الاسترداد لا تطابق عملة محفظة العميل.");
-            wallet.Balance += refundAmount;
-            db.WalletTransactions.Add(new WalletTransaction
-            {
-                WalletId = wallet.Id, RideId = ride.Id, Type = WalletTransactionType.Refund,
-                Amount = refundAmount, BalanceAfter = wallet.Balance,
-                Description = "استرداد رحلة نقدية ملغاة إلى محفظة العميل بعد خصم رسم الإلغاء",
-                ExternalReference = refundReference
-            });
-            // The driver retains the cash while the platform funds the wallet;
-            // record that separate receivable without changing the collection
-            // debt created by the original cash payment.
-            db.DriverSettlements.Add(new DriverSettlement
-            {
-                DriverId = ride.DriverId!.Value,
-                PeriodStartUtc = DateTime.UtcNow, PeriodEndUtc = DateTime.UtcNow,
-                GrossRideAmount = 0, PlatformCommission = 0, Adjustments = -refundAmount,
-                NetPayable = -refundAmount, Status = PaymentStatus.Pending,
-                PaymentReference = refundReference
-            });
-        }
-
-        if (refundAmount > 0)
-        {
-            db.PaymentTransactions.Add(new PaymentTransaction
-            {
-                UserId = ride.CustomerId, RideId = ride.Id, Amount = refundAmount,
-                Currency = originalPayment.Currency,
-                Provider = creditedToWallet ? "CashRefundToCustomerWallet" : "CashReturnFromDriver",
-                Status = PaymentStatus.Refunded, ProviderReference = refundReference
-            });
-        }
-        await accounting.PostCancellationAsync(ride, originalPayment, refundAmount, creditedToWallet,
-            driverCommissionReversal: 0, actorUserId, token);
-        return new CancellationSettlementResult(refundAmount, originalPayment.Currency, refundMethod,
-            creditedToWallet, creditedToWallet && refundAmount > 0, creditedToWallet ? refundAmount : 0m);
-    }
-
-    private async Task<CancellationSettlementResult> SettleWalletCancellationAsync(
-        YemenDrive.Database.Entities.RideCancellationRequest request,
-        PaymentTransaction originalPayment,
-        decimal refundAmount,
-        int actorUserId,
-        CancellationToken token)
-    {
-        var refundReference = $"refund:payment:{originalPayment.Id}";
-        if (await db.PaymentTransactions.AnyAsync(x => x.ProviderReference == refundReference, token))
-            throw new ServiceException("refund_already_processed", "تمت معالجة استرداد هذه الدفعة مسبقاً.");
-        var ride = request.Ride;
-        var customerWallet = await db.Wallets.SingleOrDefaultAsync(x => x.UserId == ride.CustomerId, token)
-            ?? throw new ServiceException("wallet_not_found", "محفظة العميل غير موجودة.");
-        var driverWallet = await db.Wallets.SingleOrDefaultAsync(x => x.UserId == ride.DriverId, token)
-            ?? throw new ServiceException("driver_wallet_not_found", "محفظة السائق غير موجودة.");
-        if (!string.Equals(customerWallet.Currency, originalPayment.Currency, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(driverWallet.Currency, originalPayment.Currency, StringComparison.OrdinalIgnoreCase))
-            throw new ServiceException("currency_mismatch", "عملة الاسترداد لا تطابق محافظ أطراف الرحلة.");
-
-        var originalFare = Math.Max(0m, (ride.CustomerPrice ?? ride.ServerPrice ?? 0m) + ride.WaitingFee);
-        var retainedFare = Math.Clamp(originalPayment.Amount - refundAmount - ride.ServiceFee - ride.CancellationFee, 0m, originalFare);
-        var driverNet = Math.Max(0m, ride.DriverShare ?? originalFare - ride.DriverCommissionAmount);
-        var retainedDriverNet = originalFare == 0m ? 0m : decimal.Round(driverNet * retainedFare / originalFare, 2, MidpointRounding.AwayFromZero);
-        var driverReversal = Math.Max(0m, driverNet - retainedDriverNet);
-        var walletDebit = Math.Min(Math.Max(0m, driverWallet.Balance), driverReversal);
-        var driverDebt = driverReversal - walletDebit;
-        customerWallet.Balance += refundAmount;
+        var money = await RideFinancialState.ReadAsync(db, ride, token);
+        var refundAmount = Math.Min(quote.RefundAmount ?? throw new ServiceException("cancellation_refund_review_required", "راجع الأجرة المقطوعة أولاً."), money.RefundDue);
+        var cash = receipts.Any(x => x.Provider == "Cash");
+        var external = receipts.Any(x => x.Provider is "Floosak" or "Jaib");
+        var verifiedPayout = request.RefundFundingLedgerAccountId != null;
+        var walletRefund = !verifiedPayout && (!cash || request.RequestedRefundMethod == CashCancellationRefundMethod.CreditCustomerWallet);
+        if (!verifiedPayout && refundAmount > 0 && (external || cash && walletRefund) && request.RefundConsentedAtUtc == null)
+            throw new ServiceException("refund_consent_required", "يلزم قبول الراكب وجهة محفظة التطبيق؛ لم يثبت دعم استرداد المصدر الخارجي.");
+        if (!verifiedPayout && refundAmount > 0 && cash && !walletRefund && request.CustomerCashReceiptConfirmed != true)
+            throw new ServiceException("cash_receipt_not_confirmed", "استلام النقد بحاجة إلى تأكيد الراكب أو قرار موثق.");
+        if (!verifiedPayout && cash && !walletRefund && receipts.Any(x => x.Provider != "Cash"))
+            throw new ServiceException("mixed_refund_requires_review", "دفعات الرحلة مختلطة؛ راجع توزيع وجهة الاسترداد مع الإدارة.");
+        var reference = $"cancellation:{request.Id}:refund";
+        if (await db.JournalEntries.AnyAsync(x => x.SourceType == "RideCancellation" && x.SourceId == reference, token))
+            return new(refundAmount, receipts[0].Currency, request.RequestedRefundMethod, walletRefund, false);
+        await RideFinancialState.SnapshotEntitlementAsync(db, ride, token);
+        var driverReversal = Math.Max(0m, ride.CollectedDriverEntitlement!.Value - RideFinancialState.DriverEntitlement(ride));
+        var driverWallet = await db.Wallets.SingleAsync(x => x.UserId == ride.DriverId, token);
+        var customerWallet = await db.Wallets.SingleAsync(x => x.UserId == ride.CustomerId, token);
+        var electronicReversal = await RideFinancialState.AllocateDriverReversalAsync(db, ride, driverReversal, token);
+        var walletDebit = Math.Min(Math.Max(0m, driverWallet.Balance), electronicReversal);
         driverWallet.Balance -= walletDebit;
-        if (refundAmount > 0)
+        if (walletDebit > 0) db.WalletTransactions.Add(new() { WalletId = driverWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Debit, Amount = walletDebit, BalanceAfter = driverWallet.Balance, ExternalReference = reference, Description = "عكس الجزء غير المكتسب من مستحقات الرحلة الملغاة" });
+        if (walletRefund && refundAmount > 0)
         {
-            db.WalletTransactions.Add(new WalletTransaction { WalletId = customerWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Refund, Amount = refundAmount, BalanceAfter = customerWallet.Balance, Description = "استرداد الإلغاء بعد خصم الرسوم وأجرة الجزء المقطوع", ExternalReference = refundReference });
-            db.PaymentTransactions.Add(new PaymentTransaction { UserId = ride.CustomerId, RideId = ride.Id, Amount = refundAmount, Currency = originalPayment.Currency, Provider = originalPayment.Provider == "YemenDriveWallet" ? "YemenDriveWallet" : "ExternalWalletRefundToCustomerWallet", Status = PaymentStatus.Refunded, ProviderReference = refundReference });
+            if (customerWallet.Currency != receipts[0].Currency) throw new ServiceException("currency_mismatch", "عملة الاسترداد لا تطابق محفظة العميل.");
+            customerWallet.Balance += refundAmount;
+            db.WalletTransactions.Add(new() { WalletId = customerWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Refund, Amount = refundAmount, BalanceAfter = customerWallet.Balance, ExternalReference = reference, Description = "استرداد إلغاء الرحلة بعد مراجعة الحقوق وبموافقة العميل" });
         }
-        if (walletDebit > 0)
-            db.WalletTransactions.Add(new WalletTransaction { WalletId = driverWallet.Id, RideId = ride.Id, Type = WalletTransactionType.Debit, Amount = walletDebit, BalanceAfter = driverWallet.Balance, Description = "عكس الجزء غير المستحق للسائق بسبب الإلغاء", ExternalReference = refundReference });
-        foreach (var reversal in new[] { (Amount: walletDebit, Status: PaymentStatus.Refunded, Suffix: "wallet"),
-            (Amount: driverDebt, Status: PaymentStatus.Pending, Suffix: "debt") })
-            if (reversal.Amount > 0) db.DriverSettlements.Add(new DriverSettlement
-            {
-                DriverId = ride.DriverId!.Value, PeriodStartUtc = DateTime.UtcNow, PeriodEndUtc = DateTime.UtcNow,
-                GrossRideAmount = 0, PlatformCommission = 0, Adjustments = -reversal.Amount,
-                NetPayable = -reversal.Amount, Status = reversal.Status,
-                PaymentReference = refundReference + ":driver-" + reversal.Suffix
-            });
-        await accounting.PostCancellationAsync(ride, originalPayment, refundAmount, true, driverReversal, actorUserId, token,
-            driverWalletDebit: walletDebit);
-        return new CancellationSettlementResult(refundAmount, originalPayment.Currency, null, true, driverDebt > 0, driverDebt);
+        if (refundAmount > 0) db.PaymentTransactions.Add(new() { UserId = ride.CustomerId, RideId = ride.Id, Amount = refundAmount, Currency = receipts[0].Currency, Provider = verifiedPayout ? "VerifiedCancellationPayout" : walletRefund ? "CancellationRefundToWallet" : "CashReturnFromDriver", Status = PaymentStatus.Refunded, ProviderReference = reference });
+        var basis = await RideFinancialState.RefundAccountingBasisAsync(db, ride, token);
+        await accounting.PostCancellationAsync(basis, receipts[0], refundAmount, walletRefund, driverReversal, actorUserId, token, driverWalletDebit: walletDebit, sourceReference: reference, refundFundingAccountId: request.RefundFundingLedgerAccountId,
+            retainedServiceFee: Math.Min(quote.ServiceFee, Math.Max(0m, money.PaidAmount - money.RefundedAmount - refundAmount)));
+        var currentAccountDelta = driverReversal - walletDebit - (walletRefund || verifiedPayout ? 0m : refundAmount);
+        if (currentAccountDelta != 0) db.DriverSettlements.Add(new() { DriverId = ride.DriverId.Value, PeriodStartUtc = DateTime.UtcNow, PeriodEndUtc = DateTime.UtcNow, Adjustments = -currentAccountDelta, NetPayable = -currentAccountDelta, Status = currentAccountDelta > 0 ? PaymentStatus.Pending : PaymentStatus.Refunded, PaymentReference = reference + ":driver-current" });
+        ride.CollectedDriverEntitlement -= driverReversal;
+        await db.SaveChangesAsync(token);
+        await RideFinancialState.SynchronizeAsync(db, ride, actorUserId, token);
+        return new(refundAmount, receipts[0].Currency, request.RequestedRefundMethod, walletRefund, currentAccountDelta > 0, Math.Max(0m, currentAccountDelta));
     }
 
     private async Task NotifyAdminsAsync(YemenDrive.Database.Entities.Ride ride, YemenDrive.Database.Entities.RideCancellationRequest request, string body, CancellationToken token)
     {
-        var adminIds = await db.Users.AsNoTracking().Where(x => x.Role == UserRole.Admin && x.IsActive).Select(x => x.Id).ToListAsync(token);
+        var adminIds = await db.Users.AsNoTracking().Where(x => x.Role == UserRole.Admin && x.IsActive && (x.IsSystemAdministrator || db.AdministratorPermissions.Any(p => p.UserId == x.Id && (p.Permission == "*" || p.Permission == "refunds.read" || p.Permission == "refunds.write")))).Select(x => x.Id).ToListAsync(token);
         foreach (var adminId in adminIds)
             db.Notifications.Add(new Notification { UserId = adminId, Type = NotificationType.RideStatus, Title = "طلب إلغاء يحتاج مراجعة", Body = body, DataJson = $"{{\"action\":\"open_cancellation_request\",\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
     }
@@ -477,11 +450,15 @@ public sealed class RideCancellationRequest(
         requestedByDriver = IsDriverRequest(x),
         canChooseRefundMethod = x.Status == RideCancellationStatus.RefundMethodPending && currentUser.UserId == x.DriverId,
         refundConsentPending = x.Status == RideCancellationStatus.RefundConsentPending,
+        cashReceiptPending = x.Status == RideCancellationStatus.CashReceiptPending,
+        x.Ride.ServiceEndedAtUtc, x.Responsibility, x.WaiveCancellationFees, x.CustomerCashReceiptConfirmed,
+        refundDestination = x.RefundDestination, x.RefundPayoutEvidenceReference, x.RefundFundingLedgerAccountId,
+        financialReviewPending = x.Status == RideCancellationStatus.FinancialReviewPending,
         x.RefundChoiceRevision,
-        canDecide = x.Status is RideCancellationStatus.CustomerReviewPending or RideCancellationStatus.RefundConsentPending ? currentUser.UserId == x.CustomerId :
+        canDecide = x.Status is RideCancellationStatus.CustomerReviewPending or RideCancellationStatus.RefundConsentPending or RideCancellationStatus.CashReceiptPending ? currentUser.UserId == x.CustomerId :
             x.Status == RideCancellationStatus.DriverReviewPending && currentUser.UserId == x.DriverId,
         rideStatus = x.Ride.Status,
-        x.Reason, x.RequestedRefundMethod, x.RequestedRefundAmount, x.CancellationLatitude, x.CancellationLongitude,
+        x.Reason, x.RequestedRefundMethod, x.RequestedRefundAmount, x.AssignedAdminId, x.ReviewDueAtUtc, x.CancellationLatitude, x.CancellationLongitude,
         x.LocationObservedAtUtc, x.DriverDecidedAtUtc, x.DriverNote, x.AdminUserId, x.AdminDecidedAtUtc, x.AdminNote, x.CreatedAtUtc,
         refundQuote = await RideCancellationQuote.GetAsync(db, x.Ride, token, x)
       };
@@ -492,9 +469,10 @@ public sealed class RideCancellationRequest(
             RideCancellationStatus.CustomerRejected or RideCancellationStatus.DriverCancelled;
 
     private async Task<YemenDrive.Database.Entities.RideCancellationRequest> AddByDriverAsync(
-        YemenDrive.Database.Entities.Ride ride, string reason, CancellationToken token)
+        YemenDrive.Database.Entities.Ride ride, string reason, bool safeStopConfirmed, CancellationToken token)
     {
         var pending = ride.Status == RideStatus.InProgress;
+        if (pending && !safeStopConfirmed) throw new ServiceException("safe_stop_confirmation_required", "أكد انتهاء النقل عند نقطة آمنة قبل طلب الإلغاء.");
         if (!pending && ride.Status is not (RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.DriverArrived))
             throw new ServiceException("ride_not_cancellable", "لا يمكن للسائق طلب الإلغاء في هذه المرحلة.");
         var paid = await db.PaymentTransactions.AnyAsync(
@@ -506,7 +484,7 @@ public sealed class RideCancellationRequest(
             RideId = ride.Id, Ride = ride, CustomerId = ride.CustomerId, DriverId = ride.DriverId, RequestedByDriver = true,
             RideStatusAtRequest = ride.Status, Reason = reason,
             Status = pending ? RideCancellationStatus.CustomerReviewPending : RideCancellationStatus.DriverCancelled,
-            RequestedRefundMethod = CashCancellationRefundMethod.CreditCustomerWallet
+            RequestedRefundMethod = null
         };
         var waiting = new RideWaitingCoordinator(db);
         var stop = await waiting.ReconcileAsync(ride, DateTime.UtcNow, token);
@@ -515,10 +493,16 @@ public sealed class RideCancellationRequest(
         {
             var quote = await RideCancellationQuote.GetAsync(db, ride, token, request);
             request.RequestedRefundAmount = quote.RefundAmount;
+            request.TravelledFareSnapshot = quote.TravelledFare;
             request.CancellationLatitude = quote.Latitude;
             request.CancellationLongitude = quote.Longitude;
             request.LocationObservedAtUtc = quote.ObservedAtUtc;
         }
+        await RideFinancialState.CloseServiceAsync(db, ride, reason, token);
+        ride.Status = RideStatus.Cancelled;
+        if (!pending) ride.FinancialAmountDue = 0m;
+        request.AssignedAdminId = await OperationalReviewCoordinator.OwnerAsync(db, "refunds.write", token);
+        if (ride.DecisionResponseMinutes != null) request.ReviewDueAtUtc = request.CreatedAtUtc.AddMinutes(ride.DecisionResponseMinutes.Value);
         db.RideCancellationRequests.Add(request);
         if (!pending)
         {
@@ -531,7 +515,7 @@ public sealed class RideCancellationRequest(
         {
             UserId = ride.CustomerId, Type = NotificationType.RideStatus,
             Title = pending ? "طلب السائق إلغاء الرحلة" : "ألغى السائق الرحلة",
-            Body = pending ? "يرجى مراجعة سبب الإلغاء. لا يكتمل الإلغاء قبل الموافقات والتسوية المطلوبة." : "ألغى السائق الرحلة قبل بدءها.",
+            Body = pending ? "يرجى مراجعة سبب الإلغاء. انتهى النقل؛ تراجع الموافقات الحقوق المالية بصورة مستقلة." : "ألغى السائق الرحلة قبل بدءها.",
             DataJson = $"{{\"action\":\"{(pending ? "review_cancellation_request" : "open_active_ride")}\",\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}"
         });
         return request;
@@ -547,7 +531,7 @@ public sealed class RideCancellationRequest(
             var completed = await db.RideCancellationRequests.Include(x => x.Ride).SingleAsync(x => x.Id == model.Id, token);
             return await ToResultAsync(completed, token);
         }
-        return request.Status == RideCancellationStatus.RefundConsentPending ? await RefundConsentAsync(model, approve, token) :
+        return request.Status is RideCancellationStatus.RefundConsentPending or RideCancellationStatus.CashReceiptPending ? await RefundConsentAsync(model, approve, token) :
             IsDriverRequest(request) ? await CustomerDecideAsync(model, approve, token) :
             await DriverDecideAsync(model, approve ? RideCancellationDriverDecision.Accepted : RideCancellationDriverDecision.Rejected, token);
     }
@@ -561,7 +545,7 @@ public sealed class RideCancellationRequest(
             throw new ServiceException("cancellation_customer_access_denied", "الموافقة على طلب السائق متاحة لراكب الرحلة فقط.");
         if (request.Status != RideCancellationStatus.CustomerReviewPending) return await ToResultAsync(request, token);
         var ride = request.Ride;
-        if (ride.Status is not (RideStatus.InProgress or RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.DriverArrived))
+        if (ride.Status is not (RideStatus.InProgress or RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.DriverArrived or RideStatus.Cancelled))
             throw new ServiceException("ride_not_cancellable", "لم تعد الرحلة جارية؛ لا يمكن تطبيق طلب الإلغاء القديم.");
         request.Status = approve ? RideCancellationStatus.CustomerApproved : RideCancellationStatus.CustomerRejected;
         request.UpdatedAtUtc = DateTime.UtcNow;
@@ -576,12 +560,14 @@ public sealed class RideCancellationRequest(
             {
                 var quote = await RideCancellationQuote.GetAsync(db, ride, token, request);
                 request.RequestedRefundAmount = quote.RefundAmount;
+            request.TravelledFareSnapshot = quote.TravelledFare;
                 request.CancellationLatitude = quote.Latitude;
                 request.CancellationLongitude = quote.Longitude;
                 request.LocationObservedAtUtc = quote.ObservedAtUtc;
             }
-            request.Status = paid || pendingPayment ? RideCancellationStatus.AdminReviewPending : RideCancellationStatus.CustomerApproved;
-            ride.Status = paid || pendingPayment ? RideStatus.CancellationPending : RideStatus.Cancelled;
+            var needsFinancialReview = paid || pendingPayment || request.RideStatusAtRequest == RideStatus.InProgress;
+            request.Status = needsFinancialReview ? RideCancellationStatus.AdminReviewPending : RideCancellationStatus.CustomerApproved;
+            ride.Status = RideStatus.Cancelled;
             await RideRouteChangePolicy.ExpireAsync(db, ride, DateTime.UtcNow, token);
             if (!paid && !pendingPayment) await RideDriverAvailability.ReleaseAsync(db, ride, token);
             if (paid || pendingPayment)
@@ -590,7 +576,7 @@ public sealed class RideCancellationRequest(
         else
         {
             request.Status = RideCancellationStatus.AdminReviewPending;
-            ride.Status = RideStatus.CancellationPending;
+            ride.Status = RideStatus.Cancelled;
             await NotifyAdminsAsync(ride, request, "رفض الراكب طلب إلغاء السائق؛ راجع الطلب واتخذ القرار.", token);
         }
         ride.UpdatedAtUtc = DateTime.UtcNow;
@@ -647,10 +633,17 @@ public sealed class RideCancellationRequest(
         {
             request.Status = RideCancellationStatus.RefundConsentPending;
             db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.Payment,
-                Title = "الموافقة على إعادة المبلغ للمحفظة", Body = $"اختار السائق إعادة {request.RequestedRefundAmount:0.##} إلى محفظتك. وافق على الطريقة أو ارفضها لطلب اختيار جديد.",
+                Title = "الموافقة على إعادة المبلغ للمحفظة", Body = $"اختار السائق إعادة {request.RequestedRefundAmount:0.##} إلى محفظتك. وافق على الطريقة أو ارفضها لفتح مراجعة مالية مع الإدارة.",
                 DataJson = $"{{\"action\":\"review_cancellation_request\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
         }
-        else await FinalizeCashRefundAsync(request, token);
+        else
+        {
+            request.CashReturnedAtUtc = DateTime.UtcNow;
+            request.Status = RideCancellationStatus.CashReceiptPending;
+            db.Notifications.Add(new Notification { UserId = request.CustomerId, Type = NotificationType.Payment,
+                Title = "هل استلمت المبلغ النقدي؟", Body = $"أفاد السائق بإعادة {request.RequestedRefundAmount:0.##} نقداً. أكد الاستلام أو اعترض؛ لم يسجل الاسترداد مكتملًا بعد.",
+                DataJson = $"{{\"action\":\"review_cancellation_request\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
+        }
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
         await PublishCancellationAsync(request, token);
@@ -663,24 +656,21 @@ public sealed class RideCancellationRequest(
         await LockRequestRideAsync(model.Id, token);
         var request = await db.RideCancellationRequests.Include(x => x.Ride).SingleAsync(x => x.Id == model.Id, token);
         if (currentUser.UserId != request.CustomerId) throw new ServiceException("cancellation_customer_access_denied", "موافقة الاسترداد متاحة لراكب الرحلة فقط.");
-        if (request.Status != RideCancellationStatus.RefundConsentPending) return await ToResultAsync(request, token);
+        if (request.Status is not (RideCancellationStatus.RefundConsentPending or RideCancellationStatus.CashReceiptPending)) throw new ServiceException("refund_decision_closed", "لم يعد قرار الاسترداد متاحاً؛ حدّث الطلب.");
         if (model.RefundChoiceRevision != request.RefundChoiceRevision)
             throw new ServiceException("refund_choice_changed", "تغيرت طريقة الاسترداد؛ حدّث الطلب قبل الموافقة.");
         request.UpdatedAtUtc = DateTime.UtcNow;
         if (approve)
         {
             request.RefundConsentedAtUtc = DateTime.UtcNow;
+            if (request.Status == RideCancellationStatus.CashReceiptPending) request.CustomerCashReceiptConfirmed = true;
             await EnsureWalletPaymentSettledAsync(request.RideId, token);
             await FinalizeCashRefundAsync(request, token);
         }
         else
         {
-            request.Status = RideCancellationStatus.DriverReviewPending;
-            request.DriverDecision = RideCancellationDriverDecision.None;
-            request.DriverDecidedAtUtc = null;
-            db.Notifications.Add(new Notification { UserId = request.DriverId!.Value, Type = NotificationType.Payment,
-                Title = "رفض الراكب الاسترداد إلى المحفظة", Body = "راجع طلب الإلغاء مجدداً ثم اختر طريقة إعادة المبلغ. لم تُسجّل أي تسوية مالية.",
-                DataJson = $"{{\"action\":\"review_cancellation_request\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
+            request.Status = RideCancellationStatus.FinancialReviewPending;
+            await NotifyAdminsAsync(request.Ride, request, "رفض الراكب وجهة الاسترداد أو اعترض على استلام النقد. عالج حقه مالياً مع الأدلة؛ لا تعاد دورة الموافقات.", token);
         }
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
@@ -702,7 +692,7 @@ public sealed class RideCancellationRequest(
             db.Notifications.Add(new Notification { UserId = recipient, Type = NotificationType.Payment,
                 Title = "اكتمل الإلغاء والاسترداد", Body = settlement.CreditedToWallet
                     ? $"أُعيد {settlement.RefundAmount:0.##} {settlement.Currency} إلى محفظة الراكب بعد الخصومات."
-                    : $"أكد السائق إعادة {settlement.RefundAmount:0.##} {settlement.Currency} نقداً إلى الراكب بعد الخصومات.",
+                    : $"تأكد استلام الراكب {settlement.RefundAmount:0.##} {settlement.Currency} نقداً بعد الخصومات.",
                 DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{request.RideId},\"cancellationRequestId\":{request.Id}}}" });
     }
 

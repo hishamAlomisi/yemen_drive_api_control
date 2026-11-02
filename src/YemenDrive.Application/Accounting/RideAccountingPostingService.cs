@@ -31,8 +31,9 @@ public sealed class RideAccountingPostingService(
             throw new ServiceException("accounting_payment_amount_mismatch", "لا يمكن ترحيل قيد لدفعة لا تطابق إجمالي الرحلة.");
 
         var lines = new List<AccountingPostingLine>();
-        AddDebit(lines, accounts.DriverCurrentAccountId, cashReceived, accounts.DriverPartyId, ride.DriverId, ride.Id,
-            "النقد المقبوض لدى السائق");
+        var driverNet = ride.DriverShare ?? fare - ride.DriverCommissionAmount;
+        AddDebit(lines, accounts.DriverCurrentAccountId, cashReceived - driverNet, accounts.DriverPartyId, ride.DriverId, ride.Id,
+            "صافي رسوم الخدمة والعمولة المستحقة على التحصيل النقدي");
         if (walletAdjustment < 0)
             AddDebit(lines, accounts.CustomerWalletAccountId, Math.Abs(walletAdjustment), accounts.CustomerWalletPartyId, ride.CustomerId, ride.Id,
                 "تغطية فرق الرحلة من محفظة العميل");
@@ -43,16 +44,12 @@ public sealed class RideAccountingPostingService(
         if (walletAdjustment > 0)
             AddCredit(lines, accounts.CustomerWalletAccountId, walletAdjustment, accounts.CustomerWalletPartyId, ride.CustomerId, ride.Id,
                 "إضافة الزيادة النقدية إلى محفظة العميل");
-        var driverNet = ride.DriverShare ?? fare - ride.DriverCommissionAmount;
         AddDebit(lines, accounts.DriverCommissionAccountId, driverNet, null, ride.DriverId, ride.Id,
             "عمولة السائق المثبتة للرحلة");
-        AddCredit(lines, accounts.DriverCurrentAccountId, driverNet, accounts.DriverPartyId, ride.DriverId, ride.Id,
-            "إثبات عمولة السائق المستحقة للمنصة");
         var driverWalletCredit = Math.Max(0m, driverNet - cashReceived);
         if (driverWalletCredit > 0)
         {
             var driverWalletAccount = await DriverWalletAccountAsync(ride, token);
-            AddDebit(lines, accounts.DriverCurrentAccountId, driverWalletCredit, accounts.DriverPartyId, ride.DriverId, ride.Id, "تحويل الجزء المغطى من محفظة العميل إلى محفظة السائق");
             AddCredit(lines, driverWalletAccount.Id, driverWalletCredit, driverWalletAccount.FinancialPartyId, ride.DriverId, ride.Id, "مستحق السائق المغطى من محفظة العميل");
         }
 
@@ -101,7 +98,7 @@ public sealed class RideAccountingPostingService(
             payment.Currency,
             lines,
             SourceType: "RideWalletPayment",
-            SourceId: $"ride:{ride.Id}",
+            SourceId: payment.IdempotencyKey ?? $"ride:{ride.Id}",
             IdempotencyKey: payment.IdempotencyKey,
             CreatedByUserId: actorUserId), token);
     }
@@ -157,7 +154,7 @@ public sealed class RideAccountingPostingService(
         await posting.PostAsync(new AccountingPostingRequest(
             JournalEntryType.RideWalletPayment, $"EXTERNAL-RIDE-{ride.Id}",
             $"دفع الرحلة #{ride.Id} عبر {payment.Provider}", payment.Currency, lines,
-            SourceType: "RideExternalWalletPayment", SourceId: $"ride:{ride.Id}",
+            SourceType: "RideExternalWalletPayment", SourceId: payment.IdempotencyKey ?? $"ride:{ride.Id}",
             IdempotencyKey: payment.IdempotencyKey, CreatedByUserId: actorUserId), token);
     }
 
@@ -181,7 +178,8 @@ public sealed class RideAccountingPostingService(
         int actorUserId,
         CancellationToken token,
         decimal? driverWalletDebit = null,
-        decimal driverWalletCredit = 0m)
+        decimal driverWalletCredit = 0m,
+        string? sourceReference = null, int? refundFundingAccountId = null, decimal? retainedServiceFee = null)
     {
         if (refundAmount <= 0 && driverCommissionReversal <= 0) return;
         var accounts = await ResolveAsync(ride, token);
@@ -189,25 +187,37 @@ public sealed class RideAccountingPostingService(
         var fare = Fare(ride);
         var collectionReversal = Math.Min(fare, refundAmount);
         var feeReversal = refundAmount - collectionReversal;
+        if (retainedServiceFee != null)
+        {
+            var earlierAdjustments = await db.JournalLines.Where(x => x.LedgerAccountId == accounts.ServiceFeeAccountId && x.RideId == ride.Id &&
+                x.JournalEntry.IsPosted && x.JournalEntry.SourceType == "RideCancellation").SumAsync(x => x.Credit - x.Debit, token);
+            feeReversal = Math.Max(0m, ride.ServiceFee + earlierAdjustments) - Math.Max(0m, retainedServiceFee.Value);
+            collectionReversal = refundAmount - feeReversal;
+        }
         // The cancellation fee remains in its original service revenue account.
         AddDebit(lines, accounts.ServiceCollectionAccountId, collectionReversal, accounts.ServiceKindPartyId, null, ride.Id,
             "عكس تحصيل الخدمة بسبب إلغاء الرحلة");
+        AddCredit(lines, accounts.ServiceCollectionAccountId, -collectionReversal, accounts.ServiceKindPartyId, null, ride.Id, "تسوية توزيع أجرة الجزء المنفذ ورسوم السياسة الأصلية");
         AddDebit(lines, accounts.ServiceFeeAccountId, feeReversal, accounts.ServiceKindPartyId, null, ride.Id,
             "عكس الجزء المسترد من رسوم الخدمة");
-        if (creditCustomerWallet)
+        AddCredit(lines, accounts.ServiceFeeAccountId, -feeReversal, accounts.ServiceKindPartyId, null, ride.Id, "استكمال رسوم الخدمة المكتسبة من القبض الجزئي مع حفظ القيد الأصلي");
+        if (refundFundingAccountId is int funding)
+            AddCredit(lines, funding, refundAmount, null, ride.CustomerId, ride.Id, "استرداد فعلي موثق من مصدر التمويل");
+        else if (creditCustomerWallet)
             AddCredit(lines, accounts.CustomerWalletAccountId, refundAmount, accounts.CustomerWalletPartyId, ride.CustomerId, ride.Id,
                 "إضافة استرداد الإلغاء إلى محفظة العميل");
-        else
-            AddCredit(lines, accounts.DriverCurrentAccountId, refundAmount, accounts.DriverPartyId, ride.DriverId, ride.Id,
-                "إثبات استرداد العميل للنقد مباشرة من السائق");
         if (driverWalletDebit is > 0)
         {
             var driverWalletAccount = await DriverWalletAccountAsync(ride, token);
             AddDebit(lines, driverWalletAccount.Id, driverWalletDebit.Value, driverWalletAccount.FinancialPartyId, ride.DriverId, ride.Id,
                 "عكس الجزء غير المستحق من رصيد محفظة السائق");
         }
-        AddDebit(lines, accounts.DriverCurrentAccountId, driverCommissionReversal - (driverWalletDebit ?? 0m), accounts.DriverPartyId, ride.DriverId, ride.Id,
-            "عكس المبلغ المثبت للسائق بسبب الإلغاء");
+        var driverCurrentDelta = driverCommissionReversal - (driverWalletDebit ?? 0m) -
+            (!creditCustomerWallet && refundFundingAccountId == null ? refundAmount : 0m);
+        AddDebit(lines, accounts.DriverCurrentAccountId, driverCurrentDelta, accounts.DriverPartyId, ride.DriverId, ride.Id,
+            "صافي تسوية الاسترداد المستحق على السائق");
+        AddCredit(lines, accounts.DriverCurrentAccountId, -driverCurrentDelta, accounts.DriverPartyId, ride.DriverId, ride.Id,
+            "صافي المستحق للسائق مقابل رد النقد للراكب");
         AddCredit(lines, accounts.DriverCommissionAccountId, driverCommissionReversal, null, ride.DriverId, ride.Id,
             "عكس عمولة السائق بسبب الإلغاء");
         if (driverWalletCredit > 0)
@@ -225,7 +235,7 @@ public sealed class RideAccountingPostingService(
             originalPayment.Currency,
             lines,
             SourceType: "RideCancellation",
-            SourceId: $"payment:{originalPayment.Id}:{method}",
+            SourceId: sourceReference ?? $"payment:{originalPayment.Id}:{method}",
             CreatedByUserId: actorUserId), token);
     }
 
