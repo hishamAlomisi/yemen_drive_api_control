@@ -36,6 +36,7 @@ public sealed class Pricing(
 
         var distance = model.DistanceKm;
         var duration = model.DurationMinutes;
+        string? routePolyline = null;
         var hasRoute = model.PickupLatitude is not null && model.PickupLongitude is not null &&
             model.DestinationLatitude is not null && model.DestinationLongitude is not null;
         if (hasRoute)
@@ -47,6 +48,7 @@ public sealed class Pricing(
                 model.DestinationLatitude.Value, model.DestinationLongitude.Value, false, cancellationToken);
             distance = route.DistanceMeters / 1000d;
             duration = route.DurationSeconds / 60d;
+            routePolyline = route.EncodedPolyline;
         }
         else if (!await dbContext.Users.AnyAsync(x => x.Id == userId && x.IsActive && x.Role == UserRole.Admin, cancellationToken))
             throw new ServiceException("route_required", "حدّد نقطتي الانطلاق والوصول لجلب التسعيرة.");
@@ -66,6 +68,7 @@ public sealed class Pricing(
         {
             quote = new RidePricingQuote
             {
+                RoutePolyline = routePolyline,
                 HasRoutePricingSnapshot = true, BaseFare = rule.BaseFare, PerKilometer = rule.PerKilometer,
                 PerMinute = rule.PerMinute, DistanceMeters = distance * 1000, DurationSeconds = duration * 60,
                 RouteChangeFee = rule.RouteChangeFee,

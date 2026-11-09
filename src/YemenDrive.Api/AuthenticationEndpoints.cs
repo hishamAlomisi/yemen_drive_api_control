@@ -11,6 +11,12 @@ public static class AuthenticationEndpoints
 {
     public static void MapAuthenticationEndpoints(this WebApplication app)
     {
+        app.MapGet("/api/auth/otp-delivery", async (HttpContext context, OtpDeliveryService delivery, CancellationToken token) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            var smsEnabled = await delivery.UsesSmsAsync(token);
+            return Results.Ok(ApiResult.Ok(new { testPushEnabled = delivery.TestPushEnabled && !smsEnabled, smsEnabled }));
+        });
         app.MapPost("/api/auth/register", async (RegisterRequest request, YemenDriveDbContext db, OtpChallengeStore otpStore, TrustedDeviceCredentialService trustedDevices, AuthSessionService sessions, FinancialAccountProvisioningService financialAccounts, CancellationToken token) =>
         {
             var errors = ValidateRegistration(request).ToList();
@@ -48,7 +54,7 @@ public static class AuthenticationEndpoints
             return Results.Ok(ApiResult.Ok(Session(user, session, trustedDeviceToken), "تم إنشاء الحساب وتسجيل الدخول بنجاح."));
         });
 
-        app.MapPost("/api/auth/login", async (LoginRequest request, YemenDriveDbContext db, OtpChallengeStore otpStore, TrustedDeviceCredentialService trustedDevices, AuthSessionService sessions, CancellationToken token) =>
+        app.MapPost("/api/auth/login", async (LoginRequest request, YemenDriveDbContext db, OtpDeliveryService otpDelivery, TrustedDeviceCredentialService trustedDevices, AuthSessionService sessions, CancellationToken token) =>
         {
             if (string.IsNullOrWhiteSpace(request.PhoneNumber) || string.IsNullOrWhiteSpace(request.Password))
                 return Results.Ok(ApiResult.Fail("invalid_credentials", "رقم الهاتف وكلمة المرور مطلوبان."));
@@ -65,10 +71,9 @@ public static class AuthenticationEndpoints
 
             if (!await trustedDevices.IsTrustedAsync(db, user.Id, request.DeviceId, request.TrustedDeviceToken, token))
             {
-                var challenge = otpStore.TryCreate(user.PhoneNumber, SignInPurpose(clientRole));
-                return challenge is null
-                    ? Results.Ok(ApiResult.Fail("otp_delivery_unavailable", "تسجيل الدخول يتطلب OTP، لكن مزود الرسائل غير مهيأ في هذه البيئة."))
-                    : Results.Ok(ApiResult.Ok(new { requiresOtp = true, challengeId = challenge.Value.ChallengeId, expiresInSeconds = challenge.Value.ExpiresInSeconds }, "تم إنشاء رمز التحقق. راجع كونسول التطوير المحلي."));
+                var challenge = await otpDelivery.CreateAsync(user.PhoneNumber, SignInPurpose(clientRole),
+                    request.OtpPushToken, request.DeviceId, request.ClientType, token, request.SmsAppHash, request.NotificationRenderer);
+                return Results.Ok(OtpResult(challenge, requiresOtp: true));
             }
 
             var session = await sessions.CreateAsync(db, user, request.DeviceId, token);
@@ -89,14 +94,13 @@ public static class AuthenticationEndpoints
             return Results.Ok(ApiResult.Ok(Session(user, session), "تم تسجيل الدخول إلى لوحة التحكم."));
         });
 
-        app.MapPost("/api/auth/register/request-otp", (SignUpOtpRequest request, OtpChallengeStore otpStore) =>
+        app.MapPost("/api/auth/register/request-otp", async (SignUpOtpRequest request, OtpDeliveryService otpDelivery, CancellationToken token) =>
         {
             if (string.IsNullOrWhiteSpace(request.PhoneNumber))
                 return Results.Ok(ApiResult.Fail("phone_required", "رقم الهاتف مطلوب."));
-            var challenge = otpStore.TryCreate(request.PhoneNumber, "signUp");
-            return challenge is null
-                ? Results.Ok(ApiResult.Fail("otp_delivery_unavailable", "OTP غير متاح في هذه البيئة لعدم تهيئة مزود الرسائل."))
-                : Results.Ok(ApiResult.Ok(new { challengeId = challenge.Value.ChallengeId, expiresInSeconds = challenge.Value.ExpiresInSeconds }, "تم إنشاء رمز التحقق. راجع كونسول التطوير المحلي."));
+            var challenge = await otpDelivery.CreateAsync(request.PhoneNumber, "signUp",
+                request.OtpPushToken, request.DeviceId, request.ClientType, token, request.SmsAppHash, request.NotificationRenderer);
+            return Results.Ok(OtpResult(challenge));
         });
 
         app.MapPost("/api/auth/sign-in/verify-device", async (DeviceOtpRequest request, OtpChallengeStore otpStore, TrustedDeviceCredentialService trustedDevices, AuthSessionService sessions, YemenDriveDbContext db, CancellationToken token) =>
@@ -164,14 +168,26 @@ public static class AuthenticationEndpoints
             return Results.Ok(ApiResult.Ok(null, "تم تسجيل الخروج."));
         });
 
-        app.MapPost("/api/auth/password/request-reset", (PasswordResetRequest request, OtpChallengeStore otpStore) =>
+        app.MapPost("/api/auth/password/request-reset", async (PasswordResetRequest request, OtpDeliveryService otpDelivery, YemenDriveDbContext db, CancellationToken token) =>
         {
             if (string.IsNullOrWhiteSpace(request.Identity))
                 return Results.Ok(ApiResult.Fail("identity_required", "رقم الهاتف أو البريد الإلكتروني مطلوب."));
-            var challenge = otpStore.TryCreate(request.Identity, "passwordReset");
-            return challenge is null
-                ? Results.Ok(ApiResult.Fail("otp_delivery_unavailable", "OTP غير متاح في هذه البيئة لعدم تهيئة مزود الرسائل."))
-                : Results.Ok(ApiResult.Ok(new { challengeId = challenge.Value.ChallengeId, expiresInSeconds = challenge.Value.ExpiresInSeconds }, "تم إنشاء رمز إعادة التعيين. راجع كونسول التطوير المحلي."));
+            var usesSms = await otpDelivery.UsesSmsAsync(token);
+            if (otpDelivery.TestPushEnabled || usesSms)
+            {
+                var requireClientType = !usesSms || !string.IsNullOrWhiteSpace(request.ClientType);
+                if (requireClientType && !TryResolveClientRole(request.ClientType, out _))
+                    return Results.Ok(ApiResult.Fail("invalid_client_type", "نوع التطبيق غير صالح."));
+                var identity = request.Identity.Trim();
+                var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x =>
+                    x.IsActive && (x.PhoneNumber == identity || x.Email == identity.ToLowerInvariant()), token);
+                if (user is null) return Results.Ok(ApiResult.Fail("user_not_found", "الحساب غير موجود أو غير مفعل."));
+                if (requireClientType && TryResolveClientRole(request.ClientType, out var clientRole) && user.Role != clientRole)
+                    return Results.Ok(AccountTypeMismatch(clientRole));
+            }
+            var challenge = await otpDelivery.CreateAsync(request.Identity, "passwordReset",
+                request.OtpPushToken, request.DeviceId, request.ClientType, token, request.SmsAppHash, request.NotificationRenderer);
+            return Results.Ok(OtpResult(challenge));
         });
 
         app.MapPost("/api/auth/password/reset", async (PasswordResetCompleteRequest request, OtpChallengeStore otpStore, YemenDriveDbContext db, AuthSessionService sessions, CancellationToken token) =>
@@ -254,6 +270,14 @@ public static class AuthenticationEndpoints
             ? ApiResult.Fail("account_type_mismatch", "هذا الحساب غير مسجل كسائق، استخدم تطبيق العميل.")
             : ApiResult.Fail("account_type_mismatch", "هذا الحساب غير مسجل كعميل، استخدم تطبيق السائق.");
 
+    private static ApiResult OtpResult(OtpIssueResult issue, bool requiresOtp = false)
+    {
+        if (!issue.Success) return ApiResult.Fail(issue.ErrorCode!, issue.Message);
+        return requiresOtp
+            ? ApiResult.Ok(new { requiresOtp = true, challengeId = issue.ChallengeId, expiresInSeconds = issue.ExpiresInSeconds }, issue.Message)
+            : ApiResult.Ok(new { challengeId = issue.ChallengeId, expiresInSeconds = issue.ExpiresInSeconds }, issue.Message);
+    }
+
     private static object Session(User user, SessionTokens session, string? trustedDeviceToken = null) => new
     {
         accessToken = session.AccessToken,
@@ -265,13 +289,13 @@ public static class AuthenticationEndpoints
     };
 
     public sealed record RegisterRequest(string? PhoneNumber, string? DisplayName, string? Password, string? Email = null, string? Gender = null, string? Street = null, string? City = null, string? District = null, string? VerificationToken = null, string? DeviceId = null);
-    public sealed record LoginRequest(string? PhoneNumber, string? Password, string? DeviceId = null, string? TrustedDeviceToken = null, string? ClientType = null);
+    public sealed record LoginRequest(string? PhoneNumber, string? Password, string? DeviceId = null, string? TrustedDeviceToken = null, string? ClientType = null, string? OtpPushToken = null, string? SmsAppHash = null, string? NotificationRenderer = null);
     public sealed record AdminLoginRequest(string? PhoneNumber, string? Password);
-    public sealed record SignUpOtpRequest(string? PhoneNumber);
+    public sealed record SignUpOtpRequest(string? PhoneNumber, string? OtpPushToken = null, string? DeviceId = null, string? ClientType = null, string? SmsAppHash = null, string? NotificationRenderer = null);
     public sealed record DeviceOtpRequest(string? PhoneNumber, string? Code, string? ChallengeId, string? DeviceId, string? ClientType = null);
     public sealed record GenericOtpRequest(string? Destination, string? Code, string? Purpose, string? ChallengeId = null);
     public sealed record RefreshRequest(string? RefreshToken);
-    public sealed record PasswordResetRequest(string? Identity, string? Channel);
+    public sealed record PasswordResetRequest(string? Identity, string? Channel, string? OtpPushToken = null, string? DeviceId = null, string? ClientType = null, string? SmsAppHash = null, string? NotificationRenderer = null);
     public sealed record PasswordResetCompleteRequest(string? Identity, string? NewPassword, string? VerificationToken);
     public sealed record ChangePasswordRequest(string? CurrentPassword, string? NewPassword);
 }

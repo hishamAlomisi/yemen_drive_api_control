@@ -1,9 +1,9 @@
 namespace YemenDrive.Application.Maps;
 
 /// <summary>
-/// Server-only credentials. Bind these fields from environment variables or a
-/// managed secret store; never save them in the database or return them to a
-/// client.
+/// Server-only credentials from protected deployment configuration, environment
+/// variables or a managed secret store. Preserve them during upgrades; never
+/// save them in the application database or return them to a client.
 /// </summary>
 public sealed class GoogleMapsOptions
 {

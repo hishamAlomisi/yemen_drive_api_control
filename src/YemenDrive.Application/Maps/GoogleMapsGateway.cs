@@ -1,19 +1,45 @@
 using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using YemenDrive.Shared.Api;
 
 namespace YemenDrive.Application.Maps;
 
-public sealed class GoogleMapsGateway(
-    HttpClient httpClient,
-    GoogleMapsOptions options,
-    ILogger<GoogleMapsGateway> logger)
+public sealed class GoogleMapsGateway
 {
+    private readonly HttpClient httpClient;
+    private readonly Func<GoogleMapsOptions> currentOptions;
+    private readonly ILogger<GoogleMapsGateway> logger;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public async Task<MapRouteQuoteResult> ComputeRouteAsync(
+    [ActivatorUtilitiesConstructor]
+    public GoogleMapsGateway(HttpClient httpClient, IOptionsMonitor<GoogleMapsOptions> options,
+        ILogger<GoogleMapsGateway> logger)
+        : this(httpClient, () => options.CurrentValue, logger) { }
+
+    // Explicit options remain useful for isolated consumers and provider tests.
+    public GoogleMapsGateway(HttpClient httpClient, GoogleMapsOptions options,
+        ILogger<GoogleMapsGateway> logger)
+        : this(httpClient, () => options, logger) { }
+
+    private GoogleMapsGateway(HttpClient httpClient, Func<GoogleMapsOptions> currentOptions,
+        ILogger<GoogleMapsGateway> logger)
+    {
+        this.httpClient = httpClient;
+        this.currentOptions = currentOptions;
+        this.logger = logger;
+    }
+
+    public Task<MapRouteQuoteResult> ComputeRouteAsync(double originLatitude, double originLongitude,
+        double destinationLatitude, double destinationLongitude, bool includeSteps, CancellationToken token) =>
+        ExecuteProviderAsync(() => ComputeRouteCoreAsync(originLatitude, originLongitude,
+            destinationLatitude, destinationLongitude, includeSteps, token), "Routes",
+            "routes_unavailable", "تعذر حساب مسار القيادة حالياً.", token);
+
+    private async Task<MapRouteQuoteResult> ComputeRouteCoreAsync(
         double originLatitude,
         double originLongitude,
         double destinationLatitude,
@@ -21,7 +47,7 @@ public sealed class GoogleMapsGateway(
         bool includeSteps,
         CancellationToken token)
     {
-        var key = RequireKey(options.RoutesApiKey, "routes_not_configured",
+        var key = RequireKey(currentOptions().RoutesApiKey, "routes_not_configured",
             "لم يُجهز خادم المسارات بعد.");
         using var request = new HttpRequestMessage(HttpMethod.Post,
             "https://routes.googleapis.com/directions/v2:computeRoutes")
@@ -55,24 +81,25 @@ public sealed class GoogleMapsGateway(
 
         await using var stream = await response.Content.ReadAsStreamAsync(token);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: token);
-        var route = document.RootElement.TryGetProperty("routes", out var routes) &&
-                    routes.ValueKind == JsonValueKind.Array &&
-                    routes.GetArrayLength() > 0
-            ? routes[0]
-            : throw new ServiceException("route_not_found", "لم يُعثر على مسار قيادة بين النقطتين.");
+        if (!document.RootElement.TryGetProperty("routes", out var routes))
+            throw new ServiceException("route_not_found", "لم يُعثر على مسار قيادة بين النقطتين.");
+        if (routes.ValueKind != JsonValueKind.Array)
+            throw new JsonException("Invalid route result collection.");
+        if (routes.GetArrayLength() == 0)
+            throw new ServiceException("route_not_found", "لم يُعثر على مسار قيادة بين النقطتين.");
+        var route = routes[0];
         var encoded = route.TryGetProperty("polyline", out var polyline) &&
                       polyline.TryGetProperty("encodedPolyline", out var value)
             ? value.GetString()
             : null;
         if (string.IsNullOrWhiteSpace(encoded))
             throw new ServiceException("route_not_found", "لم يصل خط المسار من مزود الخرائط.");
-        var distance = route.TryGetProperty("distanceMeters", out var distanceValue) &&
-                       distanceValue.TryGetInt32(out var parsedDistance)
-            ? parsedDistance
-            : 0;
-        var duration = route.TryGetProperty("duration", out var durationValue)
-            ? ParseDurationSeconds(durationValue.GetString())
-            : 0;
+        if (!route.TryGetProperty("distanceMeters", out var distanceValue) ||
+            !distanceValue.TryGetInt32(out var distance) || distance < 0 ||
+            !route.TryGetProperty("duration", out var durationValue) ||
+            string.IsNullOrWhiteSpace(durationValue.GetString()))
+            throw new JsonException("Invalid route measurements.");
+        var duration = ParseDurationSeconds(durationValue.GetString());
         var steps = includeSteps ? ParseSteps(route) : Array.Empty<MapRouteStep>();
         logger.LogInformation(
             "Google Routes returned a driving route with {DistanceMeters} meters and {DurationSeconds} seconds.",
@@ -114,9 +141,13 @@ public sealed class GoogleMapsGateway(
         return result;
     }
 
-    public async Task<IReadOnlyList<MapPlace>> SearchAsync(string query, CancellationToken token)
+    public Task<IReadOnlyList<MapPlace>> SearchAsync(string query, CancellationToken token) =>
+        ExecuteProviderAsync(() => SearchCoreAsync(query, token), "Places",
+            "places_unavailable", "تعذر البحث عن الأماكن حالياً.", token);
+
+    private async Task<IReadOnlyList<MapPlace>> SearchCoreAsync(string query, CancellationToken token)
     {
-        var key = RequireKey(options.PlacesApiKey, "places_not_configured",
+        var key = RequireKey(currentOptions().PlacesApiKey, "places_not_configured",
             "لم يُجهز بحث الأماكن في الخادم بعد.");
         using var request = new HttpRequestMessage(HttpMethod.Post,
             "https://places.googleapis.com/v1/places:searchText")
@@ -141,9 +172,10 @@ public sealed class GoogleMapsGateway(
 
         await using var stream = await response.Content.ReadAsStreamAsync(token);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: token);
-        if (!document.RootElement.TryGetProperty("places", out var places) ||
-            places.ValueKind != JsonValueKind.Array)
+        if (!document.RootElement.TryGetProperty("places", out var places))
             return Array.Empty<MapPlace>();
+        if (places.ValueKind != JsonValueKind.Array)
+            throw new JsonException("Invalid places result collection.");
         var parsedPlaces = places.EnumerateArray()
             .Select(ParsePlace)
             .Where(place => place is not null)
@@ -153,9 +185,13 @@ public sealed class GoogleMapsGateway(
         return parsedPlaces;
     }
 
-    public async Task<MapPlace?> ReverseGeocodeAsync(double latitude, double longitude, CancellationToken token)
+    public Task<MapPlace?> ReverseGeocodeAsync(double latitude, double longitude, CancellationToken token) =>
+        ExecuteProviderAsync(() => ReverseGeocodeCoreAsync(latitude, longitude, token), "Geocoding",
+            "geocoding_unavailable", "تعذر قراءة عنوان الموقع حالياً.", token);
+
+    private async Task<MapPlace?> ReverseGeocodeCoreAsync(double latitude, double longitude, CancellationToken token)
     {
-        var key = RequireKey(options.GeocodingApiKey, "geocoding_not_configured",
+        var key = RequireKey(currentOptions().GeocodingApiKey, "geocoding_not_configured",
             "لم يُجهز تحويل الإحداثيات إلى عنوان في الخادم بعد.");
         var endpoint = string.Create(CultureInfo.InvariantCulture,
             $"https://maps.googleapis.com/maps/api/geocode/json?latlng={latitude},{longitude}&language=ar&key={Uri.EscapeDataString(key)}");
@@ -168,8 +204,21 @@ public sealed class GoogleMapsGateway(
 
         await using var stream = await response.Content.ReadAsStreamAsync(token);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: token);
-        if (!document.RootElement.TryGetProperty("results", out var results) ||
-            results.ValueKind != JsonValueKind.Array || results.GetArrayLength() == 0)
+        var status = document.RootElement.TryGetProperty("status", out var statusValue) &&
+                     statusValue.ValueKind == JsonValueKind.String ? statusValue.GetString() : null;
+        if (status == "ZERO_RESULTS") return null;
+        if (status != "OK")
+        {
+            // Geocoding reports authorization/quota failures inside HTTP 200.
+            // Never log its error_message or the URI, which contains the key.
+            logger.LogWarning("Google Geocoding returned a non-success provider status.");
+            throw new ServiceException("geocoding_unavailable", "تعذر قراءة عنوان الموقع حالياً.");
+        }
+        if (!document.RootElement.TryGetProperty("results", out var results))
+            throw new JsonException("Missing geocoding result collection.");
+        if (results.ValueKind != JsonValueKind.Array)
+            throw new JsonException("Invalid geocoding result collection.");
+        if (results.GetArrayLength() == 0)
             return null;
         var result = results[0];
         var street = FindComponent(result, "route") ?? string.Empty;
@@ -189,15 +238,43 @@ public sealed class GoogleMapsGateway(
     private static string RequireKey(string key, string code, string message) =>
         string.IsNullOrWhiteSpace(key)
             ? throw new ServiceException(code, message)
-            : key;
+            : key.Trim();
+
+    private async Task<T> ExecuteProviderAsync<T>(Func<Task<T>> send, string provider,
+        string code, string message, CancellationToken token)
+    {
+        try { return await send(); }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            logger.LogWarning("Google {Provider} request timed out.", provider);
+        }
+        catch (HttpRequestException)
+        {
+            logger.LogWarning("Google {Provider} request could not reach the provider.", provider);
+        }
+        catch (JsonException)
+        {
+            logger.LogWarning("Google {Provider} returned an invalid response.", provider);
+        }
+        catch (InvalidOperationException)
+        {
+            // JsonElement accessors use this exception for valid JSON with
+            // unexpected object/field types. Keep it inside the map contract.
+            logger.LogWarning("Google {Provider} returned an unexpected response shape.", provider);
+        }
+        // No original exception/URI is attached: geocoding carries a server key
+        // in its query string, and provider messages can echo request details.
+        throw new ServiceException(code, message);
+    }
 
     private static int ParseDurationSeconds(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return 0;
         var secondsText = value.EndsWith('s') ? value[..^1] : value;
-        return double.TryParse(secondsText, CultureInfo.InvariantCulture, out var seconds)
-            ? Math.Max(0, (int)Math.Ceiling(seconds))
-            : 0;
+        if (!double.TryParse(secondsText, CultureInfo.InvariantCulture, out var seconds) ||
+            !double.IsFinite(seconds) || seconds < 0 || seconds > int.MaxValue)
+            throw new JsonException("Invalid provider duration.");
+        return checked((int)Math.Ceiling(seconds));
     }
 
     private static MapPlace? ParsePlace(JsonElement place)
@@ -205,7 +282,9 @@ public sealed class GoogleMapsGateway(
         if (!place.TryGetProperty("location", out var location) ||
             !location.TryGetProperty("latitude", out var latitude) ||
             !location.TryGetProperty("longitude", out var longitude) ||
-            !latitude.TryGetDouble(out var lat) || !longitude.TryGetDouble(out var lng))
+            !latitude.TryGetDouble(out var lat) || !longitude.TryGetDouble(out var lng) ||
+            !double.IsFinite(lat) || !double.IsFinite(lng) ||
+            lat is < -90 or > 90 || lng is < -180 or > 180)
             return null;
         var title = place.TryGetProperty("displayName", out var displayName) &&
                     displayName.TryGetProperty("text", out var text)

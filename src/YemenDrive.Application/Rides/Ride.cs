@@ -1,6 +1,8 @@
 using System.Data;
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
 using YemenDrive.Database;
 using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
@@ -23,7 +25,8 @@ public sealed class Ride(
     ICurrentUserContext currentUser,
     RideAccountingPostingService accounting,
     IRideRealtimePublisher? realtimePublisher = null,
-    IRideParticipantPresence? presence = null) : OperationsService<RideModel>(configurationStore)
+    IRideParticipantPresence? presence = null,
+    ILogger<Ride>? logger = null) : OperationsService<RideModel>(configurationStore)
 {
     public override IReadOnlyCollection<string> Operations { get; } = ["add", "create", "update", "delete", "get", "cancel"];
     protected override async Task<object?> AddAsync(RideModel model, CancellationToken cancellationToken)
@@ -98,11 +101,13 @@ public sealed class Ride(
         dbContext.Rides.Add(entity);
         await StoreRecentDestinationAsync(entity, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
+        if (entity.Status is RideStatus.Searching or RideStatus.Negotiating)
+            await RideMovementCapture.RequestAsync(dbContext, entity, model, cancellationToken);
         var recipients = entity.Status is RideStatus.Searching or RideStatus.Negotiating
             ? await RideSearchNotificationDispatcher.NotifyAvailableDriversAsync(
                 dbContext, entity, cancellationToken)
             : [];
-        if (recipients.Count > 0)
+        if (recipients.Count > 0 || entity.Status is RideStatus.Searching or RideStatus.Negotiating)
             await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         if (realtimePublisher is not null && recipients.Count > 0)
@@ -509,6 +514,22 @@ public sealed class Ride(
                 .Select(x => (decimal?)x.Score).AverageAsync(cancellationToken)
             : null;
         var finance = await RideFinancialState.ReadAsync(dbContext, entity, cancellationToken);
+        IReadOnlyList<RideMapRouteSample> driverRouteSamples = [];
+        var driverRouteHistoryAvailable = model.IncludeRouteHistory;
+        try
+        {
+            if (model.IncludeRouteHistory)
+                driverRouteSamples = await RideMapRouteHistory.ReadAsync(dbContext, entity, cancellationToken);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
+            exception is DbException or TimeoutException or
+                InvalidOperationException { InnerException: DbException or TimeoutException })
+        {
+            // A display-only archive failure must not hide a successful state,
+            // payment or current-position read. The next snapshot retries it.
+            driverRouteHistoryAvailable = false;
+            logger?.LogWarning(exception, "Could not load display route history for ride {RideId}", entity.Id);
+        }
         return new
         {
             ride = ToResult(entity),
@@ -526,6 +547,9 @@ public sealed class Ride(
                 photoUrl = entity.Driver.DriverProfile == null ? null : entity.Driver.DriverProfile.PhotoUrl
             },
             driverLocation,
+            driverRouteSamples,
+            driverRouteHistoryAvailable,
+            driverRouteHistoryRequested = model.IncludeRouteHistory,
             offers = entity.Offers.Select(x => new
             {
                 x.Id,

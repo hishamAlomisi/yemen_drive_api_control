@@ -42,6 +42,7 @@ public sealed class RideOffer(
         // offer cannot slip in after the customer has closed the request.
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken);
+        await RidePaymentGuard.LockAsync(dbContext, model.RideId.Value, cancellationToken);
         var ride = await dbContext.Rides.SingleOrDefaultAsync(x => x.Id == model.RideId, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
         var statusBeforeOffer = ride.Status;
@@ -146,8 +147,10 @@ public sealed class RideOffer(
     {
         if (model.Status is null or OfferStatus.Accepted)
             return await AcceptAsync(model, cancellationToken);
+        var rideId = await FindRideIdAsync(model.Id, cancellationToken);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken);
+        await RidePaymentGuard.LockAsync(dbContext, rideId, cancellationToken);
         var entity = await FindAsync(model.Id, cancellationToken);
         var customerId = await dbContext.Rides.Where(x => x.Id == entity.RideId)
             .Select(x => x.CustomerId).SingleAsync(cancellationToken);
@@ -162,7 +165,6 @@ public sealed class RideOffer(
             throw new ServiceException("offer_expired", "انتهت صلاحية العرض.");
         }
 
-        await RidePaymentGuard.LockAsync(dbContext, entity.RideId, cancellationToken);
         var ride = await dbContext.Rides.Include(x => x.Offers)
             .SingleOrDefaultAsync(x => x.Id == entity.RideId, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
@@ -194,10 +196,15 @@ public sealed class RideOffer(
     {
         if (model.Id is null)
             throw new ServiceException("id_required", "معرف العرض مطلوب.");
+        // Resolve only the immutable relationship before the transaction. Offer
+        // creation and acceptance lock the ride before reading offer state; a
+        // concurrent offer refresh can deadlock against a shared offer lock.
+        var rideId = await FindRideIdAsync(model.Id, cancellationToken);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken);
+        await RidePaymentGuard.LockAsync(dbContext, rideId, cancellationToken);
         var entity = await dbContext.RideOffers
-            .SingleOrDefaultAsync(x => x.Id == model.Id, cancellationToken)
+            .SingleOrDefaultAsync(x => x.Id == model.Id && x.RideId == rideId, cancellationToken)
             ?? throw new ServiceException("offer_not_found", "العرض غير موجود.");
         if (entity.Status != OfferStatus.Pending)
             throw new ServiceException("offer_not_pending", "لا يمكن قبول عرض تمت معالجته مسبقاً.");
@@ -208,7 +215,6 @@ public sealed class RideOffer(
             throw new ServiceException("offer_expired", "انتهت صلاحية العرض.");
         }
 
-        await RidePaymentGuard.LockAsync(dbContext, entity.RideId, cancellationToken);
         var ride = await dbContext.Rides.Include(x => x.Offers)
             .SingleOrDefaultAsync(x => x.Id == entity.RideId, cancellationToken)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
@@ -232,6 +238,7 @@ public sealed class RideOffer(
         RidePaymentPolicy.OnOfferAccepted(ride);
         ride.UpdatedAtUtc = DateTime.UtcNow;
         entity.UpdatedAtUtc = DateTime.UtcNow;
+        await RideMovementCapture.AcceptedAsync(dbContext, ride, entity.UpdatedAtUtc.Value, cancellationToken);
         try
         {
             await dbContext.SaveChangesAsync(cancellationToken);
@@ -273,6 +280,14 @@ public sealed class RideOffer(
 
     protected override async Task<object?> GetAsync(RideOfferModel model, CancellationToken cancellationToken) =>
         ToResult(await FindAsync(model.Id, cancellationToken, true));
+
+    private async Task<int> FindRideIdAsync(int? offerId, CancellationToken cancellationToken)
+    {
+        if (offerId is null) throw new ServiceException("id_required", "معرف العرض مطلوب.");
+        return await dbContext.RideOffers.AsNoTracking().Where(x => x.Id == offerId)
+            .Select(x => (int?)x.RideId).SingleOrDefaultAsync(cancellationToken)
+            ?? throw new ServiceException("offer_not_found", "العرض غير موجود.");
+    }
 
     private async Task<RideOfferEntity> FindAsync(int? id, CancellationToken cancellationToken, bool noTracking = false)
     {

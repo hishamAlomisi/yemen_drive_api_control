@@ -13,10 +13,12 @@ public sealed class AuthSessionService
     private static readonly TimeSpan CustomerSessionLifetime = TimeSpan.FromDays(30);
     private static readonly TimeSpan AdminSessionLifetime = TimeSpan.FromHours(8);
     private readonly IHubContext<TrackingHub>? _trackingHub;
+    private readonly SessionRevocationCoordinator? _revocations;
 
-    public AuthSessionService(IHubContext<TrackingHub>? trackingHub = null)
+    public AuthSessionService(IHubContext<TrackingHub>? trackingHub = null, SessionRevocationCoordinator? revocations = null)
     {
         _trackingHub = trackingHub;
+        _revocations = revocations;
     }
 
     public async Task<SessionTokens> CreateAsync(
@@ -132,9 +134,11 @@ public sealed class AuthSessionService
                 await RevokeFamilyAsync(db, existing.FamilyId, now, cancellationToken, notify: false);
                 revokedFamily = true;
             }
+            if (revokedFamily && _revocations is not null)
+                _revocations.RevokeFamilyAfterCommit(db, existing.FamilyId);
             await transaction.CommitAsync(cancellationToken);
-            if (revokedFamily)
-                await NotifyFamilyRevokedAsync(existing.FamilyId, cancellationToken);
+            if (revokedFamily && _revocations is null)
+                await NotifyFamilyRevokedAsync(db, existing.FamilyId, cancellationToken);
             return null;
         }
 
@@ -187,7 +191,7 @@ public sealed class AuthSessionService
                 .SetProperty(item => item.RevokedAtUtc, now)
                 .SetProperty(item => item.UpdatedAtUtc, now), cancellationToken);
         if (revoked > 0)
-            await NotifyUserRevokedAsync(userId, cancellationToken);
+            await NotifyUserRevokedAsync(db, userId, cancellationToken);
     }
 
     private async Task<int> RevokeFamilyAsync(
@@ -203,19 +207,33 @@ public sealed class AuthSessionService
                 .SetProperty(item => item.RevokedAtUtc, now)
                 .SetProperty(item => item.UpdatedAtUtc, now), cancellationToken);
         if (notify && revoked > 0)
-            await NotifyFamilyRevokedAsync(familyId, cancellationToken);
+            await NotifyFamilyRevokedAsync(db, familyId, cancellationToken);
         return revoked;
     }
 
-    private Task NotifyFamilyRevokedAsync(Guid familyId, CancellationToken cancellationToken) =>
-        _trackingHub?.Clients.Group(TrackingHub.FamilyGroup(familyId))
+    private Task NotifyFamilyRevokedAsync(YemenDriveDbContext db, Guid familyId, CancellationToken cancellationToken)
+    {
+        if (_revocations is not null)
+        {
+            _revocations.RevokeFamilyAfterCommit(db, familyId);
+            return Task.CompletedTask;
+        }
+        return _trackingHub?.Clients.Group(TrackingHub.FamilyGroup(familyId))
             .SendAsync("sessionRevoked", cancellationToken)
         ?? Task.CompletedTask;
+    }
 
-    private Task NotifyUserRevokedAsync(int userId, CancellationToken cancellationToken) =>
-        _trackingHub?.Clients.Group(TrackingHub.UserGroup(userId))
+    private Task NotifyUserRevokedAsync(YemenDriveDbContext db, int userId, CancellationToken cancellationToken)
+    {
+        if (_revocations is not null)
+        {
+            _revocations.RevokeUserAfterCommit(db, userId);
+            return Task.CompletedTask;
+        }
+        return _trackingHub?.Clients.Group(TrackingHub.UserGroup(userId))
             .SendAsync("sessionRevoked", cancellationToken)
         ?? Task.CompletedTask;
+    }
 
     private static SessionTokens NewTokens() => new(NewOpaqueToken(), NewOpaqueToken());
 

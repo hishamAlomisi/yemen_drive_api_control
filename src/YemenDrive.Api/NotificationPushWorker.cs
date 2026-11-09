@@ -10,7 +10,10 @@ public sealed class NotificationPushWorker(
     IServiceScopeFactory scopeFactory,
     FirebaseAdminPushSender sender,
     DatabaseConfigurationStore databaseConfiguration,
-    ILogger<NotificationPushWorker> logger) : BackgroundService
+    ILogger<NotificationPushWorker> logger,
+    NotificationPushSettings? settings = null,
+    NotificationPushSignal? signal = null,
+    INotificationPushTransport? transport = null) : BackgroundService
 {
     private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(2);
     private const int MaxAttempts = 12;
@@ -25,11 +28,10 @@ public sealed class NotificationPushWorker(
                 continue;
             }
 
+            var work = 0;
             try
             {
-                await CaptureRecipientsAsync(stoppingToken);
-                await SendDueDeliveriesAsync(stoppingToken);
-                await CompleteOutboxesAsync(stoppingToken);
+                work = await DrainOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -49,9 +51,11 @@ public sealed class NotificationPushWorker(
                 continue;
             }
 
+            if (settings?.DrainBatches == true && work > 0) continue;
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                if (settings?.DrainBatches == true && signal is not null) await signal.WaitAsync(stoppingToken);
+                else await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -60,7 +64,15 @@ public sealed class NotificationPushWorker(
         }
     }
 
-    private async Task CaptureRecipientsAsync(CancellationToken cancellationToken)
+    public async Task<int> DrainOnceAsync(CancellationToken cancellationToken)
+    {
+        var captured = await CaptureRecipientsAsync(cancellationToken);
+        var attempted = await SendDueDeliveriesAsync(cancellationToken);
+        var completed = await CompleteOutboxesAsync(cancellationToken);
+        return captured + attempted + completed;
+    }
+
+    private async Task<int> CaptureRecipientsAsync(CancellationToken cancellationToken)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<YemenDriveDbContext>();
@@ -73,6 +85,7 @@ public sealed class NotificationPushWorker(
             .Take(25)
             .ToListAsync(cancellationToken);
 
+        var captured = 0;
         foreach (var id in candidates)
         {
             var leaseId = Guid.NewGuid();
@@ -113,10 +126,12 @@ public sealed class NotificationPushWorker(
             outbox.LeaseId = null;
             outbox.LeaseUntilUtc = null;
             await db.SaveChangesAsync(cancellationToken);
+            captured++;
         }
+        return captured;
     }
 
-    private async Task SendDueDeliveriesAsync(CancellationToken cancellationToken)
+    private async Task<int> SendDueDeliveriesAsync(CancellationToken cancellationToken)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<YemenDriveDbContext>();
@@ -130,8 +145,25 @@ public sealed class NotificationPushWorker(
             .Take(50)
             .ToListAsync(cancellationToken);
 
-        foreach (var id in candidates)
+        var attempted = 0;
+        if (settings?.DrainBatches == true)
         {
+            await Parallel.ForEachAsync(candidates, new ParallelOptions {
+                MaxDegreeOfParallelism = 4, CancellationToken = cancellationToken
+            }, async (id, token) => {
+                if (await SendOneAsync(id, token)) Interlocked.Increment(ref attempted);
+            });
+        }
+        else foreach (var id in candidates) if (await SendOneAsync(id, cancellationToken)) attempted++;
+        return attempted;
+    }
+
+    private async Task<bool> SendOneAsync(int id, CancellationToken cancellationToken)
+    {
+            // Every concurrent delivery has its own scoped DbContext.
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<YemenDriveDbContext>();
+            var now = DateTime.UtcNow;
             var leaseId = Guid.NewGuid();
             var claimed = await db.NotificationPushDeliveries
                 .Where(item => item.Id == id && item.SentAtUtc == null && item.AbandonedAtUtc == null &&
@@ -141,19 +173,19 @@ public sealed class NotificationPushWorker(
                     .SetProperty(item => item.LeaseId, leaseId)
                     .SetProperty(item => item.LeaseUntilUtc, now.Add(LeaseDuration))
                     .SetProperty(item => item.AttemptCount, item => item.AttemptCount + 1), cancellationToken);
-            if (claimed == 0) continue;
+            if (claimed == 0) return false;
 
             var delivery = await db.NotificationPushDeliveries.AsNoTracking()
                 .Include(item => item.Installation)
                 .Include(item => item.Outbox)
                     .ThenInclude(item => item.Notification)
                 .SingleOrDefaultAsync(item => item.Id == id && item.LeaseId == leaseId, cancellationToken);
-            if (delivery is null) continue;
+            if (delivery is null) return true;
 
             if (!await RideRequestNotificationPolicy.CanAlertAsync(db, delivery.Outbox.Notification, cancellationToken))
             {
                 await AbandonAsync(db, id, leaseId, "ride_request_no_longer_available", cancellationToken);
-                continue;
+                return true;
             }
 
             var sessionIsActive = await db.AuthSessions.AsNoTracking().AnyAsync(session =>
@@ -167,12 +199,13 @@ public sealed class NotificationPushWorker(
                 await db.DevicePushInstallations
                     .Where(item => item.Id == delivery.DevicePushInstallationId)
                     .ExecuteDeleteAsync(cancellationToken);
-                continue;
+                return true;
             }
 
             try
             {
-                await sender.SendAsync(delivery.Installation, delivery.Outbox.Notification, cancellationToken);
+                if (transport is null) await sender.SendAsync(delivery.Installation, delivery.Outbox.Notification, cancellationToken);
+                else await transport.SendAsync(delivery.Installation, delivery.Outbox.Notification, cancellationToken);
                 await db.NotificationPushDeliveries
                     .Where(item => item.Id == id && item.LeaseId == leaseId)
                     .ExecuteUpdateAsync(setters => setters
@@ -209,7 +242,7 @@ public sealed class NotificationPushWorker(
             {
                 await RetryOrAbandonAsync(db, delivery, leaseId, exception.GetType().Name, cancellationToken);
             }
-        }
+        return true;
     }
 
     private static async Task AbandonAsync(
@@ -249,7 +282,7 @@ public sealed class NotificationPushWorker(
                 .SetProperty(item => item.LastErrorCode, errorCode), cancellationToken);
     }
 
-    private async Task CompleteOutboxesAsync(CancellationToken cancellationToken)
+    private async Task<int> CompleteOutboxesAsync(CancellationToken cancellationToken)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<YemenDriveDbContext>();
@@ -260,10 +293,10 @@ public sealed class NotificationPushWorker(
             .Select(outbox => outbox.Id)
             .Take(100)
             .ToListAsync(cancellationToken);
-        if (completedIds.Count == 0) return;
+        if (completedIds.Count == 0) return 0;
 
         var now = DateTime.UtcNow;
-        await db.NotificationPushOutbox
+        return await db.NotificationPushOutbox
             .Where(outbox => completedIds.Contains(outbox.Id) && outbox.CompletedAtUtc == null)
             .ExecuteUpdateAsync(setters => setters.SetProperty(outbox => outbox.CompletedAtUtc, now), cancellationToken);
     }

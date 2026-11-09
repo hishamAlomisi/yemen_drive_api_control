@@ -351,6 +351,9 @@ namespace YemenDrive.Database.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("DeliveredAtUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("MessageType")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -374,6 +377,8 @@ namespace YemenDrive.Database.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("RideId", "CreatedAtUtc");
+
+                    b.HasIndex("RecipientId", "ReadAtUtc", "RideId");
 
                     b.ToTable("CommunicationMessages");
                 });
@@ -591,6 +596,105 @@ namespace YemenDrive.Database.Migrations
                         {
                             t.HasCheckConstraint("CK_DriverRatings_Score_Range", "[Score] >= 1 AND [Score] <= 5");
                         });
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.DriverRouteSample", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<double>("Accuracy")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("Bearing")
+                        .HasColumnType("float");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("DriverId")
+                        .HasColumnType("int");
+
+                    b.Property<double>("Latitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("Longitude")
+                        .HasColumnType("float");
+
+                    b.Property<DateTime>("ObservedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("RideId")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("SampleId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("Sequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<double?>("Speed")
+                        .HasColumnType("float");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DriverId", "SampleId")
+                        .IsUnique();
+
+                    b.HasIndex("RideId", "ObservedAtUtc");
+
+                    b.HasIndex("DriverId", "SessionId", "Sequence")
+                        .IsUnique();
+
+                    b.ToTable("DriverRouteSamples");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.DriverRouteSession", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("DriverId")
+                        .HasColumnType("int");
+
+                    b.Property<long>("HighestSequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("LastContiguousSequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("RideId")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RideId");
+
+                    b.HasIndex("DriverId", "SessionId")
+                        .IsUnique();
+
+                    b.ToTable("DriverRouteSessions");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.DriverSettlement", b =>
@@ -1107,6 +1211,10 @@ namespace YemenDrive.Database.Migrations
 
                     b.Property<int>("RideId")
                         .HasColumnType("int");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
 
                     b.Property<double?>("Speed")
                         .HasColumnType("float");
@@ -1919,6 +2027,94 @@ namespace YemenDrive.Database.Migrations
                     b.ToTable("Promotions");
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.RealtimeStateEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Changes")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("LeaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("LeaseUntilUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("OperationId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000000"));
+
+                    b.Property<DateTime?>("PublishedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Resource")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int>("ResourceId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("StreamKey")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAtUtc");
+
+                    b.HasIndex("StreamKey", "Version")
+                        .IsUnique();
+
+                    b.HasIndex("PublishedAtUtc", "LeaseUntilUtc", "CreatedAtUtc");
+
+                    b.ToTable("RealtimeStateEvents");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RealtimeStateRecipient", b =>
+                {
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("EventId", "UserId");
+
+                    b.HasIndex("UserId", "EventId");
+
+                    b.ToTable("RealtimeStateRecipients");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RealtimeStateStream", b =>
+                {
+                    b.Property<string>("StreamKey")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("StreamKey");
+
+                    b.ToTable("RealtimeStateStreams");
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.ReferralRedemption", b =>
                 {
                     b.Property<int>("Id")
@@ -2224,8 +2420,6 @@ namespace YemenDrive.Database.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("DriverId");
-
                     b.HasIndex("ServiceCatalogItemId");
 
                     b.HasIndex("ServiceKindId");
@@ -2233,6 +2427,8 @@ namespace YemenDrive.Database.Migrations
                     b.HasIndex("CustomerId", "IdempotencyKey")
                         .IsUnique()
                         .HasFilter("[IdempotencyKey] IS NOT NULL");
+
+                    b.HasIndex("DriverId", "CreatedAtUtc");
 
                     b.HasIndex("Status", "ServiceKindId", "ServiceCatalogItemId", "CreatedAtUtc");
 
@@ -2485,6 +2681,62 @@ namespace YemenDrive.Database.Migrations
                     b.ToTable("RideFinancialCases");
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideMovementSnapshot", b =>
+                {
+                    b.Property<int>("RideId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("AcceptedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DestinationLabel")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<double>("DestinationLatitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("DestinationLongitude")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("PassengerAccuracy")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("PassengerLatitude")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("PassengerLongitude")
+                        .HasColumnType("float");
+
+                    b.Property<DateTime?>("PassengerObservedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PickupLabel")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<double>("PickupLatitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("PickupLongitude")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("PlannedDurationSeconds")
+                        .HasColumnType("float");
+
+                    b.Property<string>("PlannedRoutePolyline")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("RequestedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("RideId");
+
+                    b.ToTable("RideMovementSnapshots");
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.RideOffer", b =>
                 {
                     b.Property<int>("Id")
@@ -2522,6 +2774,8 @@ namespace YemenDrive.Database.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("DriverId");
+
+                    b.HasIndex("RideId", "DriverId");
 
                     b.HasIndex("Status", "ExpiresAtUtc");
 
@@ -2613,6 +2867,9 @@ namespace YemenDrive.Database.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<string>("RoutePolyline")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<int>("ServiceCatalogItemId")
                         .HasColumnType("int");
 
@@ -2648,6 +2905,33 @@ namespace YemenDrive.Database.Migrations
                         .IsUnique();
 
                     b.ToTable("RidePricingQuotes");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideRequestDriverLocation", b =>
+                {
+                    b.Property<int>("RideId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("DriverId")
+                        .HasColumnType("int");
+
+                    b.Property<double>("Latitude")
+                        .HasColumnType("float");
+
+                    b.Property<double>("Longitude")
+                        .HasColumnType("float");
+
+                    b.Property<DateTime>("ObservedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("SentAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("RideId", "DriverId");
+
+                    b.HasIndex("DriverId");
+
+                    b.ToTable("RideRequestDriverLocations");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.RideRouteChange", b =>
@@ -2977,6 +3261,9 @@ namespace YemenDrive.Database.Migrations
                     b.Property<int>("RequestedByUserId")
                         .HasColumnType("int");
 
+                    b.Property<string>("ResumeRequestsJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<int>("RideId")
                         .HasColumnType("int");
 
@@ -3021,11 +3308,32 @@ namespace YemenDrive.Database.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("DeviationDirection")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<double?>("DeviationDirectionDegrees")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("DeviationMeters")
+                        .HasColumnType("float");
+
+                    b.Property<string>("Kind")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
                     b.Property<double?>("Latitude")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("LocationAccuracyMeters")
                         .HasColumnType("float");
 
                     b.Property<DateTime?>("LocationObservedAtUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("LocationSource")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
 
                     b.Property<double?>("Longitude")
                         .HasColumnType("float");
@@ -3041,6 +3349,9 @@ namespace YemenDrive.Database.Migrations
                     b.Property<int?>("RideId")
                         .HasColumnType("int");
 
+                    b.Property<int?>("RouteVersion")
+                        .HasColumnType("int");
+
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
@@ -3050,11 +3361,16 @@ namespace YemenDrive.Database.Migrations
                     b.Property<int>("UserId")
                         .HasColumnType("int");
 
+                    b.Property<string>("VerifiedRoutePolyline")
+                        .HasColumnType("nvarchar(max)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("RideId", "CreatedAtUtc");
 
                     b.HasIndex("Status", "CreatedAtUtc");
+
+                    b.HasIndex("RideId", "Kind", "RouteVersion", "CreatedAtUtc");
 
                     b.ToTable("SafetyIncidents");
                 });
@@ -3198,6 +3514,109 @@ namespace YemenDrive.Database.Migrations
                     b.HasIndex("IsActive", "SortOrder");
 
                     b.ToTable("ServiceKinds", (string)null);
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.SmsDispatch", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"), 1000000000000L);
+
+                    b.Property<DateTime?>("ClaimedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime?>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ProtectedPayload")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("Purpose")
+                        .HasColumnType("int");
+
+                    b.Property<string>("RequestHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("RequestKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTime?>("SentAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("State")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("WalletTransactionId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RequestKey")
+                        .IsUnique()
+                        .HasFilter("[RequestKey] IS NOT NULL");
+
+                    b.HasIndex("WalletTransactionId")
+                        .IsUnique()
+                        .HasFilter("[WalletTransactionId] IS NOT NULL");
+
+                    b.HasIndex("State", "CreatedAtUtc");
+
+                    b.ToTable("SmsDispatches", t =>
+                        {
+                            t.HasCheckConstraint("CK_SmsDispatches_Purpose", "[Purpose] IN (1, 2, 3, 4, 5, 6)");
+
+                            t.HasCheckConstraint("CK_SmsDispatches_State", "[State] IN (0, 1, 2, 3, 4, 5)");
+                        });
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.SmsMessageLog", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("MessageKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<int>("Purpose")
+                        .HasColumnType("int");
+
+                    b.Property<int>("RecipientCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(1);
+
+                    b.Property<DateTime>("SentAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MessageKey")
+                        .IsUnique();
+
+                    b.HasIndex("Purpose", "SentAtUtc");
+
+                    b.ToTable("SmsMessageLogs", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_SmsMessageLogs_Purpose", "[Purpose] IN (1, 2, 3, 4, 5, 6)");
+
+                            t.HasCheckConstraint("CK_SmsMessageLogs_Recipients", "[RecipientCount] BETWEEN 1 AND 100");
+                        });
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.SupportTicket", b =>
@@ -3800,6 +4219,36 @@ namespace YemenDrive.Database.Migrations
                     b.Navigation("Ride");
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.DriverRouteSample", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("DriverId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("YemenDrive.Database.Entities.Ride", null)
+                        .WithMany()
+                        .HasForeignKey("RideId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.DriverRouteSession", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("DriverId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("YemenDrive.Database.Entities.Ride", null)
+                        .WithMany()
+                        .HasForeignKey("RideId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.EmergencyContact", b =>
                 {
                     b.HasOne("YemenDrive.Database.Entities.User", "User")
@@ -3976,6 +4425,17 @@ namespace YemenDrive.Database.Migrations
                     b.Navigation("ServiceKind");
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.RealtimeStateRecipient", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.RealtimeStateEvent", "Event")
+                        .WithMany("Recipients")
+                        .HasForeignKey("EventId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Event");
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.ReferralRedemption", b =>
                 {
                     b.HasOne("YemenDrive.Database.Entities.User", "User")
@@ -4058,6 +4518,17 @@ namespace YemenDrive.Database.Migrations
                     b.Navigation("Ride");
                 });
 
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideMovementSnapshot", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.Ride", "Ride")
+                        .WithOne()
+                        .HasForeignKey("YemenDrive.Database.Entities.RideMovementSnapshot", "RideId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Ride");
+                });
+
             modelBuilder.Entity("YemenDrive.Database.Entities.RideOffer", b =>
                 {
                     b.HasOne("YemenDrive.Database.Entities.User", "Driver")
@@ -4073,6 +4544,23 @@ namespace YemenDrive.Database.Migrations
                         .IsRequired();
 
                     b.Navigation("Driver");
+
+                    b.Navigation("Ride");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RideRequestDriverLocation", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("DriverId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("YemenDrive.Database.Entities.Ride", "Ride")
+                        .WithMany()
+                        .HasForeignKey("RideId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("Ride");
                 });
@@ -4138,6 +4626,16 @@ namespace YemenDrive.Database.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.SmsDispatch", b =>
+                {
+                    b.HasOne("YemenDrive.Database.Entities.WalletTransaction", "WalletTransaction")
+                        .WithMany()
+                        .HasForeignKey("WalletTransactionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("WalletTransaction");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.SupportTicket", b =>
@@ -4258,6 +4756,11 @@ namespace YemenDrive.Database.Migrations
             modelBuilder.Entity("YemenDrive.Database.Entities.NotificationPushOutbox", b =>
                 {
                     b.Navigation("Deliveries");
+                });
+
+            modelBuilder.Entity("YemenDrive.Database.Entities.RealtimeStateEvent", b =>
+                {
+                    b.Navigation("Recipients");
                 });
 
             modelBuilder.Entity("YemenDrive.Database.Entities.Ride", b =>

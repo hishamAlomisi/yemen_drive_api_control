@@ -56,7 +56,7 @@ public static class DevicePushInstallationEndpoints
 
             var normalizedDeviceId = deviceId!;
             var normalizedFcmToken = fcmToken!;
-            var normalizedPlatform = platform!;
+            var normalizedPlatform = AndroidNotificationRendering.Platform(request.NotificationRenderer);
             var tokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalizedFcmToken)));
             var byDevice = await db.DevicePushInstallations.SingleOrDefaultAsync(
                 item => item.UserId == userId && item.DeviceId == normalizedDeviceId,
@@ -144,4 +144,5 @@ public static class DevicePushInstallationEndpoints
 public sealed record RegisterDevicePushInstallation(
     string? DeviceId,
     string? FcmToken,
-    string? Platform);
+    string? Platform,
+    string? NotificationRenderer = null);

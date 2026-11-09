@@ -19,7 +19,29 @@
 
   <ItemGroup>
     <None Update="run-api-with-console-otp.bat" CopyToPublishDirectory="PreserveNewest" />
+    <!-- Keep browser dependencies inside this project's web root. A sibling
+         repository-level wwwroot is not part of Web SDK publication. -->
+    <Content Update="wwwroot\vendor\**\*"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+    <AdminVendorAsset Include="wwwroot\vendor\signalr\signalr.min.js" />
+    <AdminVendorAsset Include="wwwroot\vendor\signalr\signalr.min.js.map" />
+    <AdminVendorAsset Include="wwwroot\vendor\signalr\THIRD-PARTY-NOTICE.txt" />
+    <AdminVendorAsset Include="wwwroot\vendor\leaflet\leaflet.js" />
+    <AdminVendorAsset Include="wwwroot\vendor\leaflet\leaflet.js.map" />
+    <AdminVendorAsset Include="wwwroot\vendor\leaflet\leaflet.css" />
+    <AdminVendorAsset Include="wwwroot\vendor\leaflet\LICENSE" />
+    <AdminVendorAsset Include="wwwroot\vendor\leaflet\images\layers.png" />
+    <AdminVendorAsset Include="wwwroot\vendor\leaflet\images\layers-2x.png" />
+    <AdminVendorAsset Include="wwwroot\vendor\leaflet\images\marker-icon.png" />
+    <AdminVendorAsset Include="wwwroot\vendor\leaflet\images\marker-icon-2x.png" />
+    <AdminVendorAsset Include="wwwroot\vendor\leaflet\images\marker-shadow.png" />
   </ItemGroup>
+
+  <Target Name="ValidateAdminVendorAssets" BeforeTargets="PrepareForBuild;ComputeFilesToPublish">
+    <Error Condition="!Exists('%(AdminVendorAsset.FullPath)')"
+           Text="Missing admin vendor asset: %(AdminVendorAsset.Identity). Restore the pinned files in this project's wwwroot/vendor before publishing." />
+  </Target>
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>

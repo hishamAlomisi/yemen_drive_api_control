@@ -16,6 +16,7 @@ internal static class RideSearchNotificationDispatcher
         CancellationToken token,
         bool priceChanged = false)
     {
+        await RideMovementCapture.RequestAsync(db, ride, null, token);
         var radiusMeters = RideDriverProximity.RadiusMeters(ride, DateTime.UtcNow);
         var locationFreshAfter = DateTime.UtcNow.AddMinutes(-5);
         var candidates = (await db.DriverProfiles.AsNoTracking()
@@ -62,6 +63,15 @@ internal static class RideSearchNotificationDispatcher
             .ToList();
 
         var driverIds = candidates.Select(candidate => candidate.UserId).ToArray();
+        var capturedDriverIds = await db.RideRequestDriverLocations.AsNoTracking()
+            .Where(x => x.RideId == ride.Id && driverIds.Contains(x.DriverId)).Select(x => x.DriverId).ToListAsync(token);
+        var captured = capturedDriverIds.Concat(db.RideRequestDriverLocations.Local.Where(x => x.RideId == ride.Id).Select(x => x.DriverId)).ToHashSet();
+        foreach (var candidate in candidates.Where(x => !captured.Contains(x.UserId)))
+            db.RideRequestDriverLocations.Add(new RideRequestDriverLocation
+            {
+                RideId = ride.Id, DriverId = candidate.UserId, SentAtUtc = DateTime.UtcNow,
+                Latitude = candidate.Latitude, Longitude = candidate.Longitude, ObservedAtUtc = candidate.ObservedAtUtc
+            });
         var kind = await db.ServiceKinds.AsNoTracking()
             .Where(item => item.Id == ride.ServiceKindId)
             .Select(item => new { item.Code, item.NameAr })
@@ -99,8 +109,8 @@ internal static class RideSearchNotificationDispatcher
             latestOffers.TryGetValue(candidate.UserId, out var latestOffer);
             var pickupName = RideLocationText.DisplayName(
                 ride.PickupLabel, ride.PickupAddress, "نقطة الانطلاق");
-            var destinationName = RideLocationText.AreaName(
-                ride.DestinationLabel, ride.DestinationAddress, "ضمن المنطقة المحددة");
+            var destinationName = RideLocationText.DisplayName(
+                ride.DestinationLabel, ride.DestinationAddress, "الوجهة");
             var rideSnapshot = new Dictionary<string, object?>
             {
                 ["id"] = ride.Id,
@@ -118,13 +128,17 @@ internal static class RideSearchNotificationDispatcher
                 ["serviceNameAr"] = service?.NameAr,
                 ["pickupDisplayName"] = pickupName,
                 ["destinationDisplayName"] = destinationName,
+                ["pickupLabel"] = ride.PickupLabel,
+                ["destinationLabel"] = ride.DestinationLabel,
                 ["pickupAddress"] = pickupName,
-                ["destinationAddress"] = destinationName,
+                ["destinationAddress"] = ride.DestinationAddress,
                 ["pickupLatitude"] = ride.PickupLatitude,
                 ["pickupLongitude"] = ride.PickupLongitude,
-                ["destinationLatitude"] = null,
-                ["destinationLongitude"] = null,
-                ["destinationAvailable"] = false,
+                ["destinationLatitude"] = ride.DestinationLatitude,
+                ["destinationLongitude"] = ride.DestinationLongitude,
+                ["destinationAvailable"] = true,
+                ["routePolyline"] = ride.RoutePolyline,
+                ["tripDistanceMeters"] = ride.RouteQuotedDistanceMeters > 0 ? ride.RouteQuotedDistanceMeters : null,
                 ["moreThanFourPassengers"] = ride.MoreThanFourPassengers,
                 ["passengerNotes"] = ride.PassengerNotes,
                 ["pickupDistanceMeters"] = candidate.PickupDistanceMeters,

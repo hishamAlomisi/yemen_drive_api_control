@@ -68,30 +68,25 @@ internal static class PricingWaitingScenarios
         await db.SaveChangesAsync();
 
         var coordinator = new RideWaitingCoordinator(db);
-        var passengerWaiting = new RideWaiting(db, config, new Actor(customer), coordinator);
-        var driverWaiting = new RideWaiting(db, config, new Actor(driver), coordinator);
+        var clock = new WaitingClock(DateTime.UtcNow);
+        var passengerWaiting = new RideWaiting(db, config, new Actor(customer), coordinator, clock);
+        var driverWaiting = new RideWaiting(db, config, new Actor(driver), coordinator, clock);
         var request = new RideWaitingModel(ride.Id, RequestKey: Guid.NewGuid());
         Ok(await Execute(driverWaiting, "add", request));
         Ok(await Execute(driverWaiting, "add", request));
         Is(await db.RideWaitingSessions.CountAsync(x => x.RideId == ride.Id) == 1, "repeated request is idempotent");
         var session = await db.RideWaitingSessions.SingleAsync(x => x.RideId == ride.Id);
         var action = new RideWaitingModel(ride.Id, session.Id);
-        Is(session.StartedAtUtc is null, "waiting does not start before consent");
-        Is(!(await Execute(driverWaiting, "accept", action)).Success, "requester cannot self-approve");
-        Is(!(await Execute(new RideWaiting(db, config, new Actor(admin), coordinator), "accept", action)).Success, "non-participant cannot approve");
-        Ok(await Execute(passengerWaiting, "reject", action));
-        Is(ride.WaitingFee == 0, "rejection has no charge");
-        Ok(await Execute(passengerWaiting, "add", request with { RequestKey = Guid.NewGuid() }));
-        session = await db.RideWaitingSessions.SingleAsync(x => x.RideId == ride.Id && x.IsOpen);
-        session.CreatedAtUtc = DateTime.UtcNow.AddMinutes(-3);
-        await db.SaveChangesAsync();
-        Ok(await Execute(passengerWaiting, "add", request with { RequestKey = Guid.NewGuid() }));
-        Is(await db.RideWaitingSessions.CountAsync(x => x.RideId == ride.Id && x.IsOpen) == 1, "expired pending stop can be replaced atomically");
+        Is(session.StartedAtUtc is not null && session.ApprovedByUserId is null, "driver stop starts immediately without rider consent");
+        Is(!(await Execute(passengerWaiting, "add", request with { RequestKey = Guid.NewGuid() })).Success, "rider cannot start a stop");
+        Is(!(await Execute(passengerWaiting, "reject", action)).Success, "rider cannot reject a driver stop");
+        Is(!(await Execute(new RideWaiting(db, config, new Actor(admin), coordinator), "resume", action)).Success, "non-participant cannot resume");
+        Ok(await Execute(driverWaiting, "update", action));
+        Is(ride.WaitingFee == 0, "direct resume during free time has no charge");
+        Ok(await Execute(driverWaiting, "add", request with { RequestKey = Guid.NewGuid() }));
         session = await db.RideWaitingSessions.SingleAsync(x => x.RideId == ride.Id && x.IsOpen);
         action = action with { SessionId = session.Id };
-        Ok(await Execute(driverWaiting, "accept", action));
-        Ok(await Execute(driverWaiting, "accept", action));
-        session.StartedAtUtc = DateTime.UtcNow.AddMinutes(-5);
+        session.StartedAtUtc = clock.GetUtcNow().UtcDateTime.AddMinutes(-5);
         await db.SaveChangesAsync();
         var cash = new DriverCashPayment(db, config, new Actor(driver), accounting);
         Is(!(await Execute(cash, "add", new DriverCashPaymentModel(ride.Id, 1250, "YER", null, "wait-open"))).Success, "payment cannot race an open wait");
@@ -102,12 +97,12 @@ internal static class PricingWaitingScenarios
         Ok(await Execute(cash, "add", new DriverCashPaymentModel(ride.Id, 1250, "YER", null, "wait-settlement")));
         Is(await db.PaymentTransactions.AnyAsync(x => x.RideId == ride.Id && x.Amount == 1250 && x.Status == PaymentStatus.Paid), "collected amount includes waiting");
         Ok(await Execute(driverWaiting, "add", request with { RequestKey = Guid.NewGuid() }));
-        Is(await db.RideWaitingSessions.AnyAsync(x => x.RideId == ride.Id && x.IsOpen), "prepayment does not prohibit a new mutually approved waiting request");
+        Is(await db.RideWaitingSessions.AnyAsync(x => x.RideId == ride.Id && x.IsOpen), "prepayment does not prohibit a new driver-started stop");
 
         await AutomaticEnd(db, config, coordinator, customer, driver, kind, catalog, "connection_lost");
         await AutomaticEnd(db, config, coordinator, customer, driver, kind, catalog, "fee_cap");
         await AutomaticEnd(db, config, coordinator, customer, driver, kind, catalog, "vehicle_moving");
-        Console.WriteLine("PASS: pricing boundaries, trusted quote, policy snapshot, consent, idempotency, waiting cutoff and balanced collection.");
+        Console.WriteLine("PASS: pricing boundaries, trusted quote, policy snapshot, driver-controlled stops, idempotency, waiting cutoff and balanced collection.");
     }
 
     private static async Task AutomaticEnd(YemenDriveDbContext db, DatabaseConfigurationStore config, RideWaitingCoordinator coordinator, int customer, int driver, int kind, int catalog, string reason)
@@ -152,6 +147,10 @@ internal static class PricingWaitingScenarios
     private static void Ok(ApiResult result) => Is(result.Success, result.Code + ": " + result.Message);
     private static void Is(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     private sealed class Actor(int id) : ICurrentUserContext { public int? UserId => id; }
+    private sealed class WaitingClock(DateTime atUtc) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(atUtc, TimeSpan.Zero);
+    }
     private sealed class RouteStub : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)

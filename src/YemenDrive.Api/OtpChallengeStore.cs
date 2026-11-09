@@ -3,8 +3,9 @@ using System.Security.Cryptography;
 
 namespace YemenDrive.Api;
 
-public sealed class OtpChallengeStore(bool consoleOtpEnabled)
+public sealed class OtpChallengeStore(bool consoleOtpEnabled, TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private sealed record Challenge(string Id, string Destination, string Purpose, string Code, string VerificationToken, DateTime ExpiresAtUtc, int FailedAttempts = 0);
     private const int MaximumFailedAttempts = 5;
     private readonly ConcurrentDictionary<string, Challenge> _challenges = new(StringComparer.Ordinal);
@@ -13,8 +14,14 @@ public sealed class OtpChallengeStore(bool consoleOtpEnabled)
     public (string ChallengeId, int ExpiresInSeconds)? TryCreate(string destination, string purpose)
     {
         if (!consoleOtpEnabled) return null;
+        var challenge = CreateForDelivery(destination, purpose);
+        Console.WriteLine($"[YemenDrive OTP] {challenge.Purpose} -> {destination.Trim()}: {challenge.Code}");
+        return (challenge.ChallengeId, 300);
+    }
 
-        var now = DateTime.UtcNow;
+    internal OtpTestPushMessage CreateForDelivery(string destination, string purpose)
+    {
+        var now = _time.GetUtcNow().UtcDateTime;
         foreach (var expired in _challenges.Where(item => item.Value.ExpiresAtUtc < now))
             _challenges.TryRemove(expired.Key, out _);
         foreach (var expired in _verified.Where(item => item.Value.ExpiresAtUtc < now))
@@ -25,9 +32,10 @@ public sealed class OtpChallengeStore(bool consoleOtpEnabled)
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
         var challenge = new Challenge(id, destination.Trim(), purpose.Trim(), code, token, now.AddMinutes(5));
         _challenges[id] = challenge;
-        Console.WriteLine($"[YemenDrive OTP] {challenge.Purpose} -> {challenge.Destination}: {challenge.Code}");
-        return (id, 300);
+        return new OtpTestPushMessage(string.Empty, id, challenge.Purpose, string.Empty, challenge.ExpiresAtUtc, code);
     }
+
+    internal void CancelChallenge(string challengeId) => _challenges.TryRemove(challengeId, out _);
 
     public string? Verify(string? challengeId, string destination, string code, string purpose)
     {
@@ -45,7 +53,7 @@ public sealed class OtpChallengeStore(bool consoleOtpEnabled)
         if (selectedChallengeId is null) return null;
         while (_challenges.TryGetValue(selectedChallengeId, out var challenge))
         {
-            if (challenge.ExpiresAtUtc < DateTime.UtcNow)
+            if (challenge.ExpiresAtUtc <= _time.GetUtcNow().UtcDateTime)
             {
                 _challenges.TryRemove(challenge.Id, out _);
                 return null;
@@ -71,7 +79,7 @@ public sealed class OtpChallengeStore(bool consoleOtpEnabled)
             }
 
             if (!_challenges.TryRemove(challenge.Id, out _)) continue;
-            _verified[challenge.VerificationToken] = (challenge.Destination, challenge.Purpose, DateTime.UtcNow.AddMinutes(10));
+            _verified[challenge.VerificationToken] = (challenge.Destination, challenge.Purpose, _time.GetUtcNow().UtcDateTime.AddMinutes(10));
             return challenge.VerificationToken;
         }
         return null;
@@ -80,7 +88,7 @@ public sealed class OtpChallengeStore(bool consoleOtpEnabled)
     public bool ConsumeVerificationToken(string token, string destination, string purpose)
     {
         if (!_verified.TryRemove(token.Trim(), out var value)) return false;
-        return value.ExpiresAtUtc >= DateTime.UtcNow &&
+        return value.ExpiresAtUtc > _time.GetUtcNow().UtcDateTime &&
                string.Equals(value.Destination, destination.Trim(), StringComparison.OrdinalIgnoreCase) &&
                string.Equals(value.Purpose, purpose.Trim(), StringComparison.OrdinalIgnoreCase);
     }

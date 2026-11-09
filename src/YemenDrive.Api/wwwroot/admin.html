@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YemenDrive | لوحة التحكم</title>
   <link rel="icon" type="image/png" href="/yemen-drive-page-icon.png?v=20261015">
-  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/admin.css?v=20261102-admin-design-2">
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css?v=1.9.4">
+  <link rel="stylesheet" href="/admin.css?v=20261108-sms-send-1">
+  <link rel="stylesheet" href="/admin-chat-audit.css?v=20261106-map-motion-1">
+  <link rel="stylesheet" href="/admin-driver-movement.css?v=20261105-1">
 </head>
 <body>
   <div class="admin-login" id="admin-login">
@@ -55,6 +57,7 @@
           <div class="nav-submenu">
             <button class="nav-item nav-sub-item" data-view="customers"><span class="nav-icon">♙</span><span>العملاء</span></button>
             <button class="nav-item nav-sub-item" data-view="rides"><span class="nav-icon">↗</span><span>الرحلات</span></button>
+            <button class="nav-item nav-sub-item" data-view="chat-audit"><span class="nav-icon">☷</span><span>سجلات المحادثات</span></button>
             <button class="nav-item nav-sub-item" data-view="operational-review"><span class="nav-icon">▤</span><span>المتابعة المالية والشكاوى</span></button>
             <button class="nav-item nav-sub-item" data-view="operational-policy"><span class="nav-icon">⚙</span><span>سياسة الوصول والمهل</span></button>
             <button class="nav-item nav-sub-item" data-view="access-governance"><span class="nav-icon">◎</span><span>الصلاحيات وطلبات حذف الحساب</span></button>
@@ -75,6 +78,7 @@
           <div class="nav-submenu">
             <button class="nav-item nav-sub-item" data-view="ledger"><span class="nav-icon">≡</span><span>كشف الحساب</span></button>
             <button class="nav-item nav-sub-item" data-view="history"><span class="nav-icon">◷</span><span>سجل الرحلات</span></button>
+            <button class="nav-item nav-sub-item" data-view="driver-movement"><span class="nav-icon">↝</span><span>تقرير حركة السائقين</span></button>
             <button class="nav-item nav-sub-item" data-view="waiting-report"><span class="nav-icon">◴</span><span>تقرير تأخيرات الرحلات</span></button>
             <button class="nav-item nav-sub-item" data-view="route-change-report"><span class="nav-icon">↪</span><span>سجل تغييرات المسار</span></button>
           </div>
@@ -101,6 +105,9 @@
           <summary class="nav-group-heading"><span class="nav-icon">🔔</span><span>التواصل والإشعارات</span><span class="nav-group-chevron">⌄</span></summary>
           <div class="nav-submenu">
             <button class="nav-item nav-sub-item" data-view="notification-campaigns"><span class="nav-icon">✉</span><span>إشعارات المستخدمين</span></button>
+            <button class="nav-item nav-sub-item" data-view="sms-provider"><span class="nav-icon">▤</span><span>مزود الرسائل النصية</span></button>
+            <button class="nav-item nav-sub-item" data-view="sms-send"><span class="nav-icon">✉</span><span>إرسال رسائل نصية</span></button>
+            <button class="nav-item nav-sub-item" data-view="sms-report"><span class="nav-icon">▥</span><span>تقرير الرسائل النصية</span></button>
           </div>
         </details>
       </nav>
@@ -154,6 +161,19 @@
             <div class="table-wrap"><table><thead><tr><th>الرحلة</th><th>المسار</th><th>الخدمة</th><th>الحالة</th><th>السعر</th><th>التاريخ</th></tr></thead><tbody id="recent-rides-body"></tbody></table></div>
             <div class="empty-state hidden" id="overview-empty">لا توجد رحلات مسجلة حتى الآن.</div>
           </section>
+        </section>
+
+        <section class="view" id="view-chat-audit">
+          <div class="section-toolbar"><div><h2>سجلات المحادثات</h2><p>اختر السائق ثم الراكب لعرض محادثاتهما مقسمة بحسب الرحلات.</p></div><button class="button" type="button" id="chat-audit-refresh">تحديث القوائم</button></div>
+          <form id="chat-audit-form" class="chat-audit-filters">
+            <label for="chat-audit-driver">السائق<select id="chat-audit-driver" required><option value="">اختر السائق</option></select></label>
+            <label for="chat-audit-customer">الراكب<select id="chat-audit-customer" required disabled><option value="">اختر السائق أولًا</option></select></label>
+            <button class="button primary" id="chat-audit-show" type="submit" disabled>عرض المحادثات</button>
+          </form>
+          <p id="chat-audit-feedback" role="status" aria-live="polite">اختر الطرفين ثم اضغط عرض المحادثات.</p>
+          <div class="chat-audit-legend"><span class="chat-audit-role driver">رسائل السائق</span><span class="chat-audit-role customer">رسائل الراكب</span><span>الرسائل من الأقدم إلى الأحدث داخل كل رحلة · التوقيت المحلي لليمن</span></div>
+          <div id="chat-audit-results"></div>
+          <div class="chat-audit-pagination"><button class="button hidden" type="button" id="chat-audit-more">عرض رحلات أقدم</button></div>
         </section>
 
         <section class="view" id="view-transfer-fees">
@@ -224,6 +244,51 @@
           <section class="data-section"><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>السائق</th><th>المصدر</th><th>التقييم</th><th>الرحلة</th><th>صاحب التقييم</th><th>التعليق</th></tr></thead><tbody id="driver-ratings-body"></tbody></table></div><div class="empty-state hidden" id="driver-ratings-empty">لا توجد تقييمات مسجلة للسائق المحدد.</div></section>
         </section>
 
+        <section class="view" id="view-sms-report">
+          <div class="section-toolbar"><div><h2>إحصاءات الرسائل النصية</h2><p>إجمالي الرسائل المرسلة حسب الغرض</p></div><div class="command-row"><button class="button" id="sms-report-refresh" type="button">تحديث التقرير</button></div></div>
+          <div class="stats-grid">
+            <article class="stat"><span>رسائل الدخول</span><strong id="sms-report-sign-in">—</strong><small>التحقق من تسجيل الدخول</small></article>
+            <article class="stat"><span>رسائل تغيير كلمة المرور</span><strong id="sms-report-password-reset">—</strong><small>التحقق من إعادة تعيين كلمة المرور</small></article>
+            <article class="stat"><span>رسائل إنشاء حساب</span><strong id="sms-report-registration">—</strong><small>التحقق من إنشاء حساب جديد</small></article>
+            <article class="stat"><span>رسائل حركات المحفظة</span><strong id="sms-report-wallet">—</strong><small>تأكيد الإيداع والخصم والشحن والحجز</small></article>
+            <article class="stat"><span>رموز تحقق أخرى</span><strong id="sms-report-other-otp">—</strong><small>رسائل OTP للأغراض الأخرى</small></article>
+            <article class="stat"><span>الرسائل اليدوية</span><strong id="sms-report-manual">—</strong><small>الأرقام التي قبل المزود إرسال الرسائل إليها</small></article>
+            <article class="stat"><span>إجمالي الرسائل</span><strong id="sms-report-total">—</strong><small>جميع الرسائل التي قبلها المزود</small></article>
+          </div>
+          <div id="sms-report-result" class="review-notice" role="status" aria-live="polite">جارٍ تحميل التقرير...</div>
+        </section>
+        <section class="view" id="view-sms-send">
+          <div class="section-toolbar"><div><h2>إرسال رسائل نصية</h2><p>أرسل رسالة إلى رقم واحد أو عدة أرقام عبر المزود المحفوظ.</p></div><button class="button" type="button" id="sms-send-refresh">تحديث حالة المزود</button></div>
+          <div class="panel sms-compose-panel">
+            <div id="sms-send-connection" class="review-notice" role="status" aria-live="polite">جارٍ التحقق من اتصال المزود...</div>
+            <form id="sms-send-form" autocomplete="off">
+              <fieldset class="form-grid" id="sms-send-fields" disabled>
+                <label class="full">أرقام الهواتف<textarea name="numbers" dir="ltr" rows="4" maxlength="4000" required placeholder="775000001&#10;775000002" aria-describedby="sms-send-numbers-hint"></textarea></label>
+                <small class="full" id="sms-send-numbers-hint">افصل الأرقام بسطر جديد أو فاصلة. يُقبل مفتاح 967، وتُرسل الأرقام المحلية دون تكرار. الحد الأقصى 100 رقم.</small>
+                <label class="full">نص الرسالة<textarea name="text" dir="auto" rows="5" maxlength="1600" required aria-describedby="sms-send-text-count"></textarea></label>
+                <small class="full" id="sms-send-text-count">0 / 1600 حرف</small>
+                <div class="full form-actions"><button class="button primary" type="submit" id="sms-send-submit">إرسال الرسالة</button><button class="button" type="button" id="sms-send-clear">مسح الحقول</button></div>
+              </fieldset>
+            </form>
+            <div id="sms-send-result" class="review-notice hidden" role="status" aria-live="polite"></div>
+          </div>
+        </section>
+        <section class="view" id="view-sms-provider">
+          <div class="section-toolbar"><div><h2>بيانات مزود الرسائل النصية</h2><p>أدخل بيانات المزود ثم احفظها.</p></div></div>
+          <div class="panel sms-provider-panel">
+            <form id="sms-provider-form" autocomplete="off">
+              <fieldset id="sms-provider-fields" class="form-grid" disabled>
+                <label class="full">الرابط<input name="url" type="text" inputmode="url" dir="ltr" required maxlength="2048" placeholder="https://wsm.ertiqasoft.net/api"></label>
+                <label>اسم المستخدم<input name="username" type="text" dir="auto" required maxlength="256" autocomplete="off"></label>
+                <div class="sms-password-field"><label>كلمة المرور<input name="password" type="password" required maxlength="1024" autocomplete="new-password" aria-describedby="sms-provider-password-hint"></label><small id="sms-provider-password-hint">أدخل كلمة مرور المزود.</small></div>
+                <label class="full">رقم الجهاز<input name="deviceNumber" type="text" dir="ltr" required maxlength="128"></label>
+                <div class="full form-actions"><button class="button primary" type="submit">حفظ البيانات</button></div>
+              </fieldset>
+            </form>
+            <div id="sms-provider-result" class="review-notice" role="status" aria-live="polite">جارٍ تحميل البيانات...</div>
+            <div class="command-row"><p id="sms-provider-connection" role="status" aria-live="polite"></p><button class="button" id="sms-provider-connect" type="button" disabled>إعادة الاتصال / التفعيل</button></div>
+          </div>
+        </section>
         <section class="view" id="view-notification-campaigns">
           <div class="section-toolbar"><div><h2>إشعارات المستخدمين</h2><p>أرسل إشعارًا للعملاء أو السائقين أو كليهما، وراجع سجل الحملات السابقة.</p></div><div class="command-row"><button class="button primary" data-form="notificationCampaign">إضافة إشعار وإرساله</button></div></div>
           <div class="hint-card">تُنشأ نسخة داخل صندوق إشعارات كل حساب نشط ضمن الفئة المختارة، وتُجدول للأجهزة المسجلة عبر خدمة الإشعارات. حذف السجل هنا لا يسحب الإشعار الذي وصل أو أُرسل للمستخدمين.</div>
@@ -231,12 +296,24 @@
         </section>
 
         <section class="view" id="view-rides">
-          <div class="section-toolbar"><div><h2>الرحلات</h2><p>متابعة الطلبات وحالات التنفيذ</p></div><div class="command-row"><select class="filter-select" id="ride-filter"><option value="">كل الحالات</option><option value="1">جاري البحث</option><option value="3">تم تعيين سائق</option><option value="4">السائق في الطريق</option><option value="9">وصل السائق إلى نقطة الانطلاق</option><option value="8">الإلغاء قيد المراجعة</option><option value="5">قيد التنفيذ</option><option value="6">مكتملة</option><option value="7">ملغاة</option></select><button class="button primary" data-form="ride">إنشاء رحلة</button></div></div>
+          <div class="section-toolbar"><div><h2>الرحلات</h2><p>متابعة الطلبات وحالات التنفيذ</p></div><div class="command-row"><button class="button" id="ride-list-refresh" type="button">تحديث</button><button class="button primary" data-form="ride">إنشاء رحلة</button></div></div>
+          <form class="admin-report-filters" id="ride-list-filters"><label>رقم الرحلة<input id="ride-number" type="search" inputmode="numeric" placeholder="كل الرحلات"></label><label>الحالة<select id="ride-filter"><option value="">كل الحالات</option><option value="0">مسودة</option><option value="1">جاري البحث</option><option value="2">التفاوض</option><option value="3">تم تعيين سائق</option><option value="4">السائق في الطريق</option><option value="9">وصل السائق</option><option value="8">الإلغاء قيد المراجعة</option><option value="5">قيد التنفيذ</option><option value="6">مكتملة</option><option value="7">ملغاة</option></select></label><button class="button primary" type="submit">عرض الرحلات</button></form>
           <section class="data-section live-operations-section">
             <div class="section-header"><div><h2>الرحلات النشطة على الخريطة</h2><p>تتحدث الحالة ومواقع السائقين مباشرة أثناء الرحلة.</p></div><span class="live-connection" id="live-rides-connection">جارٍ الاتصال…</span></div>
-            <div class="live-rides-layout"><div id="live-rides-map" role="img" aria-label="خريطة الرحلات النشطة"></div><div class="live-rides-list" id="live-rides-list"><div class="empty-state">لا توجد رحلات نشطة الآن.</div></div></div>
+            <div class="map-load-notice"><span id="live-rides-map-status" role="status"></span><button type="button" class="button small hidden" id="live-rides-map-retry">إعادة تحميل الخريطة</button></div>
+            <div class="map-legend" aria-label="دليل علامات الخريطة ومساراتها">
+              <span><i class="legend-driver"><img src="/assets/map/vehicle-pickup.png" alt=""></i>السائق</span>
+              <span><i class="legend-dot legend-passenger"></i>الراكب</span>
+              <span><i class="legend-dot legend-pickup"></i>الانطلاق</span>
+              <span><i class="legend-dot legend-destination"></i>الوجهة</span>
+              <span id="live-approach-legend"><i class="legend-line legend-approach"></i>الطريق إلى الراكب</span>
+              <span><i class="legend-line legend-trip" id="live-trip-line-legend"></i><span id="live-trip-label">مسار الرحلة</span></span>
+            </div>
+            <div class="live-route-toolbar"><span id="live-route-summary" role="status">جارٍ اختيار رحلة لعرض مسارها…</span><div class="live-route-actions"><button type="button" class="button small hidden" id="live-route-focus">إظهار المسار كاملاً</button><button type="button" class="button small hidden" id="live-route-retry">إعادة حساب المسار</button></div></div>
+            <div class="live-rides-layout"><div id="live-rides-map" aria-label="خريطة الرحلات النشطة"></div><div class="live-rides-list" id="live-rides-list"><div class="empty-state">لا توجد رحلات نشطة الآن.</div></div></div>
           </section>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>العميل</th><th>السائق</th><th>المسار</th><th>المركبة</th><th>الحالة</th><th>السعر</th><th>التاريخ</th><th>الإجراءات</th></tr></thead><tbody id="rides-body"></tbody></table></div><div class="empty-state hidden" id="rides-empty">لا توجد رحلات في هذه الحالة.</div></section>
+          <div class="section-toolbar"><p id="ride-list-feedback" role="status" aria-live="polite"></p><div class="command-row"><button class="button" id="ride-page-previous" type="button" disabled>السابق</button><button class="button" id="ride-page-next" type="button" disabled>التالي</button></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>رقم الرحلة</th><th>العميل</th><th>السائق</th><th>المسار</th><th>المركبة</th><th>الحالة</th><th>السعر</th><th>الأوقات بتوقيت اليمن</th><th>الإجراءات</th></tr></thead><tbody id="rides-body"></tbody></table></div><div class="empty-state hidden" id="rides-empty">لا توجد رحلات تطابق الرقم والحالة المحددين.</div></section>
         </section>
 
         <section class="view" id="view-cancellations">
@@ -365,8 +442,26 @@
         </section>
 
         <section class="view" id="view-history">
-          <div class="section-toolbar"><div><h2>سجل الرحلات</h2><p>الرحلات السابقة والقادمة للمستخدمين</p></div></div>
-          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>العميل</th><th>المسار</th><th>الحالة</th><th>السعر</th><th>التاريخ</th></tr></thead><tbody id="history-body"></tbody></table></div><div class="empty-state hidden" id="history-empty">لا توجد رحلات في السجل.</div></section>
+          <div class="section-toolbar"><div><h2>سجل الرحلات</h2><p>الرحلات السابقة والقادمة للمستخدمين</p></div><button class="button" id="history-list-refresh" type="button">تحديث</button></div>
+          <form class="admin-report-filters" id="history-list-filters"><label>رقم الرحلة<input id="history-number" type="search" inputmode="numeric" placeholder="كل الرحلات"></label><label>الحالة<select id="history-filter"><option value="">كل الحالات</option><option value="0">مسودة</option><option value="1">جاري البحث</option><option value="2">التفاوض</option><option value="3">تم تعيين سائق</option><option value="4">السائق في الطريق</option><option value="9">وصل السائق</option><option value="8">الإلغاء قيد المراجعة</option><option value="5">قيد التنفيذ</option><option value="6">مكتملة</option><option value="7">ملغاة</option></select></label><button class="button primary" type="submit">عرض السجل</button></form>
+          <div class="section-toolbar"><p id="history-list-feedback" role="status" aria-live="polite"></p><div class="command-row"><button class="button" id="history-page-previous" type="button" disabled>السابق</button><button class="button" id="history-page-next" type="button" disabled>التالي</button></div></div>
+          <section class="data-section"><div class="table-wrap"><table><thead><tr><th>رقم الرحلة</th><th>العميل</th><th>السائق</th><th>المسار</th><th>الحالة</th><th>السعر</th><th>الأوقات بتوقيت اليمن</th><th>الخريطة</th></tr></thead><tbody id="history-body"></tbody></table></div><div class="empty-state hidden" id="history-empty">لا توجد رحلات تطابق الرقم والحالة المحددين.</div></section>
+        </section>
+
+        <section class="view" id="view-driver-movement">
+          <div class="section-toolbar"><div><h2>تقرير حركة السائقين</h2><p>الرحلات المتفق عليها، أوقاتها، التقييمات والبلاغات ومسارات الحركة المسجلة.</p></div><button class="button" id="driver-movement-refresh" type="button">تحديث التقرير</button></div>
+          <form class="admin-report-filters" id="driver-movement-filters">
+            <label>بحث عن السائق<input id="driver-movement-search" maxlength="100" placeholder="الاسم أو الهاتف"></label>
+            <label>السائق<select id="driver-movement-driver" required><option value="">اختر السائق</option></select></label>
+            <label>من تاريخ الطلب<input id="driver-movement-from" type="date"></label>
+            <label>إلى تاريخ الطلب<input id="driver-movement-to" type="date"></label>
+            <div class="admin-report-actions"><button type="button" class="button" id="driver-movement-search-button">بحث عن السائق</button><button type="submit" class="button primary">عرض التقرير</button></div>
+          </form>
+          <p class="admin-report-note">الفترة حسب تاريخ طلب الرحلة وتشمل يوم النهاية كاملًا بتوقيت اليمن. مدة الوصول تبدأ من الاتفاق مع السائق. تجاوز مدة الرحلة مقارنة بالتقدير المحفوظ يشمل الانتظار والمرور، ولا يُقيّم إلا لرحلة مكتملة دون تغيير وجهة. التوقفات المسجلة معروضة بصورة مستقلة. تغيير المسار يعني تغيير وجهة معتمدًا.</p>
+          <p class="movement-feedback" id="driver-movement-feedback" role="status" aria-live="polite">اختر السائق والفترة ثم اضغط عرض التقرير.</p>
+          <p class="movement-report-note">مرر الجدول أفقيًا لعرض البلاغات وزر مسارات الرحلة وبقية التفاصيل.</p>
+          <section class="data-section"><div class="table-wrap" tabindex="0" role="region" aria-label="تقرير حركة السائق؛ مرر أفقيًا لعرض جميع الأعمدة"><table class="admin-report-table movement-report-table"><thead><tr><th>الرحلة والراكب</th><th>الحالة والاتفاق</th><th>تقييم الرحلة</th><th>المدة إلى الراكب</th><th>مدة الرحلة</th><th>تغيير المسار</th><th>التوقف والانتظار</th><th>البلاغات والخريطة</th></tr></thead><tbody id="driver-movement-body"></tbody></table></div><div id="driver-movement-empty" class="empty-state hidden">لا توجد رحلات متفق عليها تطابق التصفية.</div></section>
+          <div class="admin-report-pagination"><button class="button" type="button" id="driver-movement-prev" disabled>السابق</button><span id="driver-movement-page"></span><button class="button" type="button" id="driver-movement-next" disabled>التالي</button></div>
         </section>
 
         <section class="view" id="view-route-change-report">
@@ -426,7 +521,7 @@
 
   <dialog class="modal" id="database-modal"><form class="modal-shell" id="database-form"><header><div><h2>اتصال قاعدة البيانات</h2><p>اختبار الاتصال وإنشاء الجداول المطلوبة</p></div><button class="icon-button" type="button" data-close="database-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="form-grid"><label class="full">نوع النظام<select id="db-provider"></select></label><label>اسم الخادم<input id="db-server" placeholder=".\SQLEXPRESS" required></label><label>اسم القاعدة<input id="db-name" required></label><label>اسم المستخدم<input id="db-username"></label><label>كلمة المرور<input id="db-password" type="password"></label><label class="check-field full"><input id="db-integrated" type="checkbox"> استخدام مصادقة Windows</label><label class="check-field"><input id="db-trust" type="checkbox" checked> الوثوق بالشهادة</label><label class="check-field"><input id="db-encrypt" type="checkbox"> تشفير الاتصال</label></div><div class="inline-result hidden" id="database-result"></div></div><footer><button class="button" id="db-test" type="button">اختبار الاتصال</button><button class="button primary" type="submit">حفظ وتجهيز القاعدة</button></footer></form></dialog>
 
-  <dialog class="modal safety-map-modal" id="safety-map-modal"><div class="modal-shell"><header><div><h2>متابعة موقع الرحلة</h2><p id="safety-map-summary">—</p></div><button class="icon-button" type="button" data-close="safety-map-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="safety-map-details" id="safety-map-details"></div><div class="safety-map-privacy"><span>تنبيه خصوصية: تحميل الخريطة يرسل إحداثيات الرحلة إلى OpenStreetMap. أثناء المتابعة تُحدّث الإحداثيات الحية كل 12 ثانية. لن تُحمّل قبل الضغط على الزر.</span><button class="button small" id="safety-map-load" type="button">تحميل الخريطة</button></div><iframe class="hidden" id="safety-map-frame" title="خريطة متابعة بلاغ السلامة" loading="lazy" referrerpolicy="no-referrer"></iframe><div class="safety-map-footer"><span id="safety-map-updated">—</span><a class="button small hidden" id="safety-map-route-link" target="_blank" rel="noopener noreferrer">فتح مسار الرحلة</a></div></div></div></dialog>
+  <dialog class="modal safety-map-modal" id="safety-map-modal"><div class="modal-shell"><header><div><h2>متابعة موقع الرحلة</h2><p id="safety-map-summary">—</p></div><button class="icon-button" type="button" data-close="safety-map-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="safety-map-details" id="safety-map-details"></div><div class="safety-map-privacy"><span>تحميل الخريطة يطلب خلفية المنطقة من Esri أو OpenStreetMap France ويحسب الطرق عبر الخادم للرحلات النشطة. تُحدّث المتابعة كل 12 ثانية. الرحلات المنتهية تعرض المسار المخطط المحفوظ إن وُجد. فتح الطريق يرسل نقطتيه إلى خرائط Google.</span><button class="button small" id="safety-map-load" type="button">تحميل الخريطة</button></div><div class="map-load-notice"><span id="safety-map-status" role="status"></span><button type="button" class="button small hidden" id="safety-map-retry">إعادة تحميل الخريطة</button></div><div class="live-route-toolbar"><span id="safety-map-route-summary" role="status" aria-live="polite"></span><div class="live-route-actions"><button type="button" class="button small hidden" id="safety-map-route-retry">إعادة تحميل المسار</button></div></div><div class="map-legend"><span><i class="legend-line legend-approach"></i>طريق الوصول إلى الراكب</span><span><i class="legend-line legend-trip"></i>الطريق إلى الوجهة</span><span>المتقطع: مسار مخطط لا يثبت الحركة الفعلية</span></div><div class="hidden" id="safety-map-canvas" aria-label="خريطة متابعة بلاغ السلامة"></div><div class="safety-map-footer"><span id="safety-map-updated">—</span><a class="button small hidden" id="safety-map-route-link" target="_blank" rel="noopener noreferrer">فتح مسار الرحلة</a></div></div></div></dialog>
 
   <dialog class="modal" id="admin-notifications-modal"><section class="modal-shell"><header><div><h2>إشعارات الإدارة</h2><p>الإشعارات الخاصة بحساب المدير الحالي.</p></div><button class="icon-button" type="button" data-close="admin-notifications-modal" title="إغلاق" aria-label="إغلاق">×</button></header><div class="modal-body"><div class="admin-notification-list" id="admin-notifications-list"></div></div></section></dialog>
 
@@ -436,9 +531,33 @@
     <div class="route-change-invoice-heading"><h2 id="route-change-invoice-title">فاتورة تغيير المسار</h2><form method="dialog"><button class="button" type="submit" aria-label="إغلاق تفاصيل الفاتورة">إغلاق</button></form></div>
     <div id="route-change-invoice-content"></div>
   </dialog>
-  <script src="/vendor/signalr/signalr.min.js" defer></script>
-  <script src="/vendor/leaflet/leaflet.js" defer></script>
-  <script src="/admin.js?v=20261102-wallet-debt-1" defer></script>
+  <script src="/vendor/signalr/signalr.min.js?v=9.0.19" defer></script>
+  <script src="/vendor/leaflet/leaflet.js?v=1.9.4" defer></script>
+  <script src="/admin-maps.js?v=20261106-map-motion-1" defer></script>
+  <script src="/admin-route-tracker.js?v=20261106-map-motion-1" defer></script>
+  <script src="/admin-state-sync.js?v=20261103-1" defer></script>
+  <dialog class="modal movement-map-modal" id="driver-location-dialog" aria-labelledby="driver-location-title"><section class="modal-shell">
+    <header><div><h2 id="driver-location-title">موقع السائق</h2><p>اختر الموقع على الخريطة ثم احفظه لتحديث التتبع.</p></div><button class="icon-button" type="button" data-close="driver-location-dialog" aria-label="إغلاق">×</button></header>
+    <div class="modal-body"><div class="movement-map-details" id="driver-location-details"></div><div class="map-load-notice"><span id="driver-location-map-status" role="status"></span><button type="button" class="button small hidden" id="driver-location-map-retry">إعادة تحميل الخريطة</button></div><div class="movement-map-canvas" id="driver-location-map" aria-label="خريطة تعديل موقع السائق"></div>
+      <div class="movement-editor-fields"><label>خط العرض<input id="driver-location-latitude" type="number" step="any" min="-90" max="90" inputmode="decimal"></label><label>خط الطول<input id="driver-location-longitude" type="number" step="any" min="-180" max="180" inputmode="decimal"></label></div>
+      <p id="driver-location-feedback" class="movement-feedback" role="status" aria-live="polite"></p><p id="driver-location-move-note" class="movement-report-note"></p>
+    </div><footer><button class="button primary" type="button" id="driver-location-save" disabled>حفظ الموقع</button><button class="button" type="button" id="driver-location-move" disabled>تجربة التحرك (متر واحد)</button><button class="button" type="button" id="driver-location-reload">إعادة تحميل الموقع</button></footer>
+  </section></dialog>
+  <dialog class="modal movement-map-modal" id="ride-movement-dialog" aria-labelledby="ride-movement-title"><section class="modal-shell">
+    <header><h2 id="ride-movement-title">مسارات الرحلة</h2><button class="icon-button" type="button" data-close="ride-movement-dialog" aria-label="إغلاق">×</button></header>
+    <div class="modal-body"><div class="movement-map-details" id="ride-movement-details"></div><div class="map-load-notice"><span id="ride-movement-map-status" role="status"></span><button type="button" class="button small hidden" id="ride-movement-map-retry">إعادة تحميل الخريطة</button></div><div id="ride-movement-map" class="movement-map-canvas" aria-label="خريطة مسارات الرحلة المسجلة"></div>
+      <div class="movement-map-legend"><span><i style="--path-color:#2563eb"></i>حركة السائق إلى الراكب</span><span><i style="--path-color:#08766a"></i>حركة الرحلة إلى الوجهة</span><span><i class="movement-dashed" style="--path-color:#64748b"></i>المسار المخطط</span><span><i class="movement-dot" style="--path-color:#b45309"></i>السائق عند عرض الطلب</span><span><i class="movement-dot" style="--path-color:#9333ea"></i>الراكب عند الطلب</span><span><i class="movement-dot" style="--path-color:#08766a"></i>نقطة الانطلاق</span><span><i class="movement-dot" style="--path-color:#dc2626"></i>الوجهة</span><span><i class="movement-dot" style="--path-color:#c2410c"></i>تغيير الوجهة</span></div>
+      <p id="ride-movement-feedback" class="movement-feedback" role="status" aria-live="polite"></p><div id="ride-movement-notes"></div>
+    </div>
+  </section></dialog>
+  <dialog class="modal" id="ride-complaints-dialog" aria-labelledby="ride-complaints-title"><section class="modal-shell"><header><h2 id="ride-complaints-title">بلاغات الرحلة</h2><button class="icon-button" type="button" data-close="ride-complaints-dialog" aria-label="إغلاق">×</button></header><div class="modal-body"><p id="ride-complaints-feedback" class="movement-feedback" role="status" aria-live="polite"></p><h3>الدعم والشكاوى</h3><div id="ride-complaints-support"></div><h3>بلاغات السلامة</h3><div id="ride-complaints-safety"></div></div></section></dialog>
+  <script src="/admin.js?v=20261108-sms-send-1" defer></script>
+  <dialog class="modal" id="sms-activation-modal" aria-labelledby="sms-activation-title"><form class="modal-shell" id="sms-activation-form" autocomplete="off"><header><div><h2 id="sms-activation-title">تفعيل حساب مزود الرسائل</h2><p>أدخل رمز OTP الذي أرسله مزود الرسائل.</p></div><button class="icon-button" type="button" data-close="sms-activation-modal" aria-label="إغلاق">×</button></header><div class="modal-body"><label>رمز التفعيل<input name="code" inputmode="numeric" dir="ltr" pattern="[0-9]{4,10}" minlength="4" maxlength="10" required autocomplete="one-time-code"></label><p id="sms-activation-result" role="status" aria-live="polite"></p></div><footer><button class="button" type="button" data-close="sms-activation-modal">إلغاء</button><button class="button primary" type="submit">تفعيل الحساب</button></footer></form></dialog>
+  <script src="/admin-sms-provider.js?v=20261108-sms-2" defer></script>
+  <script src="/admin-sms-report.js?v=20261108-sms-report-3" defer></script>
+  <script src="/admin-sms-send.js?v=20261108-sms-send-1" defer></script>
+  <script src="/admin-driver-movement.js?v=20261106-map-motion-1" defer></script>
+  <script src="/admin-chat-audit.js?v=20261104-chat-1" defer></script>
   <script src="/admin-transfer-fees.js?v=20261102-1" defer></script>
   <script src="/admin-waiting-report.js?v=20261019-ride-reports-2" defer></script>
   <script src="/admin-route-change-report.js?v=20261019-ride-reports-2" defer></script>

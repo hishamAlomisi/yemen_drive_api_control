@@ -75,7 +75,9 @@ public sealed record RideMessageRealtimeEvent(
     int RecipientId,
     string MessageType,
     string Content,
-    DateTime CreatedAtUtc);
+    DateTime CreatedAtUtc,
+    DateTime? DeliveredAtUtc = null,
+    DateTime? ReadAtUtc = null);
 
 /// <summary>
 /// A minimal invalidation event. Clients reload authoritative payment state
@@ -135,6 +137,10 @@ public interface IRideRealtimePublisher
     Task PublishRideMessageCreatedAsync(
         RideMessageRealtimeEvent message,
         CancellationToken cancellationToken);
+
+    Task PublishRideMessageUpdatedAsync(
+        RideMessageRealtimeEvent message,
+        CancellationToken cancellationToken) => Task.CompletedTask;
 
     Task PublishPaymentUpdatedAsync(
         IReadOnlyCollection<int> userIds,

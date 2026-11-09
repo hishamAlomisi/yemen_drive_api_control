@@ -13,6 +13,8 @@ public sealed class AdministratorAccess(YemenDriveDbContext db, ICurrentUserCont
     {
         "administratorpermissionmodel" => "permissions",
         "savedplaceadminmodel" => "personal_data",
+        "ridechatauditmodel" => "operations",
+        "drivermovementreportmodel" or "ridemovementhistorymodel" => "operations",
         "ridecancellationreportmodel" => "refunds",
         "ridefinancialcasemodel" or "ridecancellationrequestmodel" => "refunds",
         "supportticketmodel" => "support",
@@ -36,8 +38,9 @@ public sealed class AdministratorAccess(YemenDriveDbContext db, ICurrentUserCont
         {
             // Catalog discovery is public; writes and financial administration are not.
             var restricted = new[] { "PricingModel", "PricingRuleModel", "PromotionModel", "ServiceKindModel", "ServiceCatalogModel", "ServiceCatalogItemModel", "ServiceAreaModel", "PaymentMethodModel", "DriverModel" };
-            var adminOnly = new[] { "OperationalReviewModel", "OperationalPolicyModel", "AdministratorPermissionModel", "FinancialOperationModel", "FinancialReportModel", "FinancialStatementsModel", "AccountingSetupModel", "AccountStatementModel", "SavedPlaceAdminModel", "AdminNotificationCampaignModel", "RideSearchRecipientModel", "LedgerAccountModel", "JournalEntryModel", "DriverSettlementPaymentModel", "DashboardModel", "CustomerModel" };
-            if (adminOnly.Contains(request.Model, StringComparer.OrdinalIgnoreCase) || !read && restricted.Contains(request.Model, StringComparer.OrdinalIgnoreCase))
+            var adminOnly = new[] { "RideChatAuditModel", "OperationalReviewModel", "OperationalPolicyModel", "AdministratorPermissionModel", "FinancialOperationModel", "FinancialReportModel", "FinancialStatementsModel", "AccountingSetupModel", "AccountStatementModel", "SavedPlaceAdminModel", "AdminNotificationCampaignModel", "RideSearchRecipientModel", "LedgerAccountModel", "JournalEntryModel", "DriverSettlementPaymentModel", "DashboardModel", "CustomerModel" };
+            if (request.Model.ToLowerInvariant() is "driverlocationadminmodel" or "drivermovementreportmodel" or "ridemovementhistorymodel" ||
+                adminOnly.Contains(request.Model, StringComparer.OrdinalIgnoreCase) || !read && restricted.Contains(request.Model, StringComparer.OrdinalIgnoreCase))
                 throw new ServiceException("administrator_required", "هذا الإجراء متاح للإدارة المفوضة فقط.");
             return;
         }

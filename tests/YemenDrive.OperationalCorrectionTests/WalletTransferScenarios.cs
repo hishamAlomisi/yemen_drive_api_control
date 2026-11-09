@@ -73,7 +73,7 @@ static class WalletTransferScenarios
         broken = await db.LedgerAccounts.SingleAsync(x => x.Code == $"2100-WLT-{receiverWalletId}"); broken.Currency = "YER"; await db.SaveChangesAsync();
         // Independent contexts exercise concurrent retries against SQL Server, not a mocked store.
         var connection = db.Database.GetConnectionString();
-        async Task<ApiResult> ConcurrentConfirm() { await using var other = new YemenDriveDbContext(new DbContextOptionsBuilder<YemenDriveDbContext>().UseSqlServer(connection).Options); return await Run(new TransferService(other, config, new Actor(sender.Id)), "confirm", new WalletTransferModel(Reference: reference, Password: "Transfer-Secret-123")); }
+        async Task<ApiResult> ConcurrentConfirm() { await using var other = new YemenDriveDbContext(new DbContextOptionsBuilder<YemenDriveDbContext>().UseSqlServer(connection).Options, RealtimeScenarioMode.Settings); return await Run(new TransferService(other, config, new Actor(sender.Id)), "confirm", new WalletTransferModel(Reference: reference, Password: "Transfer-Secret-123")); }
         await Task.WhenAll(ConcurrentConfirm(), ConcurrentConfirm());
         db.ChangeTracker.Clear();
         Ok(await Confirm(reference));

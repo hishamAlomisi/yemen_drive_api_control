@@ -75,6 +75,7 @@ function harness(request, items = [method(1)]) {
   };
   context.window = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/YemenDrive.Api/wwwroot/admin-state-sync.js'), 'utf8'), context);
   vm.runInContext(source.replace(/^start\(\);\r?$/m, ''), context, { filename: 'admin.js' });
   const state = vm.runInContext('state', context);
   state.view = 'payment-methods'; state.databaseConfigured = true; state.walletLoginStates = new Map();

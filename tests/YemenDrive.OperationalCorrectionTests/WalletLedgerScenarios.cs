@@ -14,7 +14,7 @@ static class WalletLedgerScenarios
     {
         var notificationCapture = new NotificationSaveCaptureInterceptor();
         await using var db = new YemenDriveDbContext(new DbContextOptionsBuilder<YemenDriveDbContext>()
-            .UseSqlServer(source.Database.GetConnectionString()).AddInterceptors(new WalletMovementNotificationInterceptor(), notificationCapture).Options);
+            .UseSqlServer(source.Database.GetConnectionString()).AddInterceptors(new WalletMovementNotificationInterceptor(), notificationCapture).Options, RealtimeScenarioMode.Settings);
         var customer = new User { PhoneNumber = "967711444001", DisplayName = "Ledger customer" };
         var driver = new User { PhoneNumber = "967711444002", DisplayName = "Ledger driver", Role = UserRole.Driver };
         db.AddRange(customer, driver); await db.SaveChangesAsync();

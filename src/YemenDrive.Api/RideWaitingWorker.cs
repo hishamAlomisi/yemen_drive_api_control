@@ -23,6 +23,7 @@ public sealed class RideWaitingWorker(IServiceScopeFactory scopes, ILogger<RideW
                 foreach (var id in ids)
                 {
                     await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, stoppingToken);
+                    await YemenDrive.Application.Payments.RidePaymentGuard.LockAsync(db, id, stoppingToken);
                     var ride = await db.Rides.SingleAsync(x => x.Id == id, stoppingToken);
                     await waiting.ReconcileAsync(ride, DateTime.UtcNow, stoppingToken);
                     await RideRouteChangePolicy.ExpireAsync(db, ride, DateTime.UtcNow, stoppingToken);

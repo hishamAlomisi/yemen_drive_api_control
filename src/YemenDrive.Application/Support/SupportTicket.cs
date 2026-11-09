@@ -88,7 +88,7 @@ public sealed class SupportTicketReport(YemenDriveDbContext db, DatabaseConfigur
         var actor = user.RequireUserId();
         var admin = await db.Users.AnyAsync(x => x.Id == actor && x.IsActive && x.Role == UserRole.Admin, ct);
         if (admin) await AdministratorAccess.RequireAsync(db, actor, "support.read", ct);
-        var items = await db.SupportTickets.AsNoTracking().Where(x => (admin || x.UserId == actor) && (model.Status == null || x.Status == model.Status) && (model.AssignedAdminId == null || x.AssignedAdminId == model.AssignedAdminId)).OrderByDescending(x => x.Id).Take(200).ToListAsync(ct);
+        var items = await db.SupportTickets.AsNoTracking().Where(x => (admin || x.UserId == actor) && (model.RideId == null || x.RideId == model.RideId) && (model.Status == null || x.Status == model.Status) && (model.AssignedAdminId == null || x.AssignedAdminId == model.AssignedAdminId)).OrderByDescending(x => x.Id).Take(200).ToListAsync(ct);
         return items.Select(SupportTicket.View).ToList();
     }
 }

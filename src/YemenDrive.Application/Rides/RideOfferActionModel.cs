@@ -26,9 +26,12 @@ public sealed class RideOfferAction(
     protected override async Task<object?> AcceptAsync(
         RideOfferActionModel model, CancellationToken token)
     {
+        // Do not retain an offer read lock while waiting for the ride. Resolve
+        // its identity first, then validate fresh offer state under the ride lock.
+        var rideId = await FindRideIdAsync(model, token);
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
-        var offer = await FindOfferAsync(model, token);
-        await RidePaymentGuard.LockAsync(db, offer.RideId, token);
+        await RidePaymentGuard.LockAsync(db, rideId, token);
+        var offer = await FindOfferAsync(model with { RideId = rideId }, token);
         var ride = await db.Rides.Include(x => x.Offers)
             .SingleOrDefaultAsync(x => x.Id == offer.RideId, token)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
@@ -84,8 +87,10 @@ public sealed class RideOfferAction(
 
     protected override async Task<object?> RejectAsync(RideOfferActionModel model, CancellationToken token)
     {
+        var rideId = await FindRideIdAsync(model, token);
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
-        var offer = await FindOfferAsync(model, token);
+        await RidePaymentGuard.LockAsync(db, rideId, token);
+        var offer = await FindOfferAsync(model with { RideId = rideId }, token);
         var ride = await db.Rides.AsNoTracking().SingleOrDefaultAsync(x => x.Id == offer.RideId, token)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
         await EnsureCustomerOrAdminAsync(ride.CustomerId, token);
@@ -103,6 +108,18 @@ public sealed class RideOfferAction(
                 ride.CustomerId, updated, token);
         }
         return new { offerId = offer.Id, rideId = ride.Id, status = offer.Status };
+    }
+
+    private async Task<int> FindRideIdAsync(RideOfferActionModel model, CancellationToken token)
+    {
+        if (model.OfferId is null)
+            throw new ServiceException("offer_id_required", "معرف العرض مطلوب.");
+        var rideId = await db.RideOffers.AsNoTracking().Where(x => x.Id == model.OfferId)
+            .Select(x => (int?)x.RideId).SingleOrDefaultAsync(token)
+            ?? throw new ServiceException("offer_not_found", "العرض غير موجود.");
+        if (model.RideId is not null && model.RideId != rideId)
+            throw new ServiceException("offer_not_found", "العرض لا يتبع الرحلة المحددة.");
+        return rideId;
     }
 
     private async Task<YemenDrive.Database.Entities.RideOffer> FindOfferAsync(

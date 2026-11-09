@@ -5,6 +5,7 @@ using YemenDrive.Database.Entities;
 using YemenDrive.Services.Reports;
 using YemenDrive.Shared.Security;
 using YemenDrive.Application.Payments;
+using YemenDrive.Shared.Api;
 
 namespace YemenDrive.Application.Rides;
 
@@ -19,11 +20,17 @@ public sealed class RideReport(
         var currentUserId = currentUser.UserId;
         var isAdmin = currentUserId is int adminId && await dbContext.Users.AsNoTracking()
             .AnyAsync(x => x.Id == adminId && x.Role == UserRole.Admin && x.IsActive, cancellationToken);
+        if (model.IncludePaging && !isAdmin)
+            throw new ServiceException("administrator_permission_required", "عرض صفحات سجل الرحلات متاح للإدارة فقط.");
+        if ((model.IncludePaging && (model.PageNumber is < 1 or > 1_000_000 || model.PageSize is < 1 or > 100)) ||
+            (isAdmin && model.Id <= 0))
+            throw new ServiceException("invalid_ride_report_filter", "تحقق من رقم الرحلة وحجم الصفحة.");
         DriverProfile? driverProfile = null;
         if (!isAdmin && currentUserId is int userId)
         {
             driverProfile = await dbContext.DriverProfiles.AsNoTracking()
-                .SingleOrDefaultAsync(x => x.UserId == userId, cancellationToken);
+                .SingleOrDefaultAsync(x => x.UserId == userId && x.User.IsActive &&
+                    x.User.Role == UserRole.Driver, cancellationToken);
 
             if (driverProfile is null)
             {
@@ -58,14 +65,21 @@ public sealed class RideReport(
                                      x.Status == RideStatus.InProgress ||
                                      x.Status == RideStatus.CancellationPending));
         if (model.Status is not null) query = query.Where(x => x.Status == model.Status);
-        var rides = await query
+        if (isAdmin && model.Id is not null) query = query.Where(x => x.Id == model.Id);
+        var totalCount = model.IncludePaging ? await query.CountAsync(cancellationToken) : 0;
+        var totalPages = model.IncludePaging ? Math.Max(1, (int)Math.Ceiling(totalCount / (double)model.PageSize)) : 1;
+        var pageNumber = model.IncludePaging ? Math.Min(model.PageNumber, totalPages) : 1;
+        var orderedQuery = query
             .Include(x => x.Customer)
             .Include(x => x.Driver)
             .Include(x => x.ServiceKind)
             .Include(x => x.ServiceCatalogItem)
             .Include(x => x.Offers)
             .OrderByDescending(x => x.CreatedAtUtc)
-            .Take(200)
+            .ThenByDescending(x => x.Id);
+        var rides = await orderedQuery
+            .Skip(model.IncludePaging ? (pageNumber - 1) * model.PageSize : 0)
+            .Take(model.IncludePaging ? model.PageSize : 200)
             .ToListAsync(cancellationToken);
 
         var driverLocation = driverProfile is null
@@ -83,6 +97,8 @@ public sealed class RideReport(
                 .ToList();
         }
         var rideIds = rides.Select(x => x.Id).ToArray();
+        var movementSnapshots = await dbContext.RideMovementSnapshots.AsNoTracking()
+            .Where(x => rideIds.Contains(x.RideId)).ToDictionaryAsync(x => x.RideId, cancellationToken);
         var finances = await RideFinancialState.ReadManyAsync(dbContext, rides, cancellationToken);
         var activeDriverIds = rides
             .Where(x => x.DriverId is not null &&
@@ -107,13 +123,15 @@ public sealed class RideReport(
             .Where(x => x.RideId != null && rideIds.Contains(x.RideId.Value) && x.IsOpen && x.Status != "Succeeded")
             .Select(x => x.RideId!.Value).Distinct().ToListAsync(cancellationToken);
 
-        return rides.Select(x =>
+        var rows = rides.Select(x =>
         {
             var assignedToCurrentDriver = driverProfile is not null && x.DriverId == driverProfile.UserId;
-            // The customer, an administrator and the assigned driver may see
-            // the full destination.  A driver deciding whether to make an
-            // offer receives only pickup navigation and a readable area name.
-            var revealDestination = isAdmin || driverProfile is null || assignedToCurrentDriver;
+            // Eligibility, service, proximity and availability were checked above.
+            // A driver needs the route to decide their offer; customer contact
+            // details remain private until the ride is assigned to that driver.
+            var revealContact = isAdmin || driverProfile is null || assignedToCurrentDriver;
+            var revealDestination = revealContact || (driverProfile is not null &&
+                x.DriverId is null && x.Status is RideStatus.Searching or RideStatus.Negotiating);
             var offer = driverProfile is null
                 ? null
                 : x.Offers.Where(item => item.DriverId == driverProfile.UserId)
@@ -128,12 +146,13 @@ public sealed class RideReport(
             var cashRequest = cashRequests.FirstOrDefault(item => item.RideId == x.Id);
             paidMethods.TryGetValue(x.Id, out var paidMethod);
             adminLiveLocations.TryGetValue(x.DriverId ?? 0, out var adminLocation);
+            movementSnapshots.TryGetValue(x.Id, out var movementSnapshot);
 
             return new
             {
                 x.Id, x.CustomerId,
-                customerName = revealDestination ? x.Customer.DisplayName : null,
-                customerPhone = revealDestination ? x.Customer.PhoneNumber : null,
+                customerName = revealContact ? x.Customer.DisplayName : null,
+                customerPhone = revealContact ? x.Customer.PhoneNumber : null,
                 x.DriverId,
                 driverName = x.Driver?.DisplayName,
                 x.Status, x.ServiceKindId, x.ServiceCatalogItemId,
@@ -150,13 +169,19 @@ public sealed class RideReport(
                 destinationLatitude = revealDestination ? x.DestinationLatitude : (double?)null,
                 destinationLongitude = revealDestination ? x.DestinationLongitude : (double?)null,
                 destinationAvailable = revealDestination,
+                routePolyline = revealDestination ? x.RoutePolyline : null,
+                tripDistanceMeters = revealDestination && x.RouteQuotedDistanceMeters > 0
+                    ? x.RouteQuotedDistanceMeters : (double?)null,
                 pickupDistanceMeters,
                 driverLatitude = driverProfile is null ? adminLocation?.Latitude : driverLocation?.Latitude,
                 driverLongitude = driverProfile is null ? adminLocation?.Longitude : driverLocation?.Longitude,
                 driverBearing = driverProfile is null ? adminLocation?.Bearing : driverLocation?.Bearing,
                 driverSpeed = driverProfile is null ? adminLocation?.Speed : driverLocation?.Speed,
                 driverLocationObservedAtUtc = driverProfile is null ? adminLocation?.ObservedAtUtc : driverLocation?.ObservedAtUtc,
-                x.CustomerPrice, x.ServiceFee, x.TotalAmount, x.DriverCommissionAmount, x.DriverShare, x.PlatformShare, x.CreatedAtUtc, x.UpdatedAtUtc,
+                x.CustomerPrice, x.ServiceFee, x.TotalAmount, x.DriverCommissionAmount, x.DriverShare, x.PlatformShare,
+                createdAtUtc = MovementTimes.Utc(x.CreatedAtUtc), updatedAtUtc = MovementTimes.Utc(x.UpdatedAtUtc),
+                acceptedAtUtc = MovementTimes.Utc(MovementTimes.Accepted(x, movementSnapshot)),
+                completedAtUtc = MovementTimes.Utc(x.CompletedAtUtc),
                 x.QuotedPrice, x.MinCustomerPrice, x.MaxCustomerPrice, x.WaitingFee,
                 x.RouteVersion, x.RouteChangeFee, x.RouteChangeFees, x.RouteCompletedFare, x.RouteSegmentStartedAtUtc,
                 x.WaitingFreeMinutes, x.WaitingPricePerMinute, x.WaitingMaxFee,
@@ -165,7 +190,7 @@ public sealed class RideReport(
                 outstandingAmount = finances[x.Id].OutstandingAmount,
                 paidAmount = finances[x.Id].PaidAmount,
                 refundedAmount = finances[x.Id].RefundedAmount,
-                x.ServiceEndedAtUtc, x.PassengerBoardedAtUtc,
+                serviceEndedAtUtc = MovementTimes.Utc(x.ServiceEndedAtUtc), passengerBoardedAtUtc = MovementTimes.Utc(x.PassengerBoardedAtUtc),
                 paymentMethodNameAr = paidMethod?.PaymentMethodNameAr,
                 selectedPaymentMethodNameAr = selectedMethods.GetValueOrDefault(x.PaymentMethodCode, "محفظة خارجية"),
                 paymentProvider = paidMethod?.PaymentProvider,
@@ -179,6 +204,9 @@ public sealed class RideReport(
                 cashPaymentRequestStatus = cashRequest?.Status
             };
         }).ToList();
+        if (model.IncludePaging)
+            return new { rows, totalCount, pageNumber, pageSize = model.PageSize, totalPages };
+        return rows;
     }
 
     private static double HaversineMeters(double firstLatitude, double firstLongitude,

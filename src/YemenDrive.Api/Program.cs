@@ -1,10 +1,14 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.SignalR;
+using YemenDrive.Api.Realtime;
+using YemenDrive.Database.Realtime;
 using Microsoft.AspNetCore.DataProtection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
 using YemenDrive.Api;
+using YemenDrive.Api.Sms;
+using YemenDrive.Application.Communication;
 using YemenDrive.Api.WalletLogin;
 using YemenDrive.Api.WalletPayments;
 using YemenDrive.Application.Payments;
@@ -51,6 +55,8 @@ var settingsPath = Directory.Exists(Path.Combine(AppContext.BaseDirectory, "secu
     ? deploymentSettingsPath
     : legacyDatabaseSettingsPath;
 builder.Services.AddSingleton(new DatabaseConfigurationStore(settingsPath));
+builder.Services.AddSingleton<IApiReadinessProbe, DatabaseReadinessProbe>();
+builder.Services.AddSingleton<ApiReadinessService>();
 builder.Services.AddSingleton<IDatabaseProvider, SqlServerDatabaseProvider>();
 builder.Services.AddSingleton<DatabaseConfigurator>();
 var consoleOtpEnabled = builder.Environment.IsDevelopment() ||
@@ -77,6 +83,19 @@ var walletDataProtection = builder.Services.AddDataProtection()
     .SetApplicationName("YemenDrive.WalletLogin")
     .PersistKeysToFileSystem(new DirectoryInfo(walletKeyRingPath));
 if (OperatingSystem.IsWindows()) walletDataProtection.ProtectKeysWithDpapi();
+builder.Services.AddSingleton(services => new SmsProviderConfigurationStore(
+    services.GetRequiredService<IDataProtectionProvider>(),
+    Path.Combine(builder.Environment.ContentRootPath, "security", "sms-provider.dat")));
+builder.Services.AddScoped<SmsStatisticsService>();
+builder.Services.AddSingleton<SmsPayloadProtector>();
+builder.Services.AddHttpClient("sms-provider", client => client.Timeout = TimeSpan.FromSeconds(10))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Logging.AddFilter("System.Net.Http.HttpClient.sms-provider", LogLevel.None);
+builder.Services.AddSingleton(services => new SmsProviderRuntime(services.GetRequiredService<SmsProviderConfigurationStore>(),
+    services.GetRequiredService<IHttpClientFactory>().CreateClient("sms-provider")));
+builder.Services.AddSingleton<SmsDeliveryService>();
+builder.Services.AddScoped<WalletSmsInterceptor>();
+builder.Services.AddHostedService<SmsDeliveryWorker>();
 builder.Services.AddSingleton<WalletProviderCatalog>();
 builder.Services.AddSingleton<WalletCredentialsProtector>();
 builder.Services.AddScoped<IWalletLoginConfiguration, WalletLoginConfigurationService>();
@@ -89,19 +108,23 @@ builder.Services.AddScoped<WalletPaymentService>();
 builder.Services.AddScoped<ExternalWalletPaymentSettlement>();
 builder.Services.AddScoped<ExternalWalletTopUpSettlement>();
 builder.Services.AddScoped<CashCollectionAccountingReconciliation>();
-// Google provider keys are read only from server configuration (for example
-// environment variables or user-secrets). They are never persisted or sent
-// to Flutter clients.
-builder.Services.AddSingleton(
-    builder.Configuration.GetSection("GoogleMaps").Get<GoogleMapsOptions>()
-    ?? new GoogleMapsOptions());
-builder.Services.AddHttpClient<GoogleMapsGateway>(client =>
-{
-    client.Timeout = TimeSpan.FromSeconds(20);
-});
+// Google provider keys come only from server configuration, including protected
+// deployment settings, environment variables, or development user-secrets.
+// They are never stored in the application database or returned to clients.
+builder.Services.AddConfiguredGoogleMaps(builder.Configuration);
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
-builder.Services.AddSignalR();
+builder.Services.AddTrackingSessionRevocation();
+// Remains opt-in until journal, recovery and client gates have passed together.
+builder.Services.AddSingleton(new RealtimeJournalSettings { Enabled = builder.Configuration.GetValue<bool>("Realtime:DurableEvents") });
+builder.Services.AddSingleton<RealtimeCommitSignal>();
+builder.Services.AddSingleton<RealtimeCommitInterceptor>();
+builder.Services.AddScoped<RealtimeStateRecovery>();
+builder.Services.AddHostedService<RealtimeStateDeliveryWorker>();
 builder.Services.AddScoped<DriverLocationIngestionService>();
+builder.Services.AddScoped<YemenDrive.Api.Safety.RouteDeviationService>();
+builder.Services.AddScoped<YemenDrive.Application.Drivers.IDriverLocationAdministrator, DriverLocationAdministrator>();
+builder.Services.AddScoped<PassengerLocationIngestionService>();
+YemenDrive.Api.Tracking.TrackingUpgradeEndpoints.AddTrackingUpgrade(builder.Services, builder.Configuration);
 builder.Services.AddSingleton<NearbyDriverSubscriptionStore>();
 builder.Services.AddSingleton<RideParticipantPresence>();
 builder.Services.AddSingleton<IRideParticipantPresence>(provider => provider.GetRequiredService<RideParticipantPresence>());
@@ -110,6 +133,10 @@ builder.Services.AddScoped<IRideRealtimePublisher, SignalRRideRealtimePublisher>
 builder.Services.AddScoped<NotificationSaveCaptureInterceptor>();
 builder.Services.AddScoped<WalletMovementNotificationInterceptor>();
 builder.Services.AddSingleton<FirebaseAdminPushSender>();
+builder.Services.AddSingleton<IOtpTestPushSender>(provider => provider.GetRequiredService<FirebaseAdminPushSender>());
+builder.Services.AddSingleton<OtpDeliveryService>();
+builder.Services.AddSingleton(new NotificationPushSettings { DrainBatches = builder.Configuration.GetValue<bool>("Realtime:DrainPushBatches") });
+builder.Services.AddSingleton<NotificationPushSignal>();
 builder.Services.AddHostedService<NotificationPushWorker>();
 builder.Services.AddScoped<RideOfferExpiration>();
 builder.Services.AddScoped<RideWaitingCoordinator>();
@@ -120,7 +147,9 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 builder.Services.AddDbContext<YemenDriveDbContext>((serviceProvider, options) =>
 {
-    options.AddInterceptors(serviceProvider.GetRequiredService<WalletMovementNotificationInterceptor>(), serviceProvider.GetRequiredService<NotificationSaveCaptureInterceptor>());
+    // Enforce socket revocation before waking committed-state delivery.
+    options.AddTrackingSessionRevocation(serviceProvider);
+    options.AddInterceptors(serviceProvider.GetRequiredService<WalletMovementNotificationInterceptor>(), serviceProvider.GetRequiredService<WalletSmsInterceptor>(), serviceProvider.GetRequiredService<NotificationSaveCaptureInterceptor>(), serviceProvider.GetRequiredService<RealtimeCommitInterceptor>());
     var settings = serviceProvider.GetRequiredService<DatabaseConfigurationStore>().Current;
     if (settings is not null)
     {
@@ -211,6 +240,7 @@ app.UseMiddleware<AuthSessionAuthenticationMiddleware>();
 app.MapGet("/", () => Results.Redirect("/admin"));
 app.MapGet("/admin", () => Results.Redirect("/admin.html"));
 app.MapGet("/setup", () => Results.Redirect("/setup.html"));
+app.MapApiReadiness();
 app.MapHub<TrackingHub>("/hubs/tracking", options =>
     options.CloseOnAuthenticationExpiration = true);
 app.MapHub<SharedRideHub>("/hubs/shared-rides");
@@ -227,7 +257,10 @@ app.MapPost("/api/media/upload", async (HttpRequest request, IWebHostEnvironment
     await using (var stream = File.Create(Path.Combine(directory, name))) await file.CopyToAsync(stream, token);
     var url = $"{request.Scheme}://{request.Host}/uploads/{name}";
     return Results.Ok(new { success = true, url });
-});
+})
+// This API does not use cookie authentication. Multipart callers send no
+// browser antiforgery token; keep this exception scoped to the upload route.
+.DisableAntiforgery();
 
 // Safety recordings are deliberately stored outside wwwroot. Each audio chunk
 // belongs to its authenticated owner and cannot be requested as a public file.
@@ -501,12 +534,31 @@ app.MapPost("/api/admin/development/seed", async (
     return Results.Ok(ApiResult.Ok(await seeder.SeedAsync(cancellationToken), "تمت إضافة بيانات التطوير التجريبية."));
 });
 
+YemenDrive.Api.Tracking.TrackingUpgradeEndpoints.MapTrackingUpgrade(app);
+YemenDrive.Api.Safety.RouteDeviationEndpoints.MapRouteDeviation(app);
+
 app.MapPost("/api/tracking/driver-location", async (
     DriverLocationHubRequest sample, ICurrentUserContext currentUser, DriverLocationIngestionService locations) =>
 {
     if (currentUser.UserId is not int driverId) return Results.Unauthorized();
     try {
         await locations.SaveAsync(driverId, sample);
+        return Results.Ok(ApiResult.Ok(new { accepted = true }));
+    }
+    catch (HubException exception) { return Results.BadRequest(ApiResult.Fail("invalid_location", exception.Message)); }
+    catch (OperationCanceledException) { return Results.StatusCode(503); }
+});
+
+app.MapPost("/api/tracking/passenger-location", async (
+    PassengerLocationHubRequest sample, ICurrentUserContext currentUser,
+    PassengerLocationIngestionService locations, IHubContext<TrackingHub> hub,
+    ILogger<PassengerLocationIngestionService> logger, CancellationToken token) =>
+{
+    if (currentUser.UserId is not int customerId) return Results.Unauthorized();
+    try
+    {
+        var publication = await locations.SaveAsync(customerId, sample, token);
+        await PassengerLocationIngestionService.PublishAsync(hub.Clients, publication, logger, token);
         return Results.Ok(ApiResult.Ok(new { accepted = true }));
     }
     catch (HubException exception) { return Results.BadRequest(ApiResult.Fail("invalid_location", exception.Message)); }
@@ -548,6 +600,9 @@ app.MapAuthenticationEndpoints();
 app.MapDevicePushInstallationEndpoints();
 app.MapWalletLoginEndpoints();
 app.MapWalletPaymentEndpoints();
+app.MapSmsProviderEndpoints();
+app.MapSmsManualEndpoints();
+app.MapSmsStatisticsEndpoints();
 
 app.Run();
 

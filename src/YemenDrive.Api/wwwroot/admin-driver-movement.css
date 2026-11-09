@@ -1,0 +1,27 @@
+.movement-map-modal { width: min(1040px, calc(100% - 28px)); }
+.movement-map-canvas { height: min(48vh, 460px); min-height: 290px; width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+.movement-editor-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
+.movement-editor-fields input { direction: ltr; }
+.movement-feedback { color: var(--muted); line-height: 1.8; margin: 10px 0; }
+.movement-feedback.error { color: var(--danger); }
+.movement-map-details { padding: 12px; margin: 0 0 12px; border: 1px solid var(--line); background: var(--surface-soft); border-radius: 6px; line-height: 1.8; }
+.movement-map-legend { display: flex; flex-wrap: wrap; gap: 10px 22px; padding: 12px 0; font-size: 13px; }
+.movement-map-legend span { display: inline-flex; align-items: center; gap: 8px; }
+.movement-map-legend i { display: inline-block; width: 28px; height: 4px; background: var(--path-color); }
+.movement-map-legend .movement-dot { height: 12px; width: 12px; border-radius: 50%; }
+.movement-map-legend .movement-dashed { height: 0; background: none; border-top: 3px dashed var(--path-color); }
+.movement-report-table { min-width: 1400px; }
+.movement-report-table .button { margin: 5px 0; }
+.movement-report-note { margin: 8px 0; font-size: 13px; color: var(--muted); line-height: 1.8; }
+.movement-report-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.movement-complaint { padding: 14px; margin: 12px 0; border: 1px solid var(--line); border-radius: 8px; }
+.movement-complaint p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
+.movement-complaint header { padding: 0 0 10px; flex-wrap: wrap; }
+.movement-report-table .cell-main, .movement-report-table .cell-sub { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .movement-editor-fields { grid-template-columns: 1fr; }
+  .movement-map-modal .modal-shell footer { flex-wrap: wrap; }
+  #driver-location-dialog .modal-shell footer { display: grid; grid-template-columns: 1fr 1fr; }
+  #driver-location-move { grid-column: 1 / -1; order: -1; }
+  .movement-map-canvas { height: 40vh; min-height: 260px; }
+}

@@ -16,7 +16,8 @@ using CancelService = YemenDrive.Application.Rides.RideCancellationRequest;
 
 internal static class PrestartPaymentScenarios
 {
-    public static async Task RunAsync(YemenDriveDbContext db, DatabaseConfigurationStore config, int admin, int kind, int catalog)
+    public static async Task RunAsync(YemenDriveDbContext db, DatabaseConfigurationStore config, int admin, int kind, int catalog,
+        bool forceDebitWinner = false)
     {
         var customer = new User { PhoneNumber = "+967700123450", DisplayName = "Prepayment rider", Role = UserRole.Customer };
         var method = new YemenDrive.Database.Entities.PaymentMethod { Code = "prestart-floosak", NameAr = "فلوسك للاختبار المبكر", ProviderCode = "Floosak",
@@ -74,6 +75,14 @@ internal static class PrestartPaymentScenarios
         }
         async Task CancelFixture(RideEntity fixture)
         {
+            Exception? databaseFailure = null;
+            EventHandler<System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs> diagnose = (_, error) =>
+            {
+                if (error.Exception is DbUpdateException) databaseFailure = error.Exception;
+            };
+            AppDomain.CurrentDomain.FirstChanceException += diagnose;
+            try
+            {
             var userCancel = new CancelService(db, config, new Actor(customer.Id), accounting);
             var data = Data(await Call(userCancel, "add", new RideCancellationRequestModel(RideId: fixture.Id, Reason: "isolated prestart cancellation", SafeStopConfirmed: true)));
             var item = await db.RideCancellationRequests.SingleAsync(x => x.Id == data.GetProperty("id").GetInt32());
@@ -81,6 +90,14 @@ internal static class PrestartPaymentScenarios
                 Data(await Call(new CancelService(db, config, new Actor(fixture.DriverId!.Value), accounting), "accept", new RideCancellationRequestModel(Id: item.Id)));
             if (item.Status == RideCancellationStatus.AdminReviewPending)
                 Data(await Call(new CancelService(db, config, new Actor(admin), accounting), "adminApprove", new RideCancellationRequestModel(Id: item.Id, Note: "reviewed original policy, no transport delivered")));
+            }
+            catch (Exception) when (databaseFailure is not null)
+            {
+                var entities = databaseFailure is DbUpdateException update
+                    ? string.Join(", ", update.Entries.Select(entry => entry.Metadata.ClrType.Name + ":" + entry.State)) : "unknown";
+                throw new InvalidOperationException("Fixture cancellation database failure; entities=" + entities, databaseFailure);
+            }
+            finally { AppDomain.CurrentDomain.FirstChanceException -= diagnose; }
         }
         var trip = await Book("wallet", true);
         trip.WaitingPricePerMinute = 10;
@@ -108,11 +125,11 @@ internal static class PrestartPaymentScenarios
             detail.GetProperty("paymentMethodNameAr").GetString() == "محفظة يمن درايف", "internal paid metadata comes from settled payment");
         Check(trip.StartedAtUtc != null && trip.WaitingFee == 0, "prepaid trip starts without changing settled amount");
         Code(await Call(driverRides, "update", new RideModel(Id: trip.Id, CustomerPaymentEnabled: true)), "ride_already_paid");
-        var waiting = new RideWaiting(db, config, new Actor(customer.Id), new RideWaitingCoordinator(db));
-        var waitingState = Data(await Call(waiting, "get", new RideWaitingModel(RideId: trip.Id)));
-        Check(waitingState.GetProperty("canRequest").GetBoolean(), "prepaid in-progress ride supports approved additional waiting");
+        var waiting = new RideWaiting(db, config, new Actor(trip.DriverId!.Value), new RideWaitingCoordinator(db));
         var stationary = await db.DriverLiveLocations.SingleAsync(x => x.DriverId == trip.DriverId); stationary.Speed = 0; stationary.ObservedAtUtc = DateTime.UtcNow;
         db.LocationUpdates.Add(new LocationUpdate { RideId = trip.Id, ActorId = trip.DriverId!.Value, Latitude = 15, Longitude = 44, Speed = 0, Accuracy = 5, ObservedAtUtc = DateTime.UtcNow }); await db.SaveChangesAsync();
+        var waitingState = Data(await Call(waiting, "get", new RideWaitingModel(RideId: trip.Id)));
+        Check(waitingState.GetProperty("canStart").GetBoolean(), "prepaid in-progress ride supports driver-controlled additional waiting");
         Data(await Call(waiting, "add", new RideWaitingModel(RideId: trip.Id, RequestKey: Guid.NewGuid())));
         await FinishFixture(trip);
 
@@ -135,6 +152,9 @@ internal static class PrestartPaymentScenarios
         Data(await Call(driverRides, "update", new RideModel(Id: cashTrip.Id, Status: RideStatus.DriverArrived)));
         Data(await Call(new RideServiceControl(db, config, new Actor(customer.Id)), "board", new RideServiceModel(cashTrip.Id)));
         Data(await Call(driverRides, "update", new RideModel(Id: cashTrip.Id, Status: RideStatus.InProgress)));
+        waiting = new RideWaiting(db, config, new Actor(cashTrip.DriverId!.Value), new RideWaitingCoordinator(db));
+        stationary = await db.DriverLiveLocations.SingleAsync(x => x.DriverId == cashTrip.DriverId); stationary.Speed = 0; stationary.ObservedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync();
         waitingState = Data(await Call(waiting, "get", new RideWaitingModel(RideId: cashTrip.Id)));
         Check(waitingState.GetProperty("canRequest").GetBoolean(), "unpaid cash ride retains waiting availability after fallback");
 
@@ -186,7 +206,7 @@ internal static class PrestartPaymentScenarios
         var isolatedOptions = new DbContextOptionsBuilder<YemenDriveDbContext>().UseSqlServer(db.Database.GetConnectionString()).Options;
         async Task<ApiResult> Race(bool switchToCash)
         {
-            await using var isolated = new YemenDriveDbContext(isolatedOptions);
+            await using var isolated = new YemenDriveDbContext(isolatedOptions, RealtimeScenarioMode.Settings);
             var isolatedAccounting = new RideAccountingPostingService(isolated, new AccountingPostingService(isolated));
             return switchToCash
                 ? await Call(new RideService(isolated, config, new Actor(customer.Id), isolatedAccounting), "update",
@@ -194,13 +214,23 @@ internal static class PrestartPaymentScenarios
                 : await Call(new Payment(isolated, config, new Actor(customer.Id), isolatedAccounting), "add",
                     new PaymentModel(RideId: racedTrip.Id, Amount: racedTrip.TotalAmount!.Value, Provider: "YemenDriveWallet", IdempotencyKey: "prestart-race"));
         }
-        var race = await Task.WhenAll(Race(true), Race(false));
+        // Optional diagnostic ordering reproduces the debit-winner fixture path;
+        // the default suite continues to exercise both requests concurrently.
+        var race = forceDebitWinner ? new[] { await Race(false), await Race(true) }
+            : await Task.WhenAll(Race(true), Race(false));
+        Console.WriteLine($"INFO: prestart result codes in invocation order={string.Join(',', race.Select(result => result.Code))}; diagnostic debit ordering={forceDebitWinner}");
         Check(race.Count(x => x.Success) == 1, "cash switch and early debit cannot both win concurrently");
         await db.Entry(racedTrip).ReloadAsync();
         var racedPaidCount = await db.PaymentTransactions.CountAsync(x => x.RideId == racedTrip.Id && x.Status == PaymentStatus.Paid);
         Check(!racedTrip.PaymentRequiredBeforeStart && (racedTrip.PaymentMethodCode == "cash" ? racedPaidCount == 0 : racedPaidCount == 1),
             "cash/debit race leaves one authoritative tender and no false paid cash choice");
 
+        // The competing requests used separate contexts. A debit updates both
+        // wallets, including their concurrency tokens; the next simulated HTTP
+        // request must not reuse balances/tokens from before that transaction.
+        foreach (var trackedWallet in db.ChangeTracker.Entries<Wallet>()
+                     .Where(entry => entry.Entity.UserId == customer.Id || entry.Entity.UserId == racedTrip.DriverId).ToArray())
+            await trackedWallet.ReloadAsync();
         await CancelFixture(racedTrip);
         var collectionTrip = await Book(method.Code, false);
         collectionTrip.Status = RideStatus.InProgress;

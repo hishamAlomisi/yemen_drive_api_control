@@ -64,7 +64,9 @@ public sealed class RideCancellationRequest(
         var hasPaidPayment = await db.PaymentTransactions.AnyAsync(
             x => x.RideId == ride.Id && x.Status == PaymentStatus.Paid, token);
         var paymentPending = await db.PaymentWalletOperations.AnyAsync(x => x.RideId == ride.Id && x.IsOpen && x.Status != "Succeeded", token);
-        var directEnRouteCancellation = ride.Status is RideStatus.DriverAssigned or RideStatus.DriverEnRoute && !hasPaidPayment && !paymentPending;
+        var directBeforeArrivalCancellation = !isInProgress && !hasPaidPayment && !paymentPending &&
+            (ride.Status is RideStatus.DriverAssigned or RideStatus.DriverEnRoute ||
+             ride.DriverId is null && ride.Status is RideStatus.Searching or RideStatus.Negotiating);
         var reviewByAdmin = ride.DriverId is null;
         if (isInProgress && !model.SafeStopConfirmed)
             throw new ServiceException("safe_stop_confirmation_required", "اتفق على نقطة آمنة وأكد توقف النقل فعلياً قبل إرسال إلغاء الرحلة. يمكنك فتح بلاغ السلامة عند الحاجة.");
@@ -74,8 +76,8 @@ public sealed class RideCancellationRequest(
             CustomerId = customerId,
             DriverId = ride.DriverId,
             RideStatusAtRequest = ride.Status,
-            Status = directEnRouteCancellation ? RideCancellationStatus.AdminApproved : reviewByAdmin ? RideCancellationStatus.AdminReviewPending : RideCancellationStatus.DriverReviewPending,
-            DriverDecision = directEnRouteCancellation ? RideCancellationDriverDecision.Accepted : RideCancellationDriverDecision.None,
+            Status = directBeforeArrivalCancellation ? RideCancellationStatus.AdminApproved : reviewByAdmin ? RideCancellationStatus.AdminReviewPending : RideCancellationStatus.DriverReviewPending,
+            DriverDecision = directBeforeArrivalCancellation && ride.DriverId is not null ? RideCancellationDriverDecision.Accepted : RideCancellationDriverDecision.None,
             Reason = reason,
             RequestedRefundMethod = model.RequestedRefundMethod
         };
@@ -117,16 +119,43 @@ public sealed class RideCancellationRequest(
                 request.LocationObservedAtUtc = quote.ObservedAtUtc;
             }
         }
+        var searchRecipients = new List<int>();
+        var searchOffers = new List<YemenDrive.Database.Entities.RideOffer>();
+        if (ride.DriverId is null)
+        {
+            // The generic cancellation endpoint must close the same pending
+            // invitations and offers as the search-specific cancellation path.
+            searchOffers = await db.RideOffers.Where(x => x.RideId == ride.Id && x.Status == OfferStatus.Pending).ToListAsync(token);
+            foreach (var offer in searchOffers)
+            {
+                offer.Status = OfferStatus.Expired;
+                offer.UpdatedAtUtc = DateTime.UtcNow;
+            }
+            var inviteData = RideSearchNotificationDispatcher.RideData(ride.Id);
+            searchRecipients = await db.Notifications.AsNoTracking()
+                .Where(x => x.Type == NotificationType.RideOffer && x.DataJson == inviteData)
+                .Select(x => x.UserId).Distinct().ToListAsync(token);
+            searchRecipients = searchRecipients.Concat(searchOffers.Select(x => x.DriverId)).Distinct().ToList();
+            db.Notifications.AddRange(searchRecipients.Select(driverId => new Notification
+            {
+                UserId = driverId, Type = NotificationType.RideStatus, Title = "ألغى العميل البحث",
+                Body = "ألغى العميل هذه الرحلة؛ لا يمكنك إرسال عرض عليها.",
+                DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{ride.Id},\"status\":\"Cancelled\"}}"
+            }));
+        }
         await RideFinancialState.CloseServiceAsync(db, ride, reason, token);
         ride.Status = RideStatus.Cancelled;
         if (!isInProgress && !hasPaidPayment && !paymentPending) ride.FinancialAmountDue = 0m;
         ride.UpdatedAtUtc = DateTime.UtcNow;
-        if (directEnRouteCancellation) await RideDriverAvailability.ReleaseAsync(db, ride, token);
-        request.AssignedAdminId = await OperationalReviewCoordinator.OwnerAsync(db, "refunds.write", token);
-        if (ride.DecisionResponseMinutes != null) request.ReviewDueAtUtc = request.CreatedAtUtc.AddMinutes(ride.DecisionResponseMinutes.Value);
+        if (directBeforeArrivalCancellation) await RideDriverAvailability.ReleaseAsync(db, ride, token);
+        if (!directBeforeArrivalCancellation)
+        {
+            request.AssignedAdminId = await OperationalReviewCoordinator.OwnerAsync(db, "refunds.write", token);
+            if (ride.DecisionResponseMinutes != null) request.ReviewDueAtUtc = request.CreatedAtUtc.AddMinutes(ride.DecisionResponseMinutes.Value);
+        }
         db.RideCancellationRequests.Add(request);
         await db.SaveChangesAsync(token);
-        if (directEnRouteCancellation)
+        if (directBeforeArrivalCancellation)
         {
             if (ride.DriverId is int directDriverId)
                 db.Notifications.Add(new Notification { UserId = directDriverId, Type = NotificationType.RideStatus, Title = "تم إلغاء الرحلة", Body = "ألغى العميل الرحلة قبل بدءها. يمكنك إيقاف التوجه إلى نقطة الانطلاق.", DataJson = $"{{\"action\":\"open_notifications\",\"rideId\":{ride.Id},\"cancellationRequestId\":{request.Id}}}" });
@@ -145,8 +174,16 @@ public sealed class RideCancellationRequest(
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
         if (realtimePublisher is not null)
+        {
+            if (ride.DriverId is null)
+            {
+                await realtimePublisher.PublishRideUnavailableAsync(ride.Id, ride.CustomerId, searchRecipients, token);
+                var expired = await RideRealtimeEventFactory.LoadOffersAsync(db, searchOffers.Select(x => x.Id), token);
+                await realtimePublisher.PublishOfferUpdatesAsync(ride.CustomerId, expired, token);
+            }
             await realtimePublisher.PublishRideStatusUpdatedAsync(
                 RideRealtimeEventFactory.Status(ride), token);
+        }
         return await ToResultAsync(request, token);
     }
 
@@ -181,8 +218,20 @@ public sealed class RideCancellationRequest(
         var query = db.RideCancellationRequests.AsNoTracking().Include(x => x.Ride).AsQueryable();
         if (model.Id is int id) query = query.Where(x => x.Id == id);
         else query = query.Where(x => x.RideId == model.RideId);
-        var request = await query.OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(token)
-            ?? throw new ServiceException("cancellation_request_not_found", "طلب الإلغاء غير موجود.");
+        var request = await query.OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(token);
+        if (request is null)
+        {
+            // The clients also read this optional snapshot while tracking a
+            // normal ride. Absence is not a failed ride refresh, but the ride
+            // must still belong to the caller before returning an empty result.
+            if (model.Id is not null)
+                throw new ServiceException("cancellation_request_not_found", "طلب الإلغاء غير موجود.");
+            var ride = await db.Rides.AsNoTracking().SingleOrDefaultAsync(x => x.Id == model.RideId, token)
+                ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
+            if (!isAdmin && ride.CustomerId != userId && ride.DriverId != userId)
+                throw new ServiceException("ride_access_denied", "لا تملك صلاحية الوصول إلى هذه الرحلة.");
+            return null;
+        }
         if (!isAdmin && request.CustomerId != userId && request.DriverId != userId)
             throw new ServiceException("cancellation_request_access_denied", "لا تملك صلاحية الوصول إلى طلب الإلغاء.");
         return await ToResultAsync(request, token);

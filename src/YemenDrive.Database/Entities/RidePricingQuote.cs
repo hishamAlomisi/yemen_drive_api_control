@@ -3,6 +3,7 @@ namespace YemenDrive.Database.Entities;
 /// <summary>A short-lived, server-calculated offer bound to its customer and route.</summary>
 public sealed class RidePricingQuote : Entity
 {
+    public string? RoutePolyline { get; set; }
     public bool HasRoutePricingSnapshot { get; set; }
     public decimal BaseFare { get; set; }
     public decimal PerKilometer { get; set; }

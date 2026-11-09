@@ -37,7 +37,7 @@ public sealed class AuthSessionAuthenticationMiddleware(RequestDelegate next)
 
         var isTrackingHubPath = IsTrackingHubPath(context.Request);
         var accessToken = ReadBearerToken(context.Request.Headers.Authorization.ToString());
-        if (accessToken is null && IsTrackingHubWebSocketRequest(context.Request))
+        if (accessToken is null && IsTrackingHubStreamingRequest(context.Request))
             accessToken = context.Request.Query["access_token"].FirstOrDefault();
 
         if (string.IsNullOrWhiteSpace(accessToken))
@@ -97,16 +97,25 @@ public sealed class AuthSessionAuthenticationMiddleware(RequestDelegate next)
         request.Path.Equals("/hubs/tracking", StringComparison.OrdinalIgnoreCase) ||
         request.Path.Equals("/hubs/tracking/negotiate", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsTrackingHubWebSocketRequest(HttpRequest request) =>
+    private static bool IsTrackingHubStreamingRequest(HttpRequest request) =>
         request.Path.Equals("/hubs/tracking", StringComparison.OrdinalIgnoreCase) &&
         HttpMethods.IsGet(request.Method) &&
-        string.Equals(request.Query["transport"], "webSockets", StringComparison.OrdinalIgnoreCase) &&
-        !request.Headers.ContainsKey("Authorization");
+        !request.Headers.ContainsKey("Authorization") &&
+        // Browser WebSocket/EventSource APIs cannot set an Authorization header.
+        // SignalR's browser client sends only id/access_token, not a transport
+        // query parameter. Recognize the actual streaming request instead; a
+        // query token must never authenticate ordinary HTTP API or negotiate calls.
+        ((request.Headers.GetCommaSeparatedValues("Upgrade").Contains("websocket", StringComparer.OrdinalIgnoreCase) &&
+          request.Headers.GetCommaSeparatedValues("Connection").Contains("Upgrade", StringComparer.OrdinalIgnoreCase)) ||
+         request.Headers.GetCommaSeparatedValues("Accept").Any(value =>
+             string.Equals(value.Split(';', 2)[0].Trim(), "text/event-stream", StringComparison.OrdinalIgnoreCase)));
 
     private static bool IsUnauthenticatedAuthEndpoint(PathString path) => path.Value is
+        "/api/health/ready" or
         "/api/auth/register" or
         "/api/auth/register/request-otp" or
         "/api/auth/login" or
+        "/api/auth/otp-delivery" or
         "/api/auth/refresh" or
         "/api/auth/sign-in/verify-device" or
         "/api/auth/verify-otp" or

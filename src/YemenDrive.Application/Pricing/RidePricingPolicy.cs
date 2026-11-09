@@ -44,6 +44,7 @@ public static class RidePricingPolicy
         ride.RoutePerMinute = quote.PerMinute;
         ride.RouteQuotedDistanceMeters = quote.DistanceMeters;
         ride.RouteQuotedDurationSeconds = quote.DurationSeconds;
+        ride.RoutePolyline = quote.RoutePolyline;
         ride.RouteChangeFee = quote.RouteChangeFee;
         ride.QuotedPrice = quote.Amount;
         ride.MinCustomerPrice = quote.MinPrice;

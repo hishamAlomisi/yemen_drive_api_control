@@ -3,7 +3,8 @@ using YemenDrive.Database.Entities;
 
 namespace YemenDrive.Database;
 
-public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> options)
+public sealed partial class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> options,
+    Realtime.RealtimeJournalSettings? realtimeJournal = null)
     : DbContext(options)
 {
     public DbSet<User> Users => Set<User>();
@@ -27,6 +28,8 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
     public DbSet<LocationUpdate> LocationUpdates => Set<LocationUpdate>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<AdminNotificationCampaign> AdminNotificationCampaigns => Set<AdminNotificationCampaign>();
+    public DbSet<SmsMessageLog> SmsMessageLogs => Set<SmsMessageLog>();
+    public DbSet<SmsDispatch> SmsDispatches => Set<SmsDispatch>();
     public DbSet<DevicePushInstallation> DevicePushInstallations => Set<DevicePushInstallation>();
     public DbSet<NotificationPushOutbox> NotificationPushOutbox => Set<NotificationPushOutbox>();
     public DbSet<NotificationPushDelivery> NotificationPushDeliveries => Set<NotificationPushDelivery>();
@@ -66,18 +69,21 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        if (realtimeJournal?.Enabled == true)
+            return SaveWithRealtimeJournalAsync(acceptAllChangesOnSuccess, CancellationToken.None).GetAwaiter().GetResult();
         EnforceJournalImmutability();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
-        EnforceJournalImmutability();
-        return base.SaveChangesAsync(cancellationToken);
+        return SaveChangesAsync(true, cancellationToken);
     }
 
     public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
+        if (realtimeJournal?.Enabled == true)
+            return SaveWithRealtimeJournalAsync(acceptAllChangesOnSuccess, cancellationToken);
         EnforceJournalImmutability();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
@@ -115,6 +121,9 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        ConfigureMovementHistory(modelBuilder);
+        ConfigureRouteSamples(modelBuilder);
+        ConfigureRealtimeJournal(modelBuilder);
         modelBuilder.Entity<RideRouteChange>().HasIndex(x => x.RideId).IsUnique().HasFilter("[IsOpen] = 1");
         modelBuilder.Entity<RideRouteChange>().HasIndex(x => new { x.RideId, x.RequestKey }).IsUnique();
         modelBuilder.Entity<RideRouteChange>().HasIndex(x => new { x.CreatedAtUtc, x.Id });
@@ -123,6 +132,13 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<RideRouteChange>().Property(x => x.OldDestinationLabel).HasMaxLength(500);
         modelBuilder.Entity<RideRouteChange>().Property(x => x.NewDestinationLabel).HasMaxLength(500);
         modelBuilder.Entity<LocationUpdate>().HasIndex(x => new { x.RideId, x.ActorId, x.ObservedAtUtc });
+        // SQL datetime2 does not retain DateTime.Kind. GPS values are stored in
+        // UTC; restore that kind when materializing full entities or projections
+        // so REST snapshots cannot become device-local times several hours old.
+        modelBuilder.Entity<LocationUpdate>().Property(x => x.ObservedAtUtc)
+            .HasConversion(value => value, value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
+        modelBuilder.Entity<DriverLiveLocation>().Property(x => x.ObservedAtUtc)
+            .HasConversion(value => value, value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
         modelBuilder.Entity<RidePricingQuote>().HasIndex(x => x.Token).IsUnique();
         modelBuilder.Entity<RidePricingQuote>().HasIndex(x => x.ExpiresAtUtc);
         modelBuilder.Entity<RideWaitingSession>().HasIndex(x => x.RideId).IsUnique().HasFilter("[IsOpen] = 1");
@@ -350,12 +366,25 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<SafetyIncident>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
         modelBuilder.Entity<SafetyIncident>().Property(x => x.Message).HasMaxLength(1000).IsRequired();
         modelBuilder.Entity<SafetyIncident>().Property(x => x.AdminNote).HasMaxLength(1000);
+        modelBuilder.Entity<SafetyIncident>().Property(x => x.Kind).HasMaxLength(40);
+        modelBuilder.Entity<SafetyIncident>().Property(x => x.DeviationDirection).HasMaxLength(30);
+        modelBuilder.Entity<SafetyIncident>().Property(x => x.LocationSource).HasMaxLength(40);
+        modelBuilder.Entity<SafetyIncident>().HasIndex(x => new { x.RideId, x.Kind, x.RouteVersion, x.CreatedAtUtc });
         modelBuilder.Entity<RideSafetyShare>().HasIndex(x => x.TokenHash).IsUnique();
         modelBuilder.Entity<RideSafetyShare>().HasIndex(x => new { x.RideId, x.ExpiresAtUtc });
         modelBuilder.Entity<RideSafetyShare>().Property(x => x.TokenHash).HasMaxLength(128).IsRequired();
         modelBuilder.Entity<CommunicationMessage>().HasIndex(x => new { x.RideId, x.CreatedAtUtc });
+        modelBuilder.Entity<CommunicationMessage>().HasIndex(x => new { x.RecipientId, x.ReadAtUtc, x.RideId });
         modelBuilder.Entity<CommunicationMessage>().Property(x => x.MessageType).HasMaxLength(32).IsRequired();
         modelBuilder.Entity<CommunicationMessage>().Property(x => x.Content).HasMaxLength(4000).IsRequired();
+        // SQL datetime2 drops Kind. REST reloads and cursor timestamps must retain
+        // the same UTC instant as the original live event on every device.
+        modelBuilder.Entity<CommunicationMessage>().Property(x => x.CreatedAtUtc)
+            .HasConversion(value => value, value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
+        modelBuilder.Entity<CommunicationMessage>().Property(x => x.DeliveredAtUtc)
+            .HasConversion(value => value, value => value.HasValue ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc) : (DateTime?)null);
+        modelBuilder.Entity<CommunicationMessage>().Property(x => x.ReadAtUtc)
+            .HasConversion(value => value, value => value.HasValue ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc) : (DateTime?)null);
         modelBuilder.Entity<Promotion>().HasIndex(x => x.Code).IsUnique();
         modelBuilder.Entity<SupportTicket>().HasIndex(x => new { x.UserId, x.CreatedAtUtc });
         modelBuilder.Entity<SupportTicket>().Property(x => x.Category).HasMaxLength(100).IsRequired();
@@ -478,6 +507,8 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
         modelBuilder.Entity<Ride>().HasIndex(x => new { x.Status, x.ServiceKindId, x.ServiceCatalogItemId, x.CreatedAtUtc });
         modelBuilder.Entity<RideOffer>().HasIndex(x => new { x.RideId, x.DriverId, x.Status })
             .IsUnique().HasFilter("[Status] = 0");
+        // Journal audiences include every offer status, including accepted/expired.
+        modelBuilder.Entity<RideOffer>().HasIndex(x => new { x.RideId, x.DriverId });
         modelBuilder.Entity<RideOffer>().Property(x => x.Note).HasMaxLength(1000);
         modelBuilder.Entity<RideOffer>().HasIndex(x => new { x.Status, x.ExpiresAtUtc });
         modelBuilder.Entity<PricingRule>().HasIndex(x => new { x.ServiceKindId, x.ServiceCatalogItemId, x.IsActive });
@@ -619,6 +650,29 @@ public sealed class YemenDriveDbContext(DbContextOptions<YemenDriveDbContext> op
             property.SetPrecision(18);
             property.SetScale(2);
         }
+
+        modelBuilder.Entity<SmsMessageLog>().ToTable("SmsMessageLogs", table =>
+        {
+            table.HasCheckConstraint("CK_SmsMessageLogs_Purpose", "[Purpose] IN (1, 2, 3, 4, 5, 6)");
+            table.HasCheckConstraint("CK_SmsMessageLogs_Recipients", "[RecipientCount] BETWEEN 1 AND 100");
+        });
+        modelBuilder.Entity<SmsMessageLog>().Property(x => x.RecipientCount).HasDefaultValue(1);
+        modelBuilder.Entity<SmsMessageLog>().Property(x => x.MessageKey).HasMaxLength(128).IsRequired();
+        modelBuilder.Entity<SmsMessageLog>().HasIndex(x => x.MessageKey).IsUnique();
+        modelBuilder.Entity<SmsMessageLog>().HasIndex(x => new { x.Purpose, x.SentAtUtc });
+        modelBuilder.Entity<SmsDispatch>().Property(x => x.Id).UseIdentityColumn(1000000000000);
+        modelBuilder.Entity<SmsDispatch>().Property(x => x.ErrorCode).HasMaxLength(64);
+        modelBuilder.Entity<SmsDispatch>().Property(x => x.RequestKey).HasMaxLength(128);
+        modelBuilder.Entity<SmsDispatch>().Property(x => x.RequestHash).HasMaxLength(64);
+        modelBuilder.Entity<SmsDispatch>().HasIndex(x => x.RequestKey).IsUnique().HasFilter("[RequestKey] IS NOT NULL");
+        modelBuilder.Entity<SmsDispatch>().HasIndex(x => new { x.State, x.CreatedAtUtc });
+        modelBuilder.Entity<SmsDispatch>().HasIndex(x => x.WalletTransactionId).IsUnique().HasFilter("[WalletTransactionId] IS NOT NULL");
+        modelBuilder.Entity<SmsDispatch>().HasOne(x => x.WalletTransaction).WithMany().HasForeignKey(x => x.WalletTransactionId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<SmsDispatch>().ToTable(table =>
+        {
+            table.HasCheckConstraint("CK_SmsDispatches_Purpose", "[Purpose] IN (1, 2, 3, 4, 5, 6)");
+            table.HasCheckConstraint("CK_SmsDispatches_State", "[State] IN (0, 1, 2, 3, 4, 5)");
+        });
 
         base.OnModelCreating(modelBuilder);
     }

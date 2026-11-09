@@ -24,14 +24,15 @@ public sealed class RideWaitingCoordinator(YemenDriveDbContext db, IRideRealtime
         var session = await db.RideWaitingSessions.SingleOrDefaultAsync(x => x.RideId == ride.Id && x.IsOpen, ct);
         if (session is null) return null;
         await YemenDrive.Application.Payments.RideFinancialState.SnapshotEntitlementAsync(db, ride, ct);
-        if (ride.Status != RideStatus.InProgress)
+        if (ride.Status != RideStatus.InProgress || ride.ServiceEndedAtUtc is not null)
         {
             Close(ride, session, now, "ride_closed");
             return session;
         }
         if (session.StartedAtUtc is not DateTime started)
         {
-            if (now >= session.CreatedAtUtc.AddMinutes(2)) Close(ride, session, now, "request_expired");
+            // Legacy approval requests never begin charging under driver control.
+            Close(ride, session, now, "stop_consent_removed");
             return session;
         }
         var location = await db.DriverLiveLocations.AsNoTracking().SingleOrDefaultAsync(x => x.DriverId == ride.DriverId, ct);
@@ -63,7 +64,7 @@ public sealed class RideWaitingCoordinator(YemenDriveDbContext db, IRideRealtime
         if (!session.GraceWarningSent && session.FreeMinutes > 0 && now >= freeEnds.AddSeconds(-30) && now < freeEnds)
         {
             session.GraceWarningSent = true;
-            Notify(ride, "ستنتهي مهلة الانتظار المجانية", "تبدأ رسوم الانتظار خلال 30 ثانية وفق السعر الذي وافقت عليه.");
+            Notify(ride, "ستنتهي مهلة الانتظار المجانية", "تبدأ رسوم الانتظار خلال 30 ثانية وفق السعر المتفق عليه للرحلة.");
         }
         if (!session.BillingNoticeSent && now >= freeEnds)
         {
@@ -76,6 +77,7 @@ public sealed class RideWaitingCoordinator(YemenDriveDbContext db, IRideRealtime
     public void Close(RideEntity ride, RideWaitingSession session, DateTime at, string reason)
     {
         if (!session.IsOpen) return;
+        RideWaitingResumeRequests.FinishPending(session, at, "waiting_ended");
         session.EndedAtUtc = at;
         session.EndReason = reason;
         session.Fee = FeeAt(session, at);
@@ -97,13 +99,13 @@ public sealed class RideWaitingCoordinator(YemenDriveDbContext db, IRideRealtime
             throw new ServiceException("waiting_must_end", "أوقف الانتظار بزر استئناف الرحلة قبل فتح الدفع أو إنهاء الرحلة.");
     }
 
-    public void Notify(RideEntity ride, string title, string body, string action = "open_active_ride")
+    public void Notify(RideEntity ride, string title, string body, string action = "open_active_ride", int? sessionId = null)
     {
         foreach (var userId in new[] { ride.CustomerId, ride.DriverId ?? ride.CustomerId }.Distinct())
             db.Notifications.Add(new Notification
             {
                 UserId = userId, Type = NotificationType.RideStatus, Title = title, Body = body,
-                DataJson = $"{{\"action\":\"{action}\",\"rideId\":{ride.Id}}}"
+                DataJson = System.Text.Json.JsonSerializer.Serialize(new { action, rideId = ride.Id, waitingSessionId = sessionId })
             });
     }
 

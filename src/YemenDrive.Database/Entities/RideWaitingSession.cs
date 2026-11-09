@@ -7,7 +7,7 @@ public sealed class RideWaitingSession : Entity
     public int RequestedByUserId { get; set; }
     public int? ApprovedByUserId { get; set; }
     public Guid RequestKey { get; set; }
-    // One open request or active stop per ride; enforced by a filtered unique index.
+    // One active stop per ride; enforced by a filtered unique index.
     public bool IsOpen { get; set; } = true;
     public DateTime? StartedAtUtc { get; set; }
     public DateTime? EndedAtUtc { get; set; }
@@ -22,4 +22,6 @@ public sealed class RideWaitingSession : Entity
     public DateTime? LastMotionObservedAtUtc { get; set; }
     public bool GraceWarningSent { get; set; }
     public bool BillingNoticeSent { get; set; }
+    // Requests never alter the charging interval; only the driver resumes.
+    public string? ResumeRequestsJson { get; set; }
 }

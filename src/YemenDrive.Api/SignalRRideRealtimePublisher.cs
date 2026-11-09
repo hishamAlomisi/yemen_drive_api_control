@@ -200,11 +200,11 @@ public sealed class SignalRRideRealtimePublisher(
         await TrySendAsync(
             hub.Clients.Group(TrackingHub.RideGroup(rideId)),
             "driverLocationUpdated", payload,
-            "Could not publish driverLocationUpdated for ride {RideId}.", rideId);
+            "Could not publish driverLocationUpdated for ride {RideId}.", rideId, cancellationToken);
         await TrySendAsync(
             hub.Clients.Group(TrackingHub.OperationsGroup),
             "driverLocationUpdated", payload,
-            "Could not publish driverLocationUpdated to operations for ride {RideId}.", rideId);
+            "Could not publish driverLocationUpdated to operations for ride {RideId}.", rideId, cancellationToken);
         await PublishToActiveShareGroupsAsync(
             rideId,
             "sharedRideLocationUpdated",
@@ -225,11 +225,19 @@ public sealed class SignalRRideRealtimePublisher(
         RideMessageRealtimeEvent message,
         CancellationToken cancellationToken) =>
         TrySendAsync(
-            hub.Clients.Group(TrackingHub.RideGroup(message.RideId)),
+            hub.Clients.Groups([TrackingHub.UserGroup(message.SenderId), TrackingHub.UserGroup(message.RecipientId)]),
             "rideMessageCreated",
             message,
             "Could not publish rideMessageCreated for ride {RideId}.",
             message.RideId);
+
+    public Task PublishRideMessageUpdatedAsync(
+        RideMessageRealtimeEvent message,
+        CancellationToken cancellationToken) =>
+        TrySendAsync(
+            hub.Clients.Groups([TrackingHub.UserGroup(message.SenderId), TrackingHub.UserGroup(message.RecipientId)]),
+            "rideMessageUpdated", message,
+            "Could not publish rideMessageUpdated for ride {RideId}.", message.RideId);
 
     public Task PublishPaymentUpdatedAsync(
         IReadOnlyCollection<int> userIds,
@@ -407,12 +415,14 @@ public sealed class SignalRRideRealtimePublisher(
         string eventName,
         object payload,
         string logMessage,
-        int rideId)
+        int rideId,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            await clients.SendCoreAsync(eventName, [payload], CancellationToken.None);
+            await clients.SendCoreAsync(eventName, [payload], cancellationToken);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception exception)
         {
             logger.LogWarning(exception, logMessage, rideId);

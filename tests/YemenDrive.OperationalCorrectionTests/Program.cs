@@ -16,6 +16,8 @@ using YemenDrive.Shared.Security;
 using RideEntity = YemenDrive.Database.Entities.Ride;
 using CancellationService = YemenDrive.Application.Rides.RideCancellationRequest;
 
+RealtimeScenarioMode.Enabled = args.Contains("--journal");
+Console.WriteLine($"MODE: durable journal = {RealtimeScenarioMode.Enabled}");
 var name = "YemenDrive_OperationalTests_" + Guid.NewGuid().ToString("N");
 var options = new DbContextOptionsBuilder<YemenDriveDbContext>().UseSqlServer($"Server=(localdb)\\MSSQLLocalDB;Database={name};Integrated Security=True;TrustServerCertificate=True").Options;
 var settingsFile = Path.Combine(Path.GetTempPath(), name + ".json");
@@ -23,7 +25,7 @@ var config = new DatabaseConfigurationStore(settingsFile);
 await config.SaveAsync(new DatabaseSettings { Provider = "SqlServer", Server = "(localdb)\\MSSQLLocalDB", Database = name, IntegratedSecurity = true, TrustServerCertificate = true }, default);
 try
 {
-    await using var db = new YemenDriveDbContext(options);
+    await using var db = new YemenDriveDbContext(options, RealtimeScenarioMode.Settings);
     await db.Database.MigrateAsync();
     Is(!db.Database.HasPendingModelChanges(), "migration snapshot matches the final model");
     var customer = new User { PhoneNumber = "967700110001", DisplayName = "Test customer", Role = UserRole.Customer };

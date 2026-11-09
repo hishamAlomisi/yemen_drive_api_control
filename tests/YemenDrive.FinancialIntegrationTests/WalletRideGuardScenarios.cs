@@ -46,7 +46,7 @@ internal static class WalletRideGuardScenarios
         var passengerCancel = new CancelService(db, config, new Actor(customer), accounting);
         var driverCancel = new CancelService(db, config, new Actor(driver), accounting);
         var adminCancel = new CancelService(db, config, new Actor(admin), accounting);
-        var waiting = new RideWaiting(db, config, new Actor(customer), new RideWaitingCoordinator(db));
+        var waiting = new RideWaiting(db, config, new Actor(driver), new RideWaitingCoordinator(db));
         var mapsHandler = new NoMapRequests();
         var maps = new GoogleMapsGateway(new HttpClient(mapsHandler),
             new GoogleMapsOptions { RoutesApiKey = "test-only" }, NullLogger<GoogleMapsGateway>.Instance);

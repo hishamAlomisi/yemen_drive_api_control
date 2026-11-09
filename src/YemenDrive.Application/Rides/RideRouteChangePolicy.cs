@@ -65,9 +65,16 @@ public static class RideRouteChangePolicy
     {
         if (ride.RouteSegmentStartedAtUtc is not { } start || location.ObservedAtUtc < start)
             throw new ServiceException("route_track_unavailable", "لا يوجد سجل موثوق للجزء المقطوع من هذه الرحلة.");
+        if (await db.DriverRouteSessions.AsNoTracking().AnyAsync(x => x.RideId == ride.Id &&
+                x.HighestSequence > x.LastContiguousSequence, ct))
+            throw new ServiceException("route_track_incomplete", "توجد عينات مسار غير مستلمة؛ أكمل مزامنتها قبل حساب تغيير المسار.");
         var points = await db.LocationUpdates.AsNoTracking()
             .Where(x => x.RideId == ride.Id && x.ActorId == ride.DriverId && x.ObservedAtUtc >= start && x.ObservedAtUtc <= location.ObservedAtUtc)
             .OrderBy(x => x.ObservedAtUtc).ThenBy(x => x.Id).ToListAsync(ct);
+        if (!points.Any(x => x.ObservedAtUtc == location.ObservedAtUtc &&
+                x.Latitude == location.Latitude && x.Longitude == location.Longitude) &&
+            await db.DriverRouteSessions.AsNoTracking().AnyAsync(x => x.RideId == ride.Id, ct))
+            throw new ServiceException("route_track_incomplete", "موقع حساب المسافة لم يؤكد في سجل المسار بعد؛ أكمل المزامنة أولًا.");
         var latitude = ride.RouteSegmentLatitude;
         var longitude = ride.RouteSegmentLongitude;
         var previousAt = start;

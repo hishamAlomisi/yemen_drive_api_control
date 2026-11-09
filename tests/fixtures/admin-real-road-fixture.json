@@ -1,0 +1,44 @@
+{
+  "testOnly": true,
+  "driver": {
+    "longitude": 44.22296,
+    "latitude": 15.40746
+  },
+  "pickup": {
+    "longitude": 44.212,
+    "latitude": 15.4035
+  },
+  "destination": {
+    "longitude": 44.219,
+    "latitude": 15.3975
+  },
+  "routes": [
+    {
+      "name": "approach",
+      "data": {
+        "distanceMeters": 3058,
+        "durationSeconds": 422,
+        "encodedPolyline": "sg`}A_h|lGp@@jA@^Aj@CP\\aAf@YP[XA@CBm@z@Y^gAxA{@nAGF]d@A@wAvBeBxB}BnDGHqApBY^W^Uj@Qb@Kf@Kx@Ir@]zHC`A?d@AH?@ALAB?DADC^?HEb@GpAANAf@@j@?F@R?JHf@XzADNZrA@@Df@Bb@@X?R?P?DMfBXDJ{A@O@WAIAc@Ce@Eg@ACG[Sw@Kk@Mk@EUAGE]Ce@Ai@@e@JsB@OBEDEFGDCHAF?xAHzBLtAFP@v@DXAFEHKdGXd@@zET|EPdCJO~CE|@h@Fr@?LDFF?L?P?d@@N",
+        "steps": []
+      }
+    },
+    {
+      "name": "trip",
+      "data": {
+        "distanceMeters": 3680,
+        "durationSeconds": 573,
+        "encodedPolyline": "yp_}A}czlGAO?e@?Q?MGGMEs@?i@GD}@N_Dv@BJ@rAFtBHjFZh@@x@Bp@BhABR?rDJb@@fAD`DHrFDxB@l@@|ABjAB@@jBBX@jBDb@B|BFnCBb@?lHDjBDlDJ?[YFkAC{AC_@?e@CgACsDKgBCc@AkBEyBE}AEs@AB_B?CBw@?]D_CBkA@y@@Q@MBOHUZo@vB_El@kA\\o@HSN_@Ja@YAI\\O`@_CsAaAk@gAm@}@k@ECo@a@wCkBCF?@m@]KAEOKKk@LIT[PUE_@DBTZj@ARm@V[P",
+        "steps": []
+      }
+    },
+    {
+      "name": "remaining",
+      "data": {
+        "distanceMeters": 1790,
+        "durationSeconds": 327,
+        "encodedPolyline": "ug`}A_h|lGr@@jA@^Aj@CP\\aAf@YP[XA@CBm@z@Y^gAxA{@nAGF]d@A@VL`BVtDr@b@HjB^fCd@lB^FLJDXHj@FRDDDBD@DjBTpAGl@C|CGJ?rACpCGv@CjBK~AOj@EBAp@OdBk@jAi@BBDNTZ\\^RTPCV|A\\Af@^BV[P",
+        "steps": []
+      }
+    }
+  ]
+}

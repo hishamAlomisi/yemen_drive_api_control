@@ -8,7 +8,7 @@ using YemenDrive.Shared.Security;
 
 namespace YemenDrive.Application.Safety;
 
-public sealed record SafetyAdminReportModel(SafetyIncidentStatus? Status = null);
+public sealed record SafetyAdminReportModel(SafetyIncidentStatus? Status = null, int? RideId = null);
 
 public sealed class SafetyAdminReport(
     YemenDriveDbContext db,
@@ -32,6 +32,8 @@ public sealed class SafetyAdminReport(
 
         if (model.Status is not null)
             query = query.Where(x => x.Incident.Status == model.Status);
+        if (model.RideId is not null)
+            query = query.Where(x => x.Incident.RideId == model.RideId);
 
         var incidents = await query
             .OrderByDescending(x => x.Incident.CreatedAtUtc)
@@ -62,12 +64,18 @@ public sealed class SafetyAdminReport(
                 userName = row.User.DisplayName,
                 userPhone = row.User.PhoneNumber,
                 row.Incident.Message,
+                row.Incident.Kind,
+                row.Incident.RouteVersion,
+                row.Incident.DeviationMeters,
+                row.Incident.DeviationDirection,
+                row.Incident.DeviationDirectionDegrees,
+                row.Incident.LocationAccuracyMeters,
                 row.Incident.Latitude,
                 row.Incident.Longitude,
                 row.Incident.LocationObservedAtUtc,
-                locationSource = row.Incident.LocationObservedAtUtc is not null
+                locationSource = row.Incident.LocationSource ?? (row.Incident.LocationObservedAtUtc is not null
                     ? "reporterGps"
-                    : row.Incident.Latitude is not null ? "pickupFallback" : "unavailable",
+                    : row.Incident.Latitude is not null ? "pickupFallback" : "unavailable"),
                 row.Incident.Status,
                 row.Incident.AdminUserId,
                 row.Incident.AdminNote,

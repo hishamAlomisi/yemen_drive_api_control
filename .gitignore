@@ -3,6 +3,7 @@
 *.user
 src/YemenDrive.Api/data/database.settings.json
 src/YemenDrive.Api/security/wallet-keys/
+src/YemenDrive.Api/security/sms-provider.dat*
 
 # Local build and investigation outputs.
 work/

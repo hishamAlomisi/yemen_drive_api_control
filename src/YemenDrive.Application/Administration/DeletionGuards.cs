@@ -26,6 +26,7 @@ internal static class DeletionGuards
                 x => x.DriverUserId == userId || x.CustomerUserId == userId || x.AdminUserId == userId, ct)),
             ("سجلات حملات الإشعارات التي أنشأها", ct => db.AdminNotificationCampaigns.AnyAsync(x => x.CreatedByUserId == userId, ct)),
             ("سجل تحديثات المواقع", ct => db.LocationUpdates.AnyAsync(x => x.ActorId == userId, ct)),
+            ("مواقع محفوظة عند إرسال طلبات الرحلات", ct => db.RideRequestDriverLocations.AnyAsync(x => x.DriverId == userId, ct)),
             ("حركات المحفظة", ct => db.WalletTransactions.AnyAsync(x => x.Wallet.UserId == userId, ct)),
             ("رصيد محفظة غير صفري", ct => db.Wallets.AnyAsync(x => x.UserId == userId && x.Balance != 0, ct)),
             ("حركات دفع", ct => db.PaymentTransactions.AnyAsync(x => x.UserId == userId, ct)),

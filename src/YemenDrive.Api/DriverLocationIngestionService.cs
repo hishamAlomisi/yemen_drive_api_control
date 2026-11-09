@@ -1,30 +1,46 @@
-using System.Collections.Concurrent;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using YemenDrive.Database;
 using YemenDrive.Database.Entities;
 using YemenDrive.Application.Rides;
+using YemenDrive.Api.Tracking;
 
 namespace YemenDrive.Api;
 
 public sealed class DriverLocationIngestionService(YemenDriveDbContext db,
     IRideRealtimePublisher realtimePublisher, NearbyDriverSubscriptionStore nearbySubscriptions,
     IHubContext<TrackingHub> hub, IHostApplicationLifetime lifetime,
-    ILogger<DriverLocationIngestionService> logger)
+    ILogger<DriverLocationIngestionService> logger,
+    DriverLocationVisualQueue? visualQueue = null)
 {
-    private static readonly ConcurrentDictionary<int, SemaphoreSlim> DriverLocks = new();
+    // Fixed stripes bound process memory; the SQL lock retains exact per-driver
+    // archive serialization. Different drivers may share a stripe under high load.
+    private static readonly SemaphoreSlim[] DriverLocks = Enumerable.Range(0, 1024).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
     private static readonly RideStatus[] TrackableRideStatuses = [RideStatus.DriverAssigned,
         RideStatus.DriverEnRoute, RideStatus.DriverArrived, RideStatus.InProgress, RideStatus.CancellationPending];
     public async Task SaveAsync(int driverId, DriverLocationHubRequest sample)
     {
+        await SaveCoreAsync(driverId, sample, true);
+    }
+
+    internal Task<bool> SaveWithoutArchiveAsync(int driverId, DriverLocationHubRequest sample)
+        => SaveCoreAsync(driverId, sample, false);
+
+    // Only the permission-checked administrator model calls this path. Test
+    // points share durable storage and live fan-out, but retain their source.
+    internal Task<bool> SaveAdministratorAsync(int driverId, DriverLocationHubRequest sample, string source, DateTime? expected, byte[]? expectedRideVersion = null)
+        => SaveCoreAsync(driverId, sample, true, source, expected, expectedRideVersion);
+
+    private async Task<bool> SaveCoreAsync(int driverId, DriverLocationHubRequest sample, bool saveArchive, string? adminSource = null, DateTime? expected = null, byte[]? expectedRideVersion = null)
+    {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         deadline.CancelAfter(TimeSpan.FromSeconds(10));
-        var gate = DriverLocks.GetOrAdd(driverId, _ => new SemaphoreSlim(1, 1));
+        var gate = DriverLocks[(int)((uint)driverId % (uint)DriverLocks.Length)];
         await gate.WaitAsync(deadline.Token);
-        try { await SaveOrderedAsync(driverId, sample, deadline.Token); }
+        try { return await SaveOrderedAsync(driverId, sample, saveArchive, deadline.Token, adminSource, expected, expectedRideVersion); }
         finally { gate.Release(); }
     }
-    private async Task SaveOrderedAsync(int driverId, DriverLocationHubRequest sample, CancellationToken token)
+    private async Task<bool> SaveOrderedAsync(int driverId, DriverLocationHubRequest sample, bool saveArchive, CancellationToken token, string? adminSource, DateTime? expected, byte[]? expectedRideVersion)
     {
         if (!double.IsFinite(sample.Latitude) || !double.IsFinite(sample.Longitude) ||
             sample.Latitude is < -90 or > 90 || sample.Longitude is < -180 or > 180 ||
@@ -69,15 +85,39 @@ public sealed class DriverLocationIngestionService(YemenDriveDbContext db,
             .FirstOrDefaultAsync(token);
         if (sample.RideId is not null && activeRide is null)
             throw new HubException("الرحلة غير مسندة إليك أو لم تعد نشطة.");
+        // The legacy single-sample endpoint can overlap a retry through the
+        // durable batch endpoint. Both writers serialize archive changes using
+        // the same database lock, including requests served by another process.
+        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        var resource = $"driver-route:{driverId}";
+        await db.Database.ExecuteSqlInterpolatedAsync($"DECLARE @result int; EXEC @result = sys.sp_getapplock @Resource={resource}, @LockMode='Exclusive', @LockOwner='Transaction', @LockTimeout=10000; IF @result < 0 THROW 51002, 'Route sample lock timed out', 1;", token);
+        if (expectedRideVersion is not null)
+        {
+            // A provider lookup may outlive a destination/phase change. Hold
+            // this ride read through commit so a step cannot use an old route.
+            var currentRide = await db.Rides.FromSqlInterpolated($"SELECT * FROM [Rides] WITH (HOLDLOCK) WHERE [Id] = {sample.RideId}")
+                .AsNoTracking().SingleOrDefaultAsync(token);
+            if (currentRide is null || currentRide.DriverId != driverId || currentRide.ServiceEndedAtUtc != null ||
+                !currentRide.RowVersion.SequenceEqual(expectedRideVersion) ||
+                currentRide.Status is not (RideStatus.DriverAssigned or RideStatus.DriverEnRoute or RideStatus.InProgress))
+                throw new HubException("تغيرت حالة الرحلة أو وجهتها أثناء تجهيز الحركة؛ حدّث الموقع وحاول مجدداً.");
+        }
         var location = await db.DriverLiveLocations
             .SingleOrDefaultAsync(item => item.DriverId == driverId, token);
+        if (adminSource is not null)
+        {
+            if (expected is DateTime expectedAt && location?.ObservedAtUtc != expectedAt)
+                throw new HubException("تغير موقع السائق أثناء تجهيز الحركة؛ حدّث الموقع وحاول مجدداً.");
+            // Separate clicks always persist, even inside the GPS throttle.
+            observedAtUtc = location is not null && location.ObservedAtUtc >= now ? location.ObservedAtUtc.AddTicks(1) : now;
+        }
         if (location is not null && observedAtUtc <= location.ObservedAtUtc)
-            return;
-        if (location is not null &&
+            return false;
+        if (adminSource is null && location is not null &&
             observedAtUtc - location.ObservedAtUtc < TimeSpan.FromMilliseconds(750))
-            return;
+            return false;
 
-        if (location is not null && HaversineMeters(location.Latitude, location.Longitude, sample.Latitude, sample.Longitude) >
+        if (adminSource is null && location is not null && HaversineMeters(location.Latitude, location.Longitude, sample.Latitude, sample.Longitude) >
             75 * (observedAtUtc - location.ObservedAtUtc).TotalSeconds + Math.Max(50, sample.Accuracy * 2))
             throw new HubException("قفزة موقع السائق لا تتوافق مع سرعة حركة ممكنة.");
 
@@ -93,11 +133,20 @@ public sealed class DriverLocationIngestionService(YemenDriveDbContext db,
         location.IsOnline = true;
         location.ObservedAtUtc = observedAtUtc;
         location.UpdatedAtUtc = now;
-        if (activeRide?.Status == RideStatus.InProgress)
-            db.LocationUpdates.Add(new LocationUpdate { RideId = activeRide.Id, ActorId = driverId,
-                Latitude = sample.Latitude, Longitude = sample.Longitude, Bearing = sample.Bearing,
-                Speed = sample.Speed, Accuracy = sample.Accuracy, ObservedAtUtc = observedAtUtc });
+        if (saveArchive && activeRide is not null)
+        {
+            var savedPoint = await db.LocationUpdates.AsNoTracking().FirstOrDefaultAsync(x => x.RideId == activeRide.Id &&
+                x.ActorId == driverId && x.ObservedAtUtc == observedAtUtc, token);
+            if (savedPoint is not null && (savedPoint.Latitude != sample.Latitude || savedPoint.Longitude != sample.Longitude))
+                throw new HubException("تعارضت الإحداثيات مع عينة محفوظة بالوقت نفسه.");
+            if (savedPoint is null)
+                db.LocationUpdates.Add(new LocationUpdate { RideId = activeRide.Id, ActorId = driverId,
+                    Latitude = sample.Latitude, Longitude = sample.Longitude, Bearing = sample.Bearing,
+                    Speed = sample.Speed, Accuracy = sample.Accuracy, ObservedAtUtc = observedAtUtc, Source = adminSource ?? "gps" });
+        }
         await db.SaveChangesAsync(token);
+        // Never hold the route transaction while waiting for viewers/network.
+        await transaction.CommitAsync(token);
 
         var realtimeLocation = new DriverLocationRealtimeEvent(
                 driverId,
@@ -111,6 +160,13 @@ public sealed class DriverLocationIngestionService(YemenDriveDbContext db,
                 observedAtUtc,
                 now,
                 activeRide?.Status);
+        if (visualQueue?.Enabled == true)
+        {
+            visualQueue.Enqueue(new(realtimeLocation, new(profile.ServiceKindId, profile.ServiceCatalogItemId,
+                profile.IsAvailable && profile.AcceptsNewRequests && profile.IsApproved, profile.name, profile.photoUrl,
+                profile.vehicleModel, profile.plateNumber, profile.rating, profile.serviceCode)));
+            return true;
+        }
         if (activeRide is not null)
             await realtimePublisher.PublishDriverLocationAsync(
                 realtimeLocation, token);
@@ -124,8 +180,8 @@ public sealed class DriverLocationIngestionService(YemenDriveDbContext db,
             profile.IsAvailable && profile.AcceptsNewRequests && profile.IsApproved && activeRide is null);
         await Parallel.ForEachAsync(
             deliveries,
-            new ParallelOptions { MaxDegreeOfParallelism = 16 },
-            async (delivery, _) =>
+            new ParallelOptions { MaxDegreeOfParallelism = 16, CancellationToken = token },
+            async (delivery, ct) =>
             {
                 try
                 {
@@ -134,7 +190,7 @@ public sealed class DriverLocationIngestionService(YemenDriveDbContext db,
                         await hub.Clients.Client(delivery.ConnectionId).SendAsync(
                             "nearbyDriverAvailabilityChanged",
                             new { driverId, isAvailable = false },
-                            CancellationToken.None);
+                            ct);
                         return;
                     }
                     await hub.Clients.Client(delivery.ConnectionId).SendAsync(
@@ -155,14 +211,16 @@ public sealed class DriverLocationIngestionService(YemenDriveDbContext db,
                             distanceMeters = delivery.DistanceMeters,
                             isAvailable = true
                         },
-                        CancellationToken.None);
+                        ct);
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception exception)
                 {
                     logger.LogDebug(exception,
                         "Could not update a nearby-driver map for driver {DriverId}.", driverId);
                 }
             });
+        return true;
     }
     private static double HaversineMeters(
         double firstLatitude,

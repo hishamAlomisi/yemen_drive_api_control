@@ -13,6 +13,7 @@ const state = {
   drivers: [],
   driverRatingReport: { drivers: [], ratings: [] },
   rides: [],
+  ridePages: { rides: null, history: null },
   catalog: [],
   kinds: [],
   pricing: [], places: [], areas: [], history: [], settlements: [], ledgerAccounts: [], paymentMethods: [], cancellations: [], safety: [], safetyRecordings: [], notifications: [], liveRides: new Map()
@@ -32,7 +33,7 @@ async function loadMyAdministratorPermissions() {
   const result = await execute('AdministratorPermissionModel', 'mine', {});
   administratorPermissions = new Set(result.data.permissions || []);
   currentAdministratorId = Number(result.data.userId);
-  const scopes = { 'transfer-fees': ['finance.read'], 'operational-policy': ['policy.read'], 'access-governance': ['personal_data.read', 'permissions.read', 'permissions.write'], 'operational-review': ['finance.read', 'refunds.read', 'support.read'] };
+  const scopes = { 'sms-send': ['operations.write'], 'sms-report': ['operations.read'], 'sms-provider': ['policy.read'], 'driver-movement': ['operations.read'], 'chat-audit': ['operations.read'], 'transfer-fees': ['finance.read'], 'operational-policy': ['policy.read'], 'access-governance': ['personal_data.read', 'permissions.read', 'permissions.write'], 'operational-review': ['finance.read', 'refunds.read', 'support.read'] };
   for (const [view, permissions] of Object.entries(scopes)) {
     $$(`.nav-item[data-view="${view}"]`).forEach(node => { node.hidden = !permissions.some(canAdmin); });
   }
@@ -44,16 +45,44 @@ let lastPageScrollPosition = 0;
 let pageScrollUpdatePending = false;
 let safetyMapTimer = null;
 let safetyMapIncidentId = null;
-let safetyMapLastMarker = '';
-let safetyMapPendingUrl = '';
-let safetyMapPendingMarker = '';
 let safetyMapLoaded = false;
+let safetyMap = null;
+let safetyMapItem = null;
+let safetyMapGeneration = 0;
+const safetyMapMarkers = new Map();
+const safetyMapAnimations = new Map();
+const safetyMapRoutes = new Map();
+let safetyMapRouteTracker = null;
+let safetyMapRide = null;
+let safetyMapRouteRequest = null;
+let safetyMapRouteSignature = '';
+let safetyMapRouteFitSignature = '';
+let safetyMapRouteFitPending = true;
 
 const ADMIN_TOKEN_KEY = 'yemendrive_admin_token';
 const ADMIN_REFRESH_TOKEN_KEY = 'yemendrive_admin_refresh_token';
 const ADMIN_TOPBAR_THEME_KEY = 'yemendrive_admin_topbar_theme';
 let adminRefreshInFlight = null;
 let adminHubConnection = null;
+let adminReadGeneration = 0;
+const rideTableGeneration = { rides: 0, history: 0 };
+const adminResourceRevisions = new Map();
+let adminStateRetry = null;
+let adminRecoveryTask = null;
+let adminRecoveryConnection = null;
+let activeRideSnapshotPromise = null;
+const adminWatchedRides = new Set();
+let adminWatchRenewal = null;
+let adminWatchTask = null;
+let adminWatchDirty = false;
+const adminStateSync = new AdminStateSync(refreshAdminState, synchronized => {
+  if (isAdminRealtimeConnected())
+    setLiveConnectionStatus(synchronized ? 'متصل — الحالة محدثة' : 'متصل — جارٍ مزامنة الحالة', synchronized);
+});
+function isAdminRealtimeConnected(connection = adminHubConnection) {
+  const connectedState = window.signalR?.HubConnectionState?.Connected;
+  return Boolean(connection && connectedState !== undefined && connection.state === connectedState);
+}
 const WALLET_LOGIN_REFRESH_MS = 3000;
 const walletLoginCellMarkup = new WeakMap();
 let walletLoginRefreshTimer = null;
@@ -61,19 +90,29 @@ let walletLoginRefreshController = null;
 let walletLoginRefreshGeneration = 0;
 let paymentMethodsLoadGeneration = 0;
 let liveRidesMap = null;
+let selectedLiveRideId = null;
+let liveRouteTracker = null;
+let selectedLiveRouteFitPending = false;
+let selectedLiveRouteSignature = '';
+const selectedLiveRideRoutes = new Map();
 const liveRideMarkers = new Map();
 const liveRideAnimations = new Map();
 const livePassengerAnimations = new Map();
 const pendingLiveRideSnapshots = new Set();
 
 const titles = {
+  'sms-send': ['إرسال رسائل نصية', 'إرسال رسالة إلى الأرقام المحددة عبر المزود الحالي'],
+  'sms-provider': ['مزود الرسائل النصية', 'إعداد بيانات الاتصال بمزود الرسائل'],
+  'sms-report': ['تقرير الرسائل النصية', 'إحصاءات رسائل الدخول وتغيير كلمة المرور وإنشاء الحساب'],
   'transfer-fees': ['رسوم تحويل المحافظ', 'شرائح الرسوم الثابتة والنسبية للتحويل بين المحافظ'],
   overview: ['نظرة عامة', 'متابعة حالة النظام والعمليات الأخيرة'],
   users: ['المستخدمون', 'إدارة حسابات العملاء والسائقين'],
   customers: ['العملاء', 'بيانات العملاء ومؤشرات النشاط والتقييم'],
   drivers: ['السائقون', 'المركبات والخدمات وحالة التوفر'],
   'driver-ratings': ['تقييمات السائقين', 'تقييمات العملاء وإضافة تقييم الإدارة'],
+  'driver-movement': ['تقرير حركة السائقين', 'الرحلات المتفق عليها وأوقات الحركة والتقييم والبلاغات والمسارات'],
   rides: ['الرحلات', 'متابعة الطلبات وحالات التنفيذ'],
+  'chat-audit': ['سجلات المحادثات', 'محادثات السائقين والركاب بحسب الرحلات وترتيب الرسائل'],
   'operational-review': ['المتابعة المالية والشكاوى', 'المقبوض والمتبقي والاسترداد والنزاعات بصورة مستقلة عن النقل'],
   'operational-policy': ['سياسة الوصول والمهل', 'اعتماد القيم الناقصة دون ابتكار رسوم جديدة'],
   'access-governance': ['الصلاحيات وحذف الحساب', 'التفويض وقرارات تعطيل الحساب مع حفظ التاريخ'],
@@ -293,7 +332,7 @@ function bindActionTooltips() {
 
 class AdminOperationCancelled extends Error {}
 
-const readOnlyOperations = new Set(['list', 'get', 'report', 'search']);
+const readOnlyOperations = new Set(['list', 'get', 'report', 'search', 'mine']);
 const adminModelLabels = {
   UserModel: 'حساب المستخدم', DriverModel: 'ملف السائق', RideModel: 'الرحلة',
   ServiceKindModel: 'نوع الخدمة', ServiceCatalogModel: 'الخدمة', PricingRuleModel: 'قاعدة التسعير',
@@ -351,7 +390,29 @@ function isAdminOperationCancelled(error) {
   return error instanceof AdminOperationCancelled;
 }
 
+function adminModelRevision(model) {
+  const scopes = {
+    NotificationModel: ['notifications'], DashboardModel: ['*'],
+    RideModel: ['ride'], RideCancellationReportModel: ['ride'], RideCancellationRequestModel: ['ride'], RideFinancialCaseModel: ['ride'], RideWaitingModel: ['ride'],
+    WalletModel: ['wallet', 'account'], DriverSettlementPaymentModel: ['account', 'ledger'],
+    OperationalReviewModel: ['ride', 'wallet', 'account', 'ledger'],
+    UserModel: ['profile'], DriverModel: ['profile'], DriverRatingReportModel: ['profile'], CustomerAssessmentModel: ['profile'],
+    AccountDeletionModel: ['account'], SupportTicketModel: ['account', 'ride'],
+    SafetyAdminReportModel: ['account', 'ride'], SafetyIncidentModel: ['account', 'ride'], SafetyRecordingAdminReportModel: ['account', 'ride'],
+    AdministratorPermissionModel: ['permissions'], AdminNotificationCampaignModel: ['campaign'],
+    LedgerAccountModel: ['ledgerAccount'], AccountingSetupModel: ['financialParty', 'ledgerAccount'],
+    AccountStatementModel: ['ledger', 'wallet', 'account'], FinancialOperationModel: ['ledger', 'ledgerAccount'], FinancialStatementsModel: ['ledger', 'wallet', 'account', 'ledgerAccount'],
+    AdministrativeLookupModel: ['profile', 'ride'], AdminRecordIdentityModel: ['profile', 'ride'],
+    PaymentMethodModel: ['catalog', 'providerAccount'], PricingModel: ['catalog'], PricingRuleModel: ['catalog'],
+    ServiceCatalogModel: ['catalog'], ServiceKindModel: ['catalog'], OperationalPolicyModel: ['catalog'], ServiceAreaModel: ['catalog'], SavedPlaceAdminModel: ['places']
+  };
+  return (scopes[model] || []).map(scope => adminResourceRevisions.get(scope) || 0).join(':');
+}
+
 async function execute(model, operation, data = {}, options = {}) {
+  const readGeneration = adminReadGeneration;
+  const readRevision = adminModelRevision(model);
+  const isRead = readOnlyOperations.has(String(operation || '').toLowerCase());
   if (!readOnlyOperations.has(String(operation || '').toLowerCase()) &&
       options.confirmed !== true && !confirmAdminOperation(model, operation, data)) {
     throw new AdminOperationCancelled();
@@ -366,6 +427,7 @@ async function execute(model, operation, data = {}, options = {}) {
     showAdminLogin('انتهت جلسة الإدارة. سجل الدخول من جديد.');
   }
   if (!result.success) throw new Error(result.message || 'تعذر تنفيذ العملية.');
+  if (isRead && (readGeneration !== adminReadGeneration || readRevision !== adminModelRevision(model))) throw new AdminOperationCancelled('تجاوز تحديث أحدث هذه القراءة.');
   return result;
 }
 
@@ -388,6 +450,12 @@ async function seedDevelopmentData() {
 }
 
 function showAdminLogin(message = '') {
+  rideTableGeneration.rides++;
+  rideTableGeneration.history++;
+  state.rides = []; state.history = [];
+  state.ridePages = { rides: null, history: null };
+  if (typeof resetChatAudit === 'function') resetChatAudit(true);
+  if (typeof resetDriverMovement === 'function') resetDriverMovement();
   paymentMethodsLoadGeneration++;
   stopWalletLoginRefresh();
   formOpenGeneration++;
@@ -425,6 +493,9 @@ async function adminLogin(phoneNumber, password) {
 }
 
 function clearAdminSession() {
+  if (typeof resetSmsSend === 'function') resetSmsSend();
+  if (typeof resetSmsProviderForm === 'function') resetSmsProviderForm();
+  if (typeof resetSmsReport === 'function') resetSmsReport();
   administratorPermissions = null;
   sessionStorage.removeItem(ADMIN_TOKEN_KEY);
   sessionStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
@@ -807,20 +878,75 @@ async function loadDrivers() {
     const status = item.isActive
       ? iconActionButton('suspend', 'إيقاف حساب السائق', `setDriverAccountStatus(${userId}, false)`, { tone: 'warning' })
       : iconActionButton('activate', 'تفعيل حساب السائق', `setDriverAccountStatus(${userId}, true)`, { tone: 'success' });
-    const actions = `<div class="driver-actions">${status}${iconActionButton('statement', 'كشف حساب السائق', `openDriverAccountStatement(${userId})`, { tone: 'info' })}${iconActionButton('wallet', 'كشف محفظة السائق', `openDriverWallet(${userId})`, { tone: 'success' })}${recordActions('driver', item.id)}</div>`;
+    const actions = `<div class="driver-actions">${status}${iconActionButton('map', 'تعديل موقع السائق وتجربة التحرك', `openDriverLocation(${userId})`, { tone: 'info' })}${iconActionButton('statement', 'كشف حساب السائق', `openDriverAccountStatement(${userId})`, { tone: 'info' })}${iconActionButton('wallet', 'كشف محفظة السائق', `openDriverWallet(${userId})`, { tone: 'success' })}${recordActions('driver', item.id)}</div>`;
     return `<tr><td><span class="cell-main">${escapeHtml(item.displayName || 'بدون اسم')}</span><span class="cell-sub">${escapeHtml(item.userId)}</span></td><td>${escapeHtml(item.phoneNumber)}</td><td><span class="cell-main">${escapeHtml(item.vehicleModel)}</span>${Number(item.approvedPassengerSeats) > 0 ? `<span class="cell-sub">${Number(item.approvedPassengerSeats)} مقاعد ركاب</span>` : '<span class="badge warning">اعتمد مقاعد الركاب لاستقبال الطلبات</span>'}</td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${escapeHtml(item.plateNumber)}</td><td>${number(item.rating)}</td><td>${badge(item.isActive ? 'الحساب نشط' : 'الحساب موقوف', item.isActive ? 'success' : 'danger')}<span class="cell-sub">${item.isAvailable ? 'متاح' : 'غير متاح'}</span></td><td>${actions}</td></tr>`;
   });
   toggleEmpty('#drivers-body', '#drivers-empty', rows);
 }
 
-async function loadRides() {
-  const value = $('#ride-filter').value;
-  const result = await execute('RideModel', 'list', value ? { status: Number(value) } : {});
-  state.rides = result.data;
-  const rows = result.data.map(item => {
+function rideTablePrefix(kind) { return kind === 'rides' ? 'ride' : 'history'; }
+function rideTableDate(value) {
+  if (!value) return '—';
+  const utc = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : `${value}Z`;
+  const instant = new Date(utc);
+  return Number.isFinite(instant.getTime())
+    ? new Intl.DateTimeFormat('ar-YE-u-nu-latn', { timeZone: 'Asia/Aden', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(instant)
+    : '—';
+}
+function rideTableTimes(item) {
+  return `<span class="cell-main">الطلب: ${escapeHtml(rideTableDate(item.createdAtUtc))}</span><span class="cell-sub">الاتفاق: ${escapeHtml(rideTableDate(item.acceptedAtUtc))}</span>${item.serviceEndedAtUtc ? `<span class="cell-sub">انتهاء الخدمة: ${escapeHtml(rideTableDate(item.serviceEndedAtUtc))}</span>` : ''}`;
+}
+function renderRideTablePaging(kind) {
+  const prefix = rideTablePrefix(kind), page = state.ridePages[kind];
+  $(`#${prefix}-page-previous`).disabled = !page || page.pageNumber <= 1;
+  $(`#${prefix}-page-next`).disabled = !page || page.pageNumber >= page.totalPages;
+  if (page) $(`#${prefix}-list-feedback`).textContent = `${number(page.totalCount)} رحلة مطابقة · الصفحة ${number(page.pageNumber)} من ${number(Math.max(1, page.totalPages))}`;
+}
+async function loadRideTable(kind, pageNumber = 1) {
+  const prefix = rideTablePrefix(kind), generation = ++rideTableGeneration[kind];
+  const feedback = $(`#${prefix}-list-feedback`), refresh = $(`#${prefix}-list-refresh`);
+  const digits = $(`#${prefix}-number`).value.trim().replace(/[٠-٩۰-۹]/g, digit => '٠١٢٣٤٥٦٧٨٩'.includes(digit) ? String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)) : String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit)));
+  const id = digits ? Number(digits) : null;
+  if (id !== null && (!/^\d+$/.test(digits) || !Number.isSafeInteger(id) || id <= 0)) {
+    refresh.disabled = false;
+    renderRideTablePaging(kind);
+    feedback.textContent = 'أدخل رقم رحلة صحيحًا أكبر من صفر.';
+    feedback.classList.add('error');
+    return;
+  }
+  feedback.classList.remove('error'); feedback.textContent = 'جارٍ تحميل الرحلات…';
+  refresh.disabled = true;
+  $(`#${prefix}-page-previous`).disabled = true; $(`#${prefix}-page-next`).disabled = true;
+  try {
+    const status = $(`#${prefix}-filter`).value;
+    const result = await execute('RideModel', 'list', { includePaging: true, pageNumber: Number.isSafeInteger(pageNumber) && pageNumber > 0 ? pageNumber : 1, pageSize: 100, ...(status !== '' ? { status: Number(status) } : {}), ...(id !== null ? { id } : {}) });
+    if (generation !== rideTableGeneration[kind]) return;
+    const data = result.data;
+    const page = Array.isArray(data) ? { rows: data, totalCount: data.length, pageNumber: 1, totalPages: 1 } : data;
+    if (!page || !Array.isArray(page.rows)) throw new Error('تعذر قراءة قائمة الرحلات من الخادم.');
+    state[kind] = page.rows; state.ridePages[kind] = page;
+    kind === 'rides' ? renderRides() : renderHistory();
+    renderRideTablePaging(kind);
+  } catch (error) {
+    if (generation !== rideTableGeneration[kind]) return;
+    if (isAdminOperationCancelled(error)) {
+      renderRideTablePaging(kind);
+      if (!state.ridePages[kind]) feedback.textContent = 'اضغط تحديث لعرض الرحلات.';
+      return;
+    }
+    state[kind] = []; state.ridePages[kind] = null;
+    kind === 'rides' ? renderRides() : renderHistory();
+    feedback.textContent = error.message || 'تعذر تحميل الرحلات. اضغط تحديث للمحاولة مجددًا.';
+    feedback.classList.add('error');
+    throw error;
+  } finally { if (generation === rideTableGeneration[kind]) refresh.disabled = false; }
+}
+async function loadRides(pageNumber = 1) { return loadRideTable('rides', pageNumber); }
+function renderRides() {
+  const rows = state.rides.map(item => {
     const ridingOptions = `${item.moreThanFourPassengers ? '<span class="cell-sub">أكثر من 4 ركاب</span>' : ''}${item.passengerNotes ? `<span class="cell-sub">${escapeHtml(item.passengerNotes)}</span>` : ''}`;
     const lockedReason = Number(item.status) === 0 ? '' : 'تُدار الرحلات بعد بدء البحث عبر سير العمل التشغيلي والإلغاء الرسمي.';
-    return `<tr><td><span class="cell-main">${escapeHtml(item.customerName || item.customerId)}</span></td><td>${escapeHtml(item.driverName || 'لم يحدد')}</td><td><span class="cell-main">${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')}</span><span class="cell-sub">${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td><td>${ridingOptions}<button class="btn btn-sm" type="button" data-waiting-ride="${Number(item.id)}">الانتظار ${number(item.waitingFee || 0)} ر.ي</button>${recordActions('ride', item.id, lockedReason)}</td></tr>`;
+    return `<tr data-ride-row="${Number(item.id)}"><td><span class="cell-main">#${escapeHtml(item.id)}</span></td><td><span class="cell-main">${escapeHtml(item.customerName || item.customerId)}</span></td><td>${escapeHtml(item.driverName || 'لم يحدد')}</td><td><span class="cell-main">${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')}</span><span class="cell-sub">${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</span></td><td>${escapeHtml(item.serviceKindNameAr || item.serviceKindId)} / ${escapeHtml(item.serviceNameAr || item.serviceCatalogItemId)}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${rideTableTimes(item)}</td><td>${ridingOptions}<button class="btn btn-sm" type="button" data-waiting-ride="${Number(item.id)}">الانتظار ${number(item.waitingFee || 0)} ر.ي</button>${recordActions('ride', item.id, lockedReason)}</td></tr>`;
   });
   toggleEmpty('#rides-body', '#rides-empty', rows);
 }
@@ -837,11 +963,8 @@ function setLiveConnectionStatus(label, connected = false) {
 
 function ensureLiveRidesMap() {
   if (liveRidesMap || !window.L || !$('#live-rides-map')) return;
-  liveRidesMap = L.map('live-rides-map', { preferCanvas: true }).setView([15.3694, 44.1910], 12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap contributors'
-  }).addTo(liveRidesMap);
+  liveRidesMap = L.map('live-rides-map', { preferCanvas: false }).setView([15.3694, 44.1910], 12);
+  AdminMaps.attachBaseLayer(liveRidesMap, $('#live-rides-map-status'), $('#live-rides-map-retry'));
 }
 
 function liveRideCoordinates(ride, prefix) {
@@ -855,13 +978,19 @@ function getLiveRideMarkerEntry(rideId) {
   return liveRideMarkers.get(rideId);
 }
 
-function driverMarkerIcon(rideId) {
-  return L.divIcon({
-    className: '',
-    html: `<div class="live-ride-pin" id="live-ride-pin-${Number(rideId)}"><span>🚕</span></div>`,
-    iconSize: [34, 34],
-    iconAnchor: [17, 17]
-  });
+function driverMarkerIcon(rideId, inProgress = false, bearing = 0) {
+  return AdminMaps.vehicleIcon(inProgress, bearing);
+}
+
+function updateDriverMarkerAppearance(marker, ride, applyHeading = true) {
+  const inProgress = Number(ride.status ?? ride.rideStatus) === 5;
+  if (marker._mapTripPhase !== inProgress) {
+    marker._mapTripPhase = inProgress;
+    const icon = driverMarkerIcon(ride.id, inProgress, marker._mapBearing ?? ride.driverBearing);
+    if (marker.setIcon) marker.setIcon(icon);
+    else marker.options.icon = icon;
+  }
+  if (applyHeading) AdminMaps.setVehicleHeading(marker, ride.driverBearing);
 }
 
 function passengerMarkerIcon(rideId) {
@@ -873,7 +1002,7 @@ function passengerMarkerIcon(rideId) {
   });
 }
 
-function ensureDriverMarker(ride) {
+function ensureDriverMarker(ride, applyHeading = true) {
   ensureLiveRidesMap();
   if (!liveRidesMap) return null;
   const rideId = Number(ride.id);
@@ -881,10 +1010,11 @@ function ensureDriverMarker(ride) {
   if (!point) return null;
   const entry = getLiveRideMarkerEntry(rideId);
   if (!entry.driver) {
-    entry.driver = L.marker([point.lat, point.lon], { icon: driverMarkerIcon(rideId) })
+    entry.driver = L.marker([point.lat, point.lon], { icon: driverMarkerIcon(rideId, Number(ride.status) === 5, ride.driverBearing), title: 'موقع السائق' })
       .addTo(liveRidesMap)
-      .bindPopup(`الرحلة #${rideId} — ${escapeHtml(ride.driverName || 'السائق')}`);
+      .bindPopup(`موقع السائق — الرحلة #${rideId} — ${escapeHtml(ride.driverName || 'السائق')}`);
   }
+  updateDriverMarkerAppearance(entry.driver, ride, applyHeading);
   return entry.driver;
 }
 
@@ -892,9 +1022,16 @@ function ensurePassengerMarker(ride) {
   ensureLiveRidesMap();
   if (!liveRidesMap) return null;
   const rideId = Number(ride.id);
+  const entry = getLiveRideMarkerEntry(rideId);
+  if (Number(ride.status) === 5) {
+    if (entry.passenger) { liveRidesMap.removeLayer(entry.passenger); entry.passenger = null; }
+    const animation = livePassengerAnimations.get(rideId);
+    if (animation) cancelAnimationFrame(animation);
+    livePassengerAnimations.delete(rideId);
+    return null;
+  }
   const point = liveRideCoordinates(ride, 'passenger');
   if (!point) return null;
-  const entry = getLiveRideMarkerEntry(rideId);
   if (!entry.passenger) {
     entry.passenger = L.marker([point.lat, point.lon], { icon: passengerMarkerIcon(rideId) })
       .addTo(liveRidesMap)
@@ -910,29 +1047,145 @@ function renderLiveRide(ride) {
   const entry = getLiveRideMarkerEntry(rideId);
   const pickup = liveRideCoordinates(ride, 'pickup');
   const destination = liveRideCoordinates(ride, 'destination');
+  for (const animations of [liveRideAnimations, livePassengerAnimations]) {
+    const animation = animations.get(rideId);
+    if (animation) cancelAnimationFrame(animation);
+    animations.delete(rideId);
+  }
+  // Canonical REST refreshes must move existing markers too (including changed
+  // pickup/destination points), even while the live connection is recovering.
+  for (const actor of ['driver', 'passenger', 'pickup', 'destination']) {
+    const point = liveRideCoordinates(ride, actor);
+    if (entry[actor] && point) {
+      if (actor === 'driver') {
+        const previous = entry.driver.getLatLng();
+        AdminMaps.setVehicleHeading(entry.driver, AdminMaps.movementBearing(
+          { lat: previous.lat ?? previous[0], lon: previous.lng ?? previous[1] }, point, ride.driverBearing));
+      }
+      entry[actor].setLatLng([point.lat, point.lon]);
+    }
+    else if (entry[actor]) { liveRidesMap.removeLayer(entry[actor]); entry[actor] = null; }
+  }
   if (pickup && !entry.pickup) {
-    entry.pickup = L.circleMarker([pickup.lat, pickup.lon], {
-      radius: 6, color: '#fff', weight: 2, fillColor: '#08766a', fillOpacity: 1
-    }).addTo(liveRidesMap).bindTooltip(`انطلاق #${rideId}`);
+    entry.pickup = L.marker([pickup.lat, pickup.lon], { icon: AdminMaps.stopIcon(false) })
+      .addTo(liveRidesMap).bindPopup(`نقطة الانطلاق — الرحلة #${rideId}`);
   }
   if (destination && !entry.destination) {
-    entry.destination = L.circleMarker([destination.lat, destination.lon], {
-      radius: 6, color: '#fff', weight: 2, fillColor: '#bd7a18', fillOpacity: 1
-    }).addTo(liveRidesMap).bindTooltip(`وجهة #${rideId}`);
+    entry.destination = L.marker([destination.lat, destination.lon], { icon: AdminMaps.stopIcon(true) })
+      .addTo(liveRidesMap).bindPopup(`الوجهة — الرحلة #${rideId}`);
   }
-  const marker = ensureDriverMarker(ride);
-  if (marker && Number.isFinite(Number(ride.driverBearing))) {
-    const pin = marker.getElement()?.querySelector('.live-ride-pin span');
-    if (pin) pin.style.transform = `rotate(${Number(ride.driverBearing)}deg)`;
+  ensureDriverMarker(ride);
+  ensurePassengerMarker(ride);
+  if (selectedLiveRideId === rideId) renderSelectedLiveRideRoute(ride);
+}
+
+function applySelectedLiveRoutes(snapshot) {
+  if (snapshot.rideId != null && Number(snapshot.rideId) !== selectedLiveRideId) return;
+  const legs = snapshot.legs || [];
+  for (const [id, layer] of selectedLiveRideRoutes) {
+    if (!legs.some(leg => leg.id === id)) {
+      liveRidesMap?.removeLayer(layer);
+      selectedLiveRideRoutes.delete(id);
+    }
   }
-  const passengerMarker = ensurePassengerMarker(ride);
-  if (passengerMarker && Number.isFinite(Number(ride.passengerBearing))) {
-    const pin = passengerMarker.getElement()?.querySelector('.live-passenger-pin span');
-    if (pin) pin.style.transform = `rotate(${Number(ride.passengerBearing)}deg)`;
+  const routePoints = [];
+  for (const leg of legs) {
+    if (!liveRidesMap || !leg.points?.length) continue;
+    routePoints.push(...leg.points);
+    const existing = selectedLiveRideRoutes.get(leg.id);
+    if (existing) existing.setLatLngs(leg.points);
+    else {
+      const label = leg.id === 'approach' ? 'الطريق إلى الراكب' : leg.id === 'planned' ? 'الطريق المخطط بين الانطلاق والوجهة' : 'مسار الرحلة إلى الوجهة';
+      const layer = L.polyline(leg.points, {
+        color: leg.id === 'approach' ? '#08766a' : '#2563eb', weight: 5, opacity: 0.9,
+        dashArray: leg.id === 'planned' ? '9 7' : null,
+        className: `live-route-line live-route-${leg.id}`
+      }).addTo(liveRidesMap).bindTooltip(label);
+      selectedLiveRideRoutes.set(leg.id, layer);
+    }
+  }
+  const summary = $('#live-route-summary');
+  if (summary) {
+    const prefix = snapshot.rideId != null ? `الرحلة #${Number(snapshot.rideId)} · ` : '';
+    summary.textContent = prefix + (snapshot.message || 'لا توجد رحلة لعرض مسارها.');
+    summary.classList.toggle('route-error', ['error', 'partial'].includes(snapshot.status));
+  }
+  $('#live-route-retry')?.classList.toggle('hidden', !['error', 'partial'].includes(snapshot.status));
+  $('#live-route-focus')?.classList.toggle('hidden', !legs.length);
+  const planned = legs.some(leg => leg.id === 'planned');
+  $('#live-trip-line-legend')?.classList.toggle('legend-planned', planned);
+  if ($('#live-trip-label')) $('#live-trip-label').textContent = planned ? 'الطريق المخطط' : 'مسار الرحلة';
+  const ride = state.liveRides.get(selectedLiveRideId);
+  $('#live-approach-legend')?.classList.toggle('hidden', ![3, 4, 9].includes(Number(ride?.status)));
+  // Fit once per selection/stage/route-mode/endpoint change, never at each GPS update.
+  if (selectedLiveRouteFitPending && routePoints.length && ['ready', 'partial'].includes(snapshot.status)) {
+    selectedLiveRouteFitPending = false;
+    for (const actor of planned ? ['pickup', 'destination'] : ['driver', 'pickup', 'destination']) {
+      const point = liveRideCoordinates(ride, actor);
+      if (point) routePoints.push([point.lat, point.lon]);
+    }
+    liveRidesMap.fitBounds(routePoints, { padding: [35, 35], maxZoom: 17 });
   }
 }
 
+function ensureLiveRouteTracker() {
+  if (liveRouteTracker) return liveRouteTracker;
+  if (!window.AdminRouteTracker) return null;
+  liveRouteTracker = new AdminRouteTracker({
+    decodePolyline: AdminMaps.decodePolyline,
+    fetchRoute: async (origin, destination) => {
+      const result = await execute('MapRouteQuoteModel', 'report', {
+        originLatitude: origin.lat, originLongitude: origin.lon,
+        destinationLatitude: destination.lat, destinationLongitude: destination.lon,
+        includeSteps: false
+      });
+      return result.data;
+    },
+    onChange: applySelectedLiveRoutes
+  });
+  return liveRouteTracker;
+}
+
+function renderSelectedLiveRideRoute(ride, fit = false) {
+  if (!ride) { liveRouteTracker?.clear(); selectedLiveRouteSignature = ''; applySelectedLiveRoutes({ status: 'idle', legs: [] }); return; }
+  if (!liveRidesMap || state.view !== 'rides' || document.hidden) return;
+  const routeMode = Number(ride.status) === 8 || Number(ride.status) === 5 && !liveRideCoordinates(ride, 'driver') ? 'planned' : 'live';
+  const signature = [ride.id, ride.status, routeMode, ride.pickupLatitude, ride.pickupLongitude, ride.destinationLatitude, ride.destinationLongitude].join('|');
+  if (signature !== selectedLiveRouteSignature) {
+    selectedLiveRouteSignature = signature;
+    selectedLiveRouteFitPending = true;
+  }
+  selectedLiveRouteFitPending ||= fit;
+  const tracker = ensureLiveRouteTracker();
+  if (!tracker) {
+    $('#live-route-summary').textContent = 'تعذر تحميل أدوات المسار. أعد تحميل الصفحة.';
+    return;
+  }
+  tracker.updateRide(ride);
+}
+
+function chooseLiveRide(ride, fit = true) {
+  if (!ride) return;
+  selectedLiveRideId = Number(ride.id);
+  selectedLiveRouteFitPending = fit;
+  renderSelectedLiveRideRoute(ride, fit);
+  $('#live-rides-list')?.querySelectorAll('[data-live-ride]').forEach(card => {
+    const selected = Number(card.dataset.liveRide) === selectedLiveRideId;
+    card.classList.toggle('selected', selected);
+    card.setAttribute('aria-pressed', String(selected));
+  });
+}
+
+function focusSelectedLiveRoute() {
+  const points = [...selectedLiveRideRoutes.values()].flatMap(layer => layer.getLatLngs());
+  if (points.length && liveRidesMap) liveRidesMap.fitBounds(points, { padding: [35, 35], maxZoom: 17 });
+}
+
 function removeLiveRide(rideId) {
+  if (selectedLiveRideId === Number(rideId)) {
+    selectedLiveRideId = null;
+    renderSelectedLiveRideRoute(null);
+  }
   const entry = liveRideMarkers.get(Number(rideId));
   if (entry && liveRidesMap) {
     for (const marker of Object.values(entry)) if (marker) liveRidesMap.removeLayer(marker);
@@ -955,14 +1208,12 @@ function renderLiveRideList() {
     const pickup = ride.pickupDisplayName || ride.pickupAddress || 'نقطة الانطلاق';
     const destination = ride.destinationDisplayName || ride.destinationAddress || 'الوجهة';
     const status = rideStatuses[Number(ride.status)] || 'نشطة';
-    return `<button type="button" class="live-ride-card" data-live-ride="${id}"><strong>رحلة #${id} · ${escapeHtml(status)}</strong><span>${escapeHtml(ride.driverName || 'بانتظار السائق')} · ${escapeHtml(ride.customerName || 'عميل')}</span><span>${escapeHtml(pickup)} ← ${escapeHtml(destination)}</span><span>${ride.driverLocationObservedAtUtc ? `آخر موقع ${date(ride.driverLocationObservedAtUtc)}` : 'بانتظار أول موقع من السائق'}</span></button>`;
+    return `<button type="button" class="live-ride-card${id === selectedLiveRideId ? ' selected' : ''}" data-live-ride="${id}" aria-pressed="${id === selectedLiveRideId}" title="عرض مسارات الرحلة #${id}"><strong>رحلة #${id} · ${escapeHtml(status)}</strong><span>${escapeHtml(ride.driverName || 'بانتظار السائق')} · ${escapeHtml(ride.customerName || 'عميل')}</span><span>${escapeHtml(pickup)} ← ${escapeHtml(destination)}</span><span data-live-stamp="${id}">${ride.driverLocationObservedAtUtc ? `آخر موقع ${date(ride.driverLocationObservedAtUtc)}` : 'بانتظار أول موقع من السائق'}</span></button>`;
   }).join('') : '<div class="empty-state">لا توجد رحلات نشطة الآن.</div>';
   container.querySelectorAll('[data-live-ride]').forEach(button => button.addEventListener('click', () => {
     const ride = state.liveRides.get(Number(button.dataset.liveRide));
     if (!ride || !liveRidesMap) return;
-    const point = liveRideCoordinates(ride, 'driver') || liveRideCoordinates(ride, 'passenger') || liveRideCoordinates(ride, 'pickup');
-    if (point) liveRidesMap.setView([point.lat, point.lon], 15, { animate: true });
-    container.querySelectorAll('.live-ride-card').forEach(card => card.classList.toggle('selected', card === button));
+    chooseLiveRide(ride);
   }));
 }
 
@@ -970,16 +1221,66 @@ function renderAllLiveRides() {
   for (const rideId of [...liveRideMarkers.keys()]) {
     if (!state.liveRides.has(rideId)) removeLiveRide(rideId);
   }
+  if (!isLiveRide(state.liveRides.get(selectedLiveRideId))) {
+    const preferred = [...state.liveRides.values()].filter(isLiveRide).sort((a, b) => {
+      const priority = ride => Number(ride.status) === 5 ? 0 : Number(ride.status) === 8 ? 2 : 1;
+      return priority(a) - priority(b) ||
+        (Date.parse(b.driverLocationObservedAtUtc) || 0) - (Date.parse(a.driverLocationObservedAtUtc) || 0) || Number(b.id) - Number(a.id);
+    })[0];
+    selectedLiveRideId = preferred ? Number(preferred.id) : null;
+    selectedLiveRouteFitPending = Boolean(preferred);
+    if (!preferred) renderSelectedLiveRideRoute(null);
+  }
   for (const ride of state.liveRides.values()) renderLiveRide(ride);
   renderLiveRideList();
   if (liveRidesMap) setTimeout(() => liveRidesMap.invalidateSize(), 0);
 }
 
 async function loadActiveRideSnapshot() {
-  const result = await execute('RideModel', 'list', { activeOnly: true });
-  const rides = (result.data || []).filter(isLiveRide);
-  state.liveRides = new Map(rides.map(ride => [Number(ride.id), ride]));
-  renderAllLiveRides();
+  if (activeRideSnapshotPromise) return activeRideSnapshotPromise;
+  activeRideSnapshotPromise = (async () => {
+    const result = await execute('RideModel', 'list', { activeOnly: true });
+    const rides = (result.data || []).filter(isLiveRide);
+    for (const ride of rides) {
+      const current = state.liveRides.get(Number(ride.id));
+      for (const actor of ['driver', 'passenger']) {
+        if (Date.parse(current?.[`${actor}LocationObservedAtUtc`]) > Date.parse(ride[`${actor}LocationObservedAtUtc`] || 0)) {
+          for (const suffix of ['Latitude', 'Longitude', 'Bearing', 'Speed', 'LocationObservedAtUtc']) ride[actor + suffix] = current[actor + suffix];
+        }
+      }
+    }
+    state.liveRides = new Map(rides.map(ride => [Number(ride.id), ride]));
+    renderAllLiveRides();
+    void syncAdminMapWatches();
+  })().finally(() => { activeRideSnapshotPromise = null; });
+  return activeRideSnapshotPromise;
+}
+
+function animateLiveMapMarker(marker, payload, previous, animations, rideId, vehicle = false) {
+  const current = marker.getLatLng();
+  const from = { lat: current.lat ?? current[0], lon: current.lng ?? current[1] };
+  const target = { lat: Number(payload.latitude), lon: Number(payload.longitude) };
+  const oldAnimation = animations.get(rideId);
+  if (oldAnimation) cancelAnimationFrame(oldAnimation);
+  animations.delete(rideId);
+  const bearing = vehicle ? AdminMaps.movementBearing(from, target, payload.bearing) : null;
+  const fromBearing = marker._mapBearing ?? AdminMaps.normalizedBearing(previous.bearing) ?? bearing ?? 0;
+  const turn = bearing == null ? 0 : AdminMaps.bearingDelta(fromBearing, bearing);
+  const duration = AdminMaps.motionDuration(previous.observedAtUtc, payload.observedAtUtc);
+  if (!duration || document.hidden || typeof requestAnimationFrame !== 'function') {
+    marker.setLatLng([target.lat, target.lon]);
+    if (vehicle) AdminMaps.setVehicleHeading(marker, bearing);
+    return;
+  }
+  const startedAt = performance.now();
+  const step = now => {
+    const progress = Math.min(1, Math.max(0, (now - startedAt) / duration));
+    marker.setLatLng([from.lat + (target.lat - from.lat) * progress, from.lon + (target.lon - from.lon) * progress]);
+    if (vehicle && bearing != null) AdminMaps.setVehicleHeading(marker, (fromBearing + turn * progress + 360) % 360);
+    if (progress < 1) animations.set(rideId, requestAnimationFrame(step));
+    else animations.delete(rideId);
+  };
+  animations.set(rideId, requestAnimationFrame(step));
 }
 
 function animateLiveDriverLocation(payload) {
@@ -989,6 +1290,7 @@ function animateLiveDriverLocation(payload) {
   if (!Number.isInteger(rideId) || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
   const ride = state.liveRides.get(rideId);
   if (!ride) {
+    if (state.view !== 'rides') return;
     if (pendingLiveRideSnapshots.has(rideId)) return;
     pendingLiveRideSnapshots.add(rideId);
     loadActiveRideSnapshot()
@@ -999,6 +1301,7 @@ function animateLiveDriverLocation(payload) {
       .finally(() => pendingLiveRideSnapshots.delete(rideId));
     return;
   }
+  if (!acceptLiveLocation({ latitude: ride.driverLatitude, longitude: ride.driverLongitude, observedAtUtc: ride.driverLocationObservedAtUtc }, payload)) return;
   const updated = {
     ...ride,
     driverLatitude: latitude,
@@ -1008,26 +1311,12 @@ function animateLiveDriverLocation(payload) {
     driverLocationObservedAtUtc: payload.observedAtUtc
   };
   state.liveRides.set(rideId, updated);
-  const marker = ensureDriverMarker(updated);
+  const marker = ensureDriverMarker(updated, false);
   if (!marker) return;
-  const current = marker.getLatLng();
-  const oldAnimation = liveRideAnimations.get(rideId);
-  if (oldAnimation) cancelAnimationFrame(oldAnimation);
-  const startedAt = performance.now();
-  const duration = 1700;
-  const step = now => {
-    const progress = Math.min(1, (now - startedAt) / duration);
-    marker.setLatLng([
-      current.lat + (latitude - current.lat) * progress,
-      current.lng + (longitude - current.lng) * progress
-    ]);
-    const pin = marker.getElement()?.querySelector('.live-ride-pin span');
-    if (pin && Number.isFinite(Number(payload.bearing))) pin.style.transform = `rotate(${Number(payload.bearing)}deg)`;
-    if (progress < 1) liveRideAnimations.set(rideId, requestAnimationFrame(step));
-    else liveRideAnimations.delete(rideId);
-  };
-  liveRideAnimations.set(rideId, requestAnimationFrame(step));
-  renderLiveRideList();
+  animateLiveMapMarker(marker, payload, { bearing: ride.driverBearing, observedAtUtc: ride.driverLocationObservedAtUtc }, liveRideAnimations, rideId, true);
+  const stamp = document.querySelector(`[data-live-stamp="${rideId}"]`);
+  if (stamp) stamp.textContent = `آخر موقع ${date(payload.observedAtUtc)}`;
+  if (rideId === selectedLiveRideId) renderSelectedLiveRideRoute(updated);
 }
 
 function animateLivePassengerLocation(payload) {
@@ -1038,6 +1327,7 @@ function animateLivePassengerLocation(payload) {
   if (payload?.rideStatus != null && !LIVE_RIDE_STATUSES.has(Number(payload.rideStatus))) return;
   const ride = state.liveRides.get(rideId);
   if (!ride) {
+    if (state.view !== 'rides') return;
     if (pendingLiveRideSnapshots.has(rideId)) return;
     pendingLiveRideSnapshots.add(rideId);
     loadActiveRideSnapshot()
@@ -1048,6 +1338,7 @@ function animateLivePassengerLocation(payload) {
       .finally(() => pendingLiveRideSnapshots.delete(rideId));
     return;
   }
+  if (!acceptLiveLocation({ latitude: ride.passengerLatitude, longitude: ride.passengerLongitude, observedAtUtc: ride.passengerLocationObservedAtUtc }, payload)) return;
   const updated = {
     ...ride,
     passengerLatitude: latitude,
@@ -1059,24 +1350,7 @@ function animateLivePassengerLocation(payload) {
   state.liveRides.set(rideId, updated);
   const marker = ensurePassengerMarker(updated);
   if (!marker) return;
-  const current = marker.getLatLng();
-  const oldAnimation = livePassengerAnimations.get(rideId);
-  if (oldAnimation) cancelAnimationFrame(oldAnimation);
-  const startedAt = performance.now();
-  const duration = 1700;
-  const step = now => {
-    const progress = Math.min(1, (now - startedAt) / duration);
-    marker.setLatLng([
-      current.lat + (latitude - current.lat) * progress,
-      current.lng + (longitude - current.lng) * progress
-    ]);
-    const pin = marker.getElement()?.querySelector('.live-passenger-pin span');
-    if (pin && Number.isFinite(Number(payload.bearing))) pin.style.transform = `rotate(${Number(payload.bearing)}deg)`;
-    if (progress < 1) livePassengerAnimations.set(rideId, requestAnimationFrame(step));
-    else livePassengerAnimations.delete(rideId);
-  };
-  livePassengerAnimations.set(rideId, requestAnimationFrame(step));
-  renderLiveRideList();
+  animateLiveMapMarker(marker, payload, { bearing: ride.passengerBearing, observedAtUtc: ride.passengerLocationObservedAtUtc }, livePassengerAnimations, rideId);
 }
 
 function applyRideStatusEvent(payload) {
@@ -1087,7 +1361,7 @@ function applyRideStatusEvent(payload) {
   if (!LIVE_RIDE_STATUSES.has(status)) {
     state.liveRides.delete(rideId);
     removeLiveRide(rideId);
-    renderLiveRideList();
+    renderAllLiveRides();
     return;
   }
   if (!ride) {
@@ -1100,21 +1374,132 @@ function applyRideStatusEvent(payload) {
   renderLiveRideList();
 }
 
+async function refreshAdminState(events) {
+  const resources = new Set(events.map(event => event.resource));
+  if (resources.has('permissions')) {
+    administratorPermissions = null;
+    await loadMyAdministratorPermissions();
+  }
+  if (resources.has('notifications')) await loadAdminNotifications();
+  const views = {
+    ride: ['overview', 'rides', 'history', 'cancellations', 'operational-review', 'waiting-report', 'route-change-report', 'safety', 'safety-recordings'],
+    wallet: ['overview', 'wallet', 'ledger', 'financial-reports', 'operational-review'],
+    account: ['overview', 'wallet', 'settlements', 'operational-review', 'access-governance', 'safety', 'safety-recordings'],
+    profile: ['users', 'customers', 'drivers', 'driver-ratings', 'access-governance'],
+    catalog: ['catalog', 'pricing', 'payment-methods', 'transfer-fees', 'operational-policy', 'areas'],
+    ledger: ['ledger', 'financial-operations', 'financial-reports', 'settlements'],
+    ledgerAccount: ['ledger', 'financial-operations', 'financial-reports'],
+    financialParty: ['ledger', 'financial-operations', 'financial-reports'],
+    providerAccount: ['payment-methods'], campaign: ['notification-campaigns'], places: ['places']
+  };
+  if (state.view === 'overview' || [...resources].some(resource => views[resource]?.includes(state.view))) {
+    // Do not reset a financial form while an operator is editing it.
+    if (state.view === 'financial-operations') await loadFinancialOperations();
+    else await loadView(state.view, true, true);
+  }
+}
+
+function retryAdminState(connection) {
+  clearTimeout(adminStateRetry);
+  adminStateRetry = setTimeout(() => {
+    if (adminHubConnection === connection && isAdminRealtimeConnected(connection))
+      recoverAdminState(connection).catch(() => retryAdminState(connection));
+  }, 2000);
+}
+
+function recoverAdminState(connection) {
+  if (adminRecoveryTask && adminRecoveryConnection === connection) return adminRecoveryTask;
+  adminRecoveryConnection = connection;
+  const task = recoverAdminStateCore(connection).finally(() => { if (adminRecoveryTask === task) adminRecoveryTask = null; });
+  adminRecoveryTask = task;
+  return task;
+}
+
+async function recoverAdminStateCore(connection) {
+  if (adminHubConnection !== connection) return;
+  setLiveConnectionStatus('متصل — جارٍ مزامنة الحالة');
+  await loadActiveRideSnapshot();
+  await loadView(state.view, true, true);
+  await loadAdminNotifications();
+  await adminStateSync.recover(async (versions, cursor) => {
+    try { return await connection.invoke('ReplayStateChanges', versions, cursor); }
+    catch (error) {
+      if (/unknown hub method|method does not exist|method not found/i.test(String(error))) return { supported: false };
+      throw error;
+    }
+  });
+  if (!adminStateSync.supported) setLiveConnectionStatus('متصل مباشرًا — توافق سابق', true);
+}
+
+function syncAdminMapWatches(renew = false) {
+  if (adminWatchTask) { adminWatchDirty = true; return adminWatchTask; }
+  const connection = adminHubConnection;
+  if (!isAdminRealtimeConnected(connection)) return Promise.resolve();
+  const desired = new Set(state.view === 'rides' && !document.hidden ? state.liveRides.keys() : []);
+  adminWatchTask = (async () => {
+    for (const id of adminWatchedRides) {
+      if (!desired.has(id)) { await connection.invoke('LeaveRideMap', id); adminWatchedRides.delete(id); }
+    }
+    // Interest renewal is a lease, never a periodic query for business state.
+    for (const id of desired) {
+      if (adminHubConnection !== connection || state.view !== 'rides' || document.hidden) break;
+      if (!renew && adminWatchedRides.has(id)) continue;
+      const result = await connection.invoke('WatchRideMap', id);
+      if (adminHubConnection !== connection) break;
+      if (result?.enabled) {
+        if (state.view !== 'rides' || document.hidden || !state.liveRides.has(id)) {
+          await connection.invoke('LeaveRideMap', id); adminWatchedRides.delete(id); continue;
+        }
+        adminWatchedRides.add(id);
+        if (result.location) animateLiveDriverLocation(result.location);
+      }
+    }
+  })().catch(() => { /* Older servers keep their existing authorized operations subscription. */ })
+    .finally(() => {
+      adminWatchTask = null;
+      if (adminWatchDirty) { adminWatchDirty = false; void syncAdminMapWatches(); }
+    });
+  return adminWatchTask;
+}
+
 async function startAdminRealtime() {
-  if (!sessionStorage.getItem(ADMIN_TOKEN_KEY) || !window.signalR) return;
-  if (adminHubConnection?.state === signalR.HubConnectionState.Connected) return;
-  const connection = new signalR.HubConnectionBuilder()
-    .withUrl('/hubs/tracking', {
-      accessTokenFactory: () => sessionStorage.getItem(ADMIN_TOKEN_KEY) || ''
-    })
-    .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
-    .configureLogging(signalR.LogLevel.Warning)
-    .build();
+  if (!sessionStorage.getItem(ADMIN_TOKEN_KEY)) return;
+  const client = window.signalR;
+  if (typeof client?.HubConnectionBuilder !== 'function' || client?.HubConnectionState?.Connected === undefined) {
+    setLiveConnectionStatus('المتابعة المباشرة غير متاحة — حدّث البيانات يدويًا');
+    return;
+  }
+  if (isAdminRealtimeConnected()) return;
+  let connection;
+  try {
+    connection = new client.HubConnectionBuilder()
+      .withUrl('/hubs/tracking', {
+        accessTokenFactory: () => sessionStorage.getItem(ADMIN_TOKEN_KEY) || ''
+      })
+      .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
+      .configureLogging(client.LogLevel.Warning)
+      .build();
+  } catch (_) {
+    setLiveConnectionStatus('المتابعة المباشرة غير متاحة — حدّث البيانات يدويًا');
+    return;
+  }
   adminHubConnection = connection;
-  connection.on('driverLocationUpdated', animateLiveDriverLocation);
-  connection.on('passengerLocationUpdated', animateLivePassengerLocation);
-  connection.on('rideStatusUpdated', applyRideStatusEvent);
-  connection.on('notificationCreated', () => {
+  clearInterval(adminWatchRenewal);
+  adminWatchRenewal = setInterval(() => { void syncAdminMapWatches(true); }, 45000);
+  const listen = (name, handler) => connection.on(name, (...args) => { if (adminHubConnection === connection) handler(...args); });
+  listen('driverLocationUpdated', animateLiveDriverLocation);
+  listen('passengerLocationUpdated', animateLivePassengerLocation);
+  listen('rideStatusUpdated', payload => { if (!adminStateSync.supported) applyRideStatusEvent(payload); });
+  connection.on('stateChanged', payload => {
+    if (adminHubConnection !== connection) return;
+    try { if (!adminStateSync.receive(payload)) return; }
+    catch (_) { adminStateSync.disconnect(); retryAdminState(connection); return; }
+    adminResourceRevisions.set(payload.resource, (adminResourceRevisions.get(payload.resource) || 0) + 1);
+    adminResourceRevisions.set('*', (adminResourceRevisions.get('*') || 0) + 1);
+    adminStateSync.drain().catch(() => retryAdminState(connection));
+  });
+  listen('notificationCreated', () => {
+    if (adminStateSync.supported) { toast('ورد إشعار جديد للإدارة.'); return; }
     loadAdminNotifications()
       .then(() => toast('ورد إشعار جديد للإدارة.'))
       .catch(error => toast(error.message, true));
@@ -1122,32 +1507,44 @@ async function startAdminRealtime() {
   const refreshSafetyIncidents = () => {
     if (state.view === 'safety') loadSafety().catch(error => toast(error.message, true));
   };
-  connection.on('safetyIncidentCreated', refreshSafetyIncidents);
-  connection.on('safetyIncidentUpdated', refreshSafetyIncidents);
-  connection.on('safetyRecordingAvailable', () => {
+  listen('safetyIncidentCreated', refreshSafetyIncidents);
+  listen('safetyIncidentUpdated', refreshSafetyIncidents);
+  listen('safetyRecordingAvailable', () => {
     if (state.view === 'safety-recordings') {
       loadSafetyRecordings().catch(error => toast(error.message, true));
     }
   });
-  connection.on('sessionRevoked', () => showAdminLogin('انتهت جلسة الإدارة. سجل الدخول من جديد.'));
-  connection.onreconnecting(() => setLiveConnectionStatus('إعادة الاتصال…'));
+  listen('sessionRevoked', () => showAdminLogin('انتهت جلسة الإدارة. سجل الدخول من جديد.'));
+  connection.onreconnecting(() => {
+    if (adminHubConnection !== connection) return;
+    adminReadGeneration++; adminStateSync.disconnect();
+    adminWatchedRides.clear();
+    setLiveConnectionStatus('إعادة الاتصال…');
+  });
   connection.onreconnected(async () => {
+    if (adminHubConnection !== connection) return;
     try {
       await connection.invoke('JoinOperations');
-      setLiveConnectionStatus('متصل مباشرًا', true);
-      await loadActiveRideSnapshot();
+      await recoverAdminState(connection);
     } catch (error) {
       setLiveConnectionStatus('تعذر استعادة المتابعة');
-      toast(error.message, true);
+      retryAdminState(connection);
     }
   });
-  connection.onclose(() => setLiveConnectionStatus('غير متصل'));
+  connection.onclose(() => {
+    if (adminHubConnection !== connection) return;
+    adminReadGeneration++; adminStateSync.disconnect();
+    setLiveConnectionStatus('غير متصل');
+    if (adminHubConnection === connection) {
+      adminHubConnection = null;
+      setTimeout(() => startAdminRealtime().catch(() => {}), 5000);
+    }
+  });
   try {
     setLiveConnectionStatus('جارٍ الاتصال…');
     await connection.start();
     await connection.invoke('JoinOperations');
-    setLiveConnectionStatus('متصل مباشرًا', true);
-    await loadActiveRideSnapshot();
+    await recoverAdminState(connection).catch(() => retryAdminState(connection));
   } catch (error) {
     setLiveConnectionStatus('تعذر الاتصال المباشر');
     if (adminHubConnection === connection) adminHubConnection = null;
@@ -1156,6 +1553,11 @@ async function startAdminRealtime() {
 }
 
 function stopAdminRealtime() {
+  liveRouteTracker?.dispose(); liveRouteTracker = null;
+  renderSelectedLiveRideRoute(null);
+  selectedLiveRideId = null;
+  adminReadGeneration++; clearTimeout(adminStateRetry); adminStateSync.disconnect(true);
+  clearInterval(adminWatchRenewal); adminWatchedRides.clear();
   const connection = adminHubConnection;
   adminHubConnection = null;
   if (connection) connection.stop().catch(() => {});
@@ -1477,82 +1879,302 @@ window.playSafetyRecording = async id => {
 };
 
 function validMapPoint(latitude, longitude) {
+  if (latitude == null || longitude == null || typeof latitude === 'boolean' || typeof longitude === 'boolean' ||
+      String(latitude).trim() === '' || String(longitude).trim() === '') return null;
   const lat = Number(latitude), lon = Number(longitude);
   return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
 }
 
-function updateSafetyMap(item) {
-  const driverPoint = validMapPoint(item.driverLatitude, item.driverLongitude);
-  const incidentPoint = validMapPoint(item.latitude, item.longitude);
-  const pickupPoint = validMapPoint(item.pickupLatitude, item.pickupLongitude);
-  const destinationPoint = validMapPoint(item.destinationLatitude, item.destinationLongitude);
-  const marker = driverPoint || incidentPoint || pickupPoint;
-  $('#safety-map-summary').textContent = `البلاغ #${item.id} · الرحلة #${item.rideId || '—'} · ${rideStatuses[Number(item.rideStatus)] || 'حالة غير متاحة'}`;
-  const coordinates = [driverPoint && `موقع السائق الحالي: ${number(driverPoint.lat)}, ${number(driverPoint.lon)}`, incidentPoint && `موقع البلاغ: ${number(incidentPoint.lat)}, ${number(incidentPoint.lon)}`, item.driverLocationObservedAtUtc && `آخر تحديث للسائق: ${date(item.driverLocationObservedAtUtc)}`].filter(Boolean);
-  $('#safety-map-details').textContent = `${item.driverName || 'لم يعيّن سائق'}${item.driverPhone ? ` · ${item.driverPhone}` : ''} | ${item.pickupAddress || item.pickupLabel || 'نقطة الانطلاق'} ← ${item.destinationAddress || item.destinationLabel || 'الوجهة'}${coordinates.length ? ` | ${coordinates.join(' | ')}` : ''}`;
-  $('#safety-map-updated').textContent = item.driverLocationObservedAtUtc ? `تم تحديث الموقع ${date(item.driverLocationObservedAtUtc)}` : 'لا يتوفر موقع مباشر للسائق؛ تعرض الخريطة موقع البلاغ إن وُجد.';
+function safetyMapHasLiveDriver() {
+  return !safetyMapRide?.serviceEndedAtUtc && [3, 4, 5, 9].includes(Number(safetyMapRide?.status ?? safetyMapItem?.rideStatus));
+}
 
-  if (marker) {
-    const points = [marker, incidentPoint, pickupPoint, destinationPoint].filter(Boolean);
-    const minLat = Math.min(...points.map(point => point.lat)) - 0.004;
-    const maxLat = Math.max(...points.map(point => point.lat)) + 0.004;
-    const minLon = Math.min(...points.map(point => point.lon)) - 0.004;
-    const maxLon = Math.max(...points.map(point => point.lon)) + 0.004;
-    const markerKey = `${marker.lat.toFixed(5)},${marker.lon.toFixed(5)}:${minLat.toFixed(3)},${minLon.toFixed(3)},${maxLat.toFixed(3)},${maxLon.toFixed(3)}`;
-    if (markerKey !== (safetyMapLoaded ? safetyMapLastMarker : safetyMapPendingMarker)) {
-      const params = new URLSearchParams({ bbox: `${minLon},${minLat},${maxLon},${maxLat}`, layer: 'mapnik', marker: `${marker.lat},${marker.lon}` });
-      safetyMapPendingUrl = `https://www.openstreetmap.org/export/embed.html?${params.toString()}`;
-      safetyMapPendingMarker = markerKey;
-      if (safetyMapLoaded) {
-        $('#safety-map-frame').src = safetyMapPendingUrl;
-        safetyMapLastMarker = markerKey;
-      }
-    }
-  } else {
-    safetyMapPendingUrl = '';
-    safetyMapPendingMarker = '';
-    $('#safety-map-frame').removeAttribute('src');
+function clearSafetyMapRoutes() {
+  safetyMapRouteTracker?.dispose();
+  safetyMapRouteTracker = null;
+  for (const layer of safetyMapRoutes.values()) safetyMap?.removeLayer(layer);
+  safetyMapRoutes.clear();
+}
+
+function applySafetyMapRoutes(snapshot) {
+  if (!safetyMapLoaded || !safetyMap || Number(snapshot.rideId) !== Number(safetyMapItem?.rideId)) return;
+  const legs = snapshot.legs || [];
+  for (const [id, layer] of safetyMapRoutes) {
+    if (!legs.some(leg => leg.id === id)) { safetyMap.removeLayer(layer); safetyMapRoutes.delete(id); }
   }
-
-  const routePoints = [driverPoint || incidentPoint, pickupPoint, destinationPoint].filter(Boolean);
-  if (routePoints.length >= 2) {
-    const route = routePoints.map(point => `${point.lat},${point.lon}`).join(';');
-    $('#safety-map-route-link').href = `https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${encodeURIComponent(route)}`;
-    $('#safety-map-route-link').classList.toggle('hidden', !safetyMapLoaded);
-  } else {
-    $('#safety-map-route-link').classList.add('hidden');
+  const points = [];
+  for (const leg of legs) {
+    if (!leg.points || leg.points.length < 2) continue;
+    points.push(...leg.points);
+    const existing = safetyMapRoutes.get(leg.id);
+    if (existing) existing.setLatLngs(leg.points);
+    else {
+      const saved = leg.id.startsWith('saved');
+      const planned = saved || leg.id === 'planned';
+      const label = saved ? 'مسار مخطط محفوظ؛ لا يثبت الحركة الفعلية' : leg.id === 'planned' ? 'طريق مخطط؛ لا يمثل حركة السائق الفعلية' : leg.id === 'approach' ? 'الطريق إلى الراكب' : 'الطريق إلى الوجهة';
+      safetyMapRoutes.set(leg.id, L.polyline(leg.points, {
+        color: saved ? '#64748b' : leg.id === 'approach' ? '#08766a' : '#2563eb',
+        weight: 5, opacity: 0.9, dashArray: planned ? '9 7' : null,
+        className: `safety-route-line safety-route-${saved ? 'saved' : leg.id}`
+      }).addTo(safetyMap).bindTooltip(label));
+    }
+  }
+  $('#safety-map-route-summary').textContent = snapshot.message || '';
+  $('#safety-map-route-summary').classList.toggle('route-error', ['error', 'partial'].includes(snapshot.status));
+  $('#safety-map-route-retry').classList.toggle('hidden', !['error', 'partial'].includes(snapshot.status));
+  if (safetyMapRouteFitPending && points.length && ['ready', 'partial'].includes(snapshot.status)) {
+    safetyMapRouteFitPending = false;
+    for (const marker of safetyMapMarkers.values()) points.push(marker.getLatLng());
+    safetyMap.fitBounds(points, { padding: [35, 35], maxZoom: 17 });
   }
 }
 
-window.openSafetyMap = async id => {
-  safetyMapIncidentId = Number(id);
-  safetyMapLastMarker = '';
-  safetyMapPendingMarker = '';
-  safetyMapPendingUrl = '';
-  safetyMapLoaded = false;
+async function refreshSafetyMapRoutes(force = false) {
+  if (!safetyMapLoaded || !safetyMapItem || !safetyMap) return;
+  const rideId = Number(safetyMapItem.rideId), generation = safetyMapGeneration;
+  if (!Number.isSafeInteger(rideId) || rideId <= 0) {
+    clearSafetyMapRoutes();
+    applySafetyMapRoutes({ rideId, status: 'unavailable', legs: [], message: 'البلاغ غير مرتبط برحلة لها مسار.' });
+    return;
+  }
+  if (!canAdmin('operations.read')) {
+    clearSafetyMapRoutes();
+    applySafetyMapRoutes({ rideId, status: 'unavailable', legs: [], message: 'عرض مسار الرحلة يتطلب صلاحية قراءة العمليات.' });
+    return;
+  }
+  if (safetyMapRouteRequest) return;
+  const request = { rideId, generation };
+  safetyMapRouteRequest = request;
+  const isCurrent = () => safetyMapRouteRequest === request && generation === safetyMapGeneration &&
+    safetyMapLoaded && Number(safetyMapItem?.rideId) === rideId;
+  const read = async (model, data) => {
+    try {
+      return await Promise.race([execute(model, 'get', data), new Promise((_, reject) => {
+        request.timer = setTimeout(() => reject(new Error('انتهت مهلة تحميل بيانات المسار. أعد المحاولة.')), 20000);
+      })]);
+    } finally { clearTimeout(request.timer); request.timer = null; }
+  };
+  if (!safetyMapRoutes.size) applySafetyMapRoutes({ rideId, status: 'loading', legs: [], message: 'جارٍ التحقق من حالة الرحلة وتحميل مسارها…' });
+  try {
+    // The safety report's routeVersion belongs to the incident evidence, and its
+    // driver coordinates can outlive the ride. Read the canonical ride first.
+    const result = await read('RideModel', { id: rideId });
+    if (!isCurrent()) return;
+    const ride = result.data?.ride;
+    if (Number(ride?.id) !== rideId) throw new Error('تعذر التحقق من بيانات الرحلة. أعد المحاولة.');
+    safetyMapRide = ride;
+    const ended = Boolean(ride.serviceEndedAtUtc) || ![3, 4, 5, 8, 9].includes(Number(ride.status));
+    const signature = [rideId, ride.status, ride.serviceEndedAtUtc, ride.routeVersion,
+      ride.pickupLatitude, ride.pickupLongitude, ride.destinationLatitude, ride.destinationLongitude].join('|');
+    const changed = signature !== safetyMapRouteFitSignature;
+    if (changed) {
+      safetyMapRouteFitSignature = signature;
+      safetyMapRouteFitPending = true;
+      clearSafetyMapRoutes();
+    }
+    updateSafetyMap(safetyMapItem, false);
+    if (changed && safetyMapMarkers.size) safetyMap.fitBounds([...safetyMapMarkers.values()].map(marker => marker.getLatLng()), { padding: [35, 35], maxZoom: 16 });
+    if (ended) {
+      clearInterval(safetyMapTimer);
+      safetyMapTimer = null;
+      clearSafetyMapRoutes();
+      const historyResult = await read('RideMovementHistoryModel', { rideId });
+      if (!isCurrent()) return;
+      const history = historyResult.data;
+      if (Number(history?.rideId) !== rideId) throw new Error('تعذر تحميل المسار المحفوظ للرحلة.');
+      const plans = [{ id: 'saved-original', polyline: history.plannedRoutePolyline },
+        ...(history.routeChanges || []).map(change => ({ id: `saved-change-${change.id}`, polyline: change.newRoutePolyline }))];
+      const legs = plans.map(plan => ({ id: plan.id, points: AdminMaps.decodePolyline(plan.polyline) })).filter(leg => leg.points.length > 1);
+      applySafetyMapRoutes({ rideId, status: 'ready', legs, message: legs.length
+        ? 'انتهت الخدمة. المسار المتقطع مخطط محفوظ؛ لا يثبت الحركة الفعلية. راجع سجل حركة السائق للعينات المسجلة.'
+        : 'انتهت الخدمة. لا يوجد مسار مخطط محفوظ لعرضه؛ لا يُستخدم موقع السائق الحالي لتقدير حركة سابقة.' });
+      return;
+    }
+    if (!window.AdminRouteTracker) throw new Error('تعذر تحميل أدوات المسار. أعد تحميل الصفحة.');
+    if (!safetyMapRouteTracker) {
+      const tracker = new AdminRouteTracker({
+        decodePolyline: AdminMaps.decodePolyline,
+        fetchRoute: async (origin, destination) => (await execute('MapRouteQuoteModel', 'report', {
+          originLatitude: origin.lat, originLongitude: origin.lon,
+          destinationLatitude: destination.lat, destinationLongitude: destination.lon, includeSteps: false
+        })).data,
+        onChange: snapshot => {
+          if (generation === safetyMapGeneration && safetyMapRouteTracker === tracker) applySafetyMapRoutes(snapshot);
+        }
+      });
+      safetyMapRouteTracker = tracker;
+    }
+    safetyMapRouteTracker.updateRide({ ...ride,
+      driverLatitude: safetyMapItem.driverLatitude, driverLongitude: safetyMapItem.driverLongitude }, { force });
+  } catch (error) {
+    if (!isCurrent()) return;
+    clearSafetyMapRoutes();
+    applySafetyMapRoutes({ rideId, status: 'error', legs: [], message: error.message || 'تعذر تحميل المسار. أعد المحاولة.' });
+  } finally { if (safetyMapRouteRequest === request) safetyMapRouteRequest = null; }
+}
+
+function updateSafetyMap(item, refreshRoutes = true) {
+  const signature = [item.id, item.rideId, item.rideStatus, item.pickupLatitude, item.pickupLongitude, item.destinationLatitude, item.destinationLongitude].join('|');
+  if (signature !== safetyMapRouteSignature) {
+    safetyMapRouteSignature = signature;
+    clearTimeout(safetyMapRouteRequest?.timer);
+    safetyMapRouteRequest = null;
+    safetyMapRide = null;
+    safetyMapRouteFitSignature = '';
+    safetyMapRouteFitPending = true;
+    clearSafetyMapRoutes();
+  }
+  safetyMapItem = item;
+  const ride = safetyMapRide || item;
+  const driverPoint = safetyMapHasLiveDriver() ? validMapPoint(item.driverLatitude, item.driverLongitude) : null;
+  const incidentPoint = validMapPoint(item.latitude, item.longitude);
+  const pickupPoint = validMapPoint(ride.pickupLatitude, ride.pickupLongitude);
+  const destinationPoint = validMapPoint(ride.destinationLatitude, ride.destinationLongitude);
+  $('#safety-map-summary').textContent = `البلاغ #${item.id} · الرحلة #${item.rideId || '—'} · ${rideStatuses[Number(safetyMapRide?.status ?? item.rideStatus)] || 'حالة غير متاحة'}`;
+  const coordinates = [driverPoint && `موقع السائق الحالي: ${driverPoint.lat.toFixed(5)}, ${driverPoint.lon.toFixed(5)}`, incidentPoint && `موقع البلاغ: ${incidentPoint.lat.toFixed(5)}, ${incidentPoint.lon.toFixed(5)}`].filter(Boolean);
+  $('#safety-map-details').textContent = `${item.driverName || 'لم يعيّن سائق'}${item.driverPhone ? ` · ${item.driverPhone}` : ''} | ${ride.pickupAddress || ride.pickupLabel || 'نقطة الانطلاق'} ← ${ride.destinationAddress || ride.destinationLabel || 'الوجهة'}${coordinates.length ? ` | ${coordinates.join(' | ')}` : ''}`;
+  $('#safety-map-updated').textContent = driverPoint && item.driverLocationObservedAtUtc ? `تم تحديث موقع السائق ${date(item.driverLocationObservedAtUtc)}` : 'موقع البلاغ محفوظ وقت الإرسال؛ المسار المخطط لا يثبت الحركة الفعلية.';
+
+  const beforePickup = [3, 4, 9].includes(Number(safetyMapRide?.status ?? item.rideStatus));
+  const origin = beforePickup ? driverPoint : driverPoint || pickupPoint;
+  const destination = beforePickup ? pickupPoint : destinationPoint;
+  const routeUrl = AdminMaps.directionsUrl(origin, destination);
+  const routeLink = $('#safety-map-route-link');
+  if (routeUrl) routeLink.href = routeUrl;
+  else routeLink.removeAttribute('href');
+  routeLink.textContent = beforePickup ? 'فتح الطريق إلى الراكب' : 'فتح الطريق إلى الوجهة';
+  routeLink.classList.toggle('hidden', !safetyMapLoaded || !routeUrl || !safetyMapRide || Boolean(safetyMapRide.serviceEndedAtUtc) || ![3, 4, 5, 8, 9].includes(Number(safetyMapRide.status)));
+  if (safetyMapLoaded) {
+    renderSafetyMap();
+    if (refreshRoutes) void refreshSafetyMapRoutes();
+  }
+}
+
+function renderSafetyMap() {
+  if (!safetyMapItem || !window.L) return false;
+  const item = safetyMapItem;
+  const ride = safetyMapRide || item;
+  const entries = [
+    ['driver', safetyMapHasLiveDriver() ? validMapPoint(item.driverLatitude, item.driverLongitude) : null, 'موقع السائق الحالي', '#08766a'],
+    ['incident', validMapPoint(item.latitude, item.longitude), 'موقع البلاغ', '#b42318'],
+    ['pickup', validMapPoint(ride.pickupLatitude, ride.pickupLongitude), 'نقطة الانطلاق', '#147dca'],
+    ['destination', validMapPoint(ride.destinationLatitude, ride.destinationLongitude), 'الوجهة', '#bd7a18']
+  ];
+  if (!entries.some(entry => entry[1])) {
+    for (const animation of safetyMapAnimations.values()) cancelAnimationFrame(animation);
+    safetyMapAnimations.clear();
+    if (safetyMap) {
+      for (const marker of safetyMapMarkers.values()) safetyMap.removeLayer(marker);
+      safetyMapMarkers.clear();
+    }
+    $('#safety-map-status').textContent = 'لا تتوفر إحداثيات لعرضها على الخريطة.';
+    $('#safety-map-status').classList.remove('hidden');
+    return false;
+  }
+  $('#safety-map-canvas').classList.remove('hidden');
+  const firstRender = !safetyMap;
+  if (!safetyMap) {
+    safetyMap = L.map('safety-map-canvas', { preferCanvas: false });
+    AdminMaps.attachBaseLayer(safetyMap, $('#safety-map-status'), $('#safety-map-retry'));
+  }
+  const points = [];
+  for (const [key, point, label, color] of entries) {
+    const marker = safetyMapMarkers.get(key);
+    if (!point) {
+      if (marker) { safetyMap.removeLayer(marker); safetyMapMarkers.delete(key); }
+      if (key === 'driver') {
+        const animation = safetyMapAnimations.get(key);
+        if (animation) cancelAnimationFrame(animation);
+        safetyMapAnimations.delete(key);
+      }
+      continue;
+    }
+    const latLng = [point.lat, point.lon];
+    points.push(latLng);
+    if (key === 'driver') {
+      const vehicle = marker || L.marker(latLng, { icon: AdminMaps.vehicleIcon(Number(ride.status ?? ride.rideStatus) === 5, item.driverBearing) })
+        .addTo(safetyMap).bindPopup(label);
+      if (!marker) safetyMapMarkers.set(key, vehicle);
+      const previous = { bearing: vehicle._mapBearing, observedAtUtc: vehicle._mapObservedAt };
+      updateDriverMarkerAppearance(vehicle, { ...ride, driverBearing: item.driverBearing }, false);
+      animateLiveMapMarker(vehicle, { latitude: point.lat, longitude: point.lon, bearing: item.driverBearing,
+        observedAtUtc: item.driverLocationObservedAtUtc }, previous, safetyMapAnimations, 'driver', true);
+      vehicle._mapObservedAt = item.driverLocationObservedAtUtc;
+    } else if (marker) marker.setLatLng(latLng);
+    else if (key === 'pickup' || key === 'destination') safetyMapMarkers.set(key,
+      L.marker(latLng, { icon: AdminMaps.stopIcon(key === 'destination') }).addTo(safetyMap).bindPopup(label));
+    else safetyMapMarkers.set(key, L.circleMarker(latLng, {
+      radius: 7, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1
+    }).addTo(safetyMap).bindTooltip(label));
+  }
+  if (firstRender) safetyMap.fitBounds(points, { padding: [35, 35], maxZoom: 16 });
+  const currentMap = safetyMap;
+  setTimeout(() => { if (safetyMap === currentMap) currentMap.invalidateSize(); }, 0);
+  return true;
+}
+
+function closeSafetyMap() {
+  for (const animation of safetyMapAnimations.values()) cancelAnimationFrame(animation);
+  safetyMapAnimations.clear();
   clearInterval(safetyMapTimer);
-  $('#safety-map-frame').removeAttribute('src');
-  $('#safety-map-frame').classList.add('hidden');
+  safetyMapTimer = null;
+  safetyMapGeneration++;
+  clearTimeout(safetyMapRouteRequest?.timer);
+  safetyMapRouteRequest = null;
+  clearSafetyMapRoutes();
+  safetyMapRide = null;
+  safetyMapRouteSignature = '';
+  safetyMapRouteFitSignature = '';
+  safetyMapRouteFitPending = true;
+  safetyMapIncidentId = null;
+  safetyMapLoaded = false;
+  safetyMapItem = null;
+  safetyMap?.remove();
+  safetyMap = null;
+  safetyMapMarkers.clear();
+  $('#safety-map-canvas').classList.add('hidden');
+  $('#safety-map-status').textContent = '';
+  $('#safety-map-retry').classList.add('hidden');
+  $('#safety-map-route-summary').textContent = '';
+  $('#safety-map-route-retry').classList.add('hidden');
+  $('#safety-map-route-link').classList.add('hidden');
+  $('#safety-map-route-link').removeAttribute('href');
+}
+
+window.openSafetyMap = async id => {
+  closeSafetyMap();
+  const generation = safetyMapGeneration;
+  safetyMapIncidentId = Number(id);
   $('#safety-map-load').classList.remove('hidden');
   $('#safety-map-route-link').removeAttribute('href');
   $('#safety-map-route-link').classList.add('hidden');
   $('#safety-map-modal').showModal();
   try {
     const result = await execute('SafetyAdminReportModel', 'list', {});
+    if (generation !== safetyMapGeneration) return;
     const item = (result.data || []).find(row => Number(row.id) === safetyMapIncidentId);
     if (!item) { toast('تعذر العثور على بيانات الرحلة.', true); $('#safety-map-modal').close(); return; }
     updateSafetyMap(item);
+    let refreshing = false;
+    if (!LIVE_RIDE_STATUSES.has(Number(item.rideStatus))) return;
     safetyMapTimer = setInterval(async () => {
       if (!$('#safety-map-modal').open) { clearInterval(safetyMapTimer); return; }
+      if (refreshing) return;
+      refreshing = true;
       try {
         const refreshed = await execute('SafetyAdminReportModel', 'list', {});
+        if (generation !== safetyMapGeneration) return;
         const latest = (refreshed.data || []).find(row => Number(row.id) === safetyMapIncidentId);
         if (!latest) { clearInterval(safetyMapTimer); return; }
         updateSafetyMap(latest);
         if (![3, 4, 5, 8, 9].includes(Number(latest.rideStatus))) clearInterval(safetyMapTimer);
       } catch (error) { console.warn('تعذر تحديث موقع الرحلة:', error); }
+      finally { refreshing = false; }
     }, 12000);
-  } catch (error) { toast(error.message, true); $('#safety-map-modal').close(); }
+  } catch (error) {
+    if (generation !== safetyMapGeneration) return;
+    toast(error.message, true); $('#safety-map-modal').close();
+  }
 };
 
 window.decideCancellation = async (id, approve) => {
@@ -2180,7 +2802,7 @@ window.openSettlementForm = async (id, outstanding) => {
   $('#modal-fields [name="amount"]').value = String(outstanding);
 };
 
-async function loadView(view, quiet = false) {
+async function loadView(view, quiet = false, propagateError = false) {
   if (!state.databaseConfigured && view !== 'console') {
     if (!quiet) toast('أعد اتصال قاعدة البيانات أولاً.', true);
     return;
@@ -2192,9 +2814,14 @@ async function loadView(view, quiet = false) {
     if (view === 'customers') await loadCustomers($('#customer-search').value.trim());
     if (view === 'drivers') await loadDrivers();
     if (view === 'driver-ratings') await loadDriverRatings();
+    if (view === 'driver-movement') await loadDriverMovementReport();
+    if (view === 'chat-audit') await loadChatAudit();
     if (view === 'notification-campaigns') await loadNotificationCampaigns();
+    if (view === 'sms-provider') await loadSmsProviderSettings();
+    if (view === 'sms-send') await loadSmsSend();
+    if (view === 'sms-report') await loadSmsReport();
     if (view === 'rides') {
-      await loadRides();
+      await loadRides(state.ridePages.rides?.pageNumber || 1);
       await loadActiveRideSnapshot();
       if (liveRidesMap) setTimeout(() => liveRidesMap.invalidateSize(), 0);
     }
@@ -2221,10 +2848,10 @@ async function loadView(view, quiet = false) {
     if (view === 'financial-reports') await loadFinancialReport();
     if (view === 'places') await loadPlaces();
     if (view === 'areas') await loadAreas();
-    if (view === 'history') await loadHistory();
+    if (view === 'history') await loadHistory(state.ridePages.history?.pageNumber || 1);
     if (view === 'waiting-report') { await loadRideSelector('#waiting-report-ride', 'operations'); await loadWaitingReport(); }
     if (view === 'route-change-report') { await loadRideSelector('#route-change-report-ride', 'operations'); await loadRouteChangeReport(); }
-  } catch (error) { if (!quiet) toast(error.message, true); }
+  } catch (error) { if (propagateError) throw error; if (!quiet && !isAdminOperationCancelled(error)) toast(error.message, true); }
 }
 
 async function loadPlaces() {
@@ -2237,12 +2864,18 @@ async function loadAreas() {
   toggleEmpty('#areas-body', '#areas-empty', state.areas.map(item => `<tr><td>${escapeHtml(item.countryNameAr)}</td><td>${escapeHtml(item.countryCode)}</td><td>${escapeHtml(item.cityNameAr)}</td><td>${item.isActive ? badge('متاحة','success') : badge('موقوفة','warning')}</td><td>${date(item.updatedAtUtc || item.createdAtUtc)}</td><td>${recordActions('serviceArea', item.id)}</td></tr>`));
 }
 
-async function loadHistory() {
-  const result = await execute('RideModel', 'list', {}); state.history = result.data;
-  toggleEmpty('#history-body', '#history-empty', (result.data || []).map(item => `<tr><td>${escapeHtml(item.customerName || item.customerId)}</td><td>${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')} ← ${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${date(item.createdAtUtc)}</td></tr>`));
+async function loadHistory(pageNumber = 1) { return loadRideTable('history', pageNumber); }
+function renderHistory() {
+  toggleEmpty('#history-body', '#history-empty', state.history.map(item => `<tr data-ride-row="${Number(item.id)}"><td><span class="cell-main">#${escapeHtml(item.id)}</span></td><td>${escapeHtml(item.customerName || item.customerId)}</td><td>${escapeHtml(item.driverName || 'لم يحدد')}</td><td>${escapeHtml(item.pickupDisplayName || item.pickupLabel || 'نقطة الانطلاق')} ← ${escapeHtml(item.destinationDisplayName || item.destinationLabel || 'الوجهة')}</td><td>${rideBadge(item.status)}</td><td>${number(item.customerPrice)} YER</td><td>${rideTableTimes(item)}</td><td><button class="button" type="button" data-movement-map="${Number(item.id)}">عرض مسارات الرحلة</button></td></tr>`));
 }
 
 function setView(view, financialReportType = null, financialOperationType = null) {
+  if (state.view === 'sms-send' && view !== 'sms-send') resetSmsSend();
+  if (state.view === 'sms-provider' && view !== 'sms-provider') resetSmsProviderForm();
+  if (state.view === 'sms-report' && view !== 'sms-report') resetSmsReport();
+  if (state.view === 'chat-audit' && view !== 'chat-audit' && typeof resetChatAudit === 'function') resetChatAudit(true);
+  if (state.view === 'driver-movement' && view !== 'driver-movement' && typeof driverMovementReport !== 'undefined') driverMovementReport.generation++;
+  adminReadGeneration++;
   paymentMethodsLoadGeneration++;
   stopWalletLoginRefresh();
   if (view === 'financial-reports' && financialReportDefinitions[financialReportType])
@@ -2250,6 +2883,8 @@ function setView(view, financialReportType = null, financialOperationType = null
   if (view === 'financial-operations' && financialOperationDefinitions[financialOperationType])
     state.financialOperationType = financialOperationType;
   state.view = view;
+  if (view !== 'rides') renderSelectedLiveRideRoute(null);
+  void syncAdminMapWatches();
   $$('.view').forEach(item => item.classList.toggle('active', item.id === `view-${view}`));
   const isActiveNavItem = item => item.dataset.view === view &&
     (view !== 'financial-reports' || item.dataset.financialReport === state.financialReportType) &&
@@ -2920,6 +3555,11 @@ function initializePageScrollJump() {
 
 function bindEvents() {
   document.addEventListener('visibilitychange', () => {
+    void syncAdminMapWatches();
+    if (document.hidden) renderSelectedLiveRideRoute(null);
+    else if (state.view === 'rides') renderSelectedLiveRideRoute(state.liveRides.get(selectedLiveRideId));
+    if (!document.hidden && isAdminRealtimeConnected())
+      recoverAdminState(adminHubConnection).catch(() => retryAdminState(adminHubConnection));
     if (document.hidden) stopWalletLoginRefresh();
     else void refreshWalletLoginStates();
   });
@@ -2962,22 +3602,30 @@ function bindEvents() {
     const walletJson = $('#entity-form').elements.namedItem('providerOptionsJson');
     if (walletJson) walletJson.value = '';
   });
-  $('#ride-filter').addEventListener('change', loadRides);
+  for (const kind of ['rides', 'history']) {
+    const prefix = rideTablePrefix(kind), load = page => loadRideTable(kind, page).catch(error => { if (!isAdminOperationCancelled(error)) toast(error.message, true); });
+    $(`#${prefix}-list-filters`).addEventListener('submit', event => { event.preventDefault(); void load(1); });
+    $(`#${prefix}-filter`).addEventListener('change', () => { void load(1); });
+    $(`#${prefix}-list-refresh`).addEventListener('click', () => { void load(state.ridePages[kind]?.pageNumber || 1); });
+    $(`#${prefix}-page-previous`).addEventListener('click', () => { void load((state.ridePages[kind]?.pageNumber || 1) - 1); });
+    $(`#${prefix}-page-next`).addEventListener('click', () => { void load((state.ridePages[kind]?.pageNumber || 1) + 1); });
+  }
+  $('#live-route-retry').addEventListener('click', () => liveRouteTracker?.retry());
+  $('#live-route-focus').addEventListener('click', focusSelectedLiveRoute);
   $('#cancellation-filter').addEventListener('change', () => loadCancellations().catch(error => toast(error.message, true)));
   $('#cancellations-refresh').addEventListener('click', () => loadCancellations().catch(error => toast(error.message, true)));
   $('#safety-filter').addEventListener('change', () => loadSafety().catch(error => toast(error.message, true)));
   $('#safety-refresh').addEventListener('click', () => loadSafety().catch(error => toast(error.message, true)));
   $('#safety-recordings-refresh').addEventListener('click', () => loadSafetyRecordings().catch(error => toast(error.message, true)));
-  $('#safety-map-modal').addEventListener('close', () => { clearInterval(safetyMapTimer); safetyMapTimer = null; safetyMapIncidentId = null; safetyMapLastMarker = ''; $('#safety-map-frame').removeAttribute('src'); });
+  $('#safety-map-modal').addEventListener('close', closeSafetyMap);
   $('#safety-map-load').addEventListener('click', () => {
-    if (!safetyMapPendingUrl) { toast('لا تتوفر إحداثيات لعرضها على الخريطة.', true); return; }
+    if (!window.L || !window.AdminMaps) { toast('تعذر تحميل مكتبة الخريطة. أعد تحميل الصفحة.', true); return; }
+    if (!renderSafetyMap()) { toast('لا تتوفر إحداثيات لعرضها على الخريطة.', true); return; }
     safetyMapLoaded = true;
-    safetyMapLastMarker = safetyMapPendingMarker;
-    $('#safety-map-frame').src = safetyMapPendingUrl;
-    $('#safety-map-frame').classList.remove('hidden');
     $('#safety-map-load').classList.add('hidden');
-    $('#safety-map-route-link').classList.toggle('hidden', !$('#safety-map-route-link').href);
+    updateSafetyMap(safetyMapItem);
   });
+  $('#safety-map-route-retry').addEventListener('click', () => { void refreshSafetyMapRoutes(true); });
   let searchTimer; $('#user-search').addEventListener('input', event => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadUsers(event.target.value.trim()).catch(error => toast(error.message, true)), 300); });
   $('#customer-search-button').addEventListener('click', () => loadCustomers($('#customer-search').value.trim()).catch(error => toast(error.message, true)));
   $('#customer-search').addEventListener('keydown', event => {

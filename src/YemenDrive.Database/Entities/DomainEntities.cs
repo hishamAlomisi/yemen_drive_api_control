@@ -285,6 +285,7 @@ public sealed class WalletTransaction : Entity
 
 public sealed class LocationUpdate : Entity
 {
+    public string? Source { get; set; }
     public double? Accuracy { get; set; }
     public int RideId { get; set; }
     public Ride Ride { get; set; } = null!;
@@ -623,6 +624,7 @@ public sealed class CommunicationMessage : Entity
     public int RecipientId { get; set; }
     public string MessageType { get; set; } = "Text";
     public string Content { get; set; } = string.Empty;
+    public DateTime? DeliveredAtUtc { get; set; }
     public DateTime? ReadAtUtc { get; set; }
 }
 
@@ -654,6 +656,14 @@ public sealed class EmergencyContact : Entity
 /// <summary>Auditable safety alert with a snapshot of the most recent ride location.</summary>
 public sealed class SafetyIncident : Entity
 {
+    public string? Kind { get; set; }
+    public int? RouteVersion { get; set; }
+    public double? DeviationMeters { get; set; }
+    public string? DeviationDirection { get; set; }
+    public double? DeviationDirectionDegrees { get; set; }
+    public double? LocationAccuracyMeters { get; set; }
+    public string? VerifiedRoutePolyline { get; set; }
+    public string? LocationSource { get; set; }
     public int UserId { get; set; }
     public int? RideId { get; set; }
     public string Message { get; set; } = string.Empty;

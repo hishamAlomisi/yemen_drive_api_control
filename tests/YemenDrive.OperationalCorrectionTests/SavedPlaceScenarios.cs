@@ -32,7 +32,7 @@ static class SavedPlaceScenarios
         Is(!foreign.Success && await db.SavedPlaces.Where(x => x.Id == id).Select(x => x.Latitude).SingleAsync() == 15.4, "another account cannot change a favourite");
         var connection = db.Database.GetConnectionString();
         async Task<ApiResult> Concurrent(double lat) {
-            await using var ctx = new YemenDriveDbContext(new DbContextOptionsBuilder<YemenDriveDbContext>().UseSqlServer(connection).Options);
+            await using var ctx = new YemenDriveDbContext(new DbContextOptionsBuilder<YemenDriveDbContext>().UseSqlServer(connection).Options, RealtimeScenarioMode.Settings);
             return await new PlaceService(ctx, config, new Actor(user.Id)).ExecuteAsync("add", JsonSerializer.SerializeToElement(new SavedPlaceModel(Label: "متزامن", Kind: "place", Address: "العنوان", Latitude: lat, Longitude: 44.6)), default);
         }
         var concurrent = await Task.WhenAll(Concurrent(15.7), Concurrent(15.8)); db.ChangeTracker.Clear();

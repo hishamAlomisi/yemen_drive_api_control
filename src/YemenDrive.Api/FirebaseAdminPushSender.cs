@@ -7,7 +7,7 @@ using YemenDrive.Database.Entities;
 
 namespace YemenDrive.Api;
 
-public sealed class FirebaseAdminPushSender(IConfiguration configuration)
+public sealed class FirebaseAdminPushSender(IConfiguration configuration) : IOtpTestPushSender
 {
     private readonly object _gate = new();
     private FirebaseMessaging? _messaging;
@@ -18,15 +18,59 @@ public sealed class FirebaseAdminPushSender(IConfiguration configuration)
         CancellationToken cancellationToken)
         => GetMessaging().SendAsync(CreateMessage(installation, notification), cancellationToken);
 
+    public Task<string> SendTestOtpAsync(OtpTestPushMessage message, CancellationToken cancellationToken) =>
+        GetMessaging().SendAsync(CreateTestOtpMessage(message), cancellationToken);
+
+    public static Message CreateTestOtpMessage(OtpTestPushMessage message, DateTime? nowUtc = null)
+    {
+        var expires = DateTime.SpecifyKind(message.ExpiresAtUtc, DateTimeKind.Utc);
+        var remaining = expires - (nowUtc ?? DateTime.UtcNow);
+        var locallyRendered = message.NotificationRenderer == AndroidNotificationRendering.AppRenderer;
+        var title = "رمز تحقق يمن درايف للاختبار";
+        var body = $"رمز التحقق التجريبي: {message.Code}. صالح لمدة 5 دقائق.";
+        var data = new Dictionary<string, string>
+        {
+            ["action"] = "test_otp", ["challengeId"] = message.ChallengeId,
+            ["purpose"] = message.Purpose, ["clientType"] = message.ClientType,
+            ["expiresAtUtc"] = expires.ToString("O")
+        };
+        if (locallyRendered)
+        {
+            data["notificationRenderer"] = AndroidNotificationRendering.AppRenderer;
+            data["title"] = title;
+            data["body"] = body;
+        }
+        return new Message
+        {
+            Token = message.FcmToken,
+            Notification = locallyRendered ? null : new FirebaseAdmin.Messaging.Notification
+            {
+                Title = title, Body = body
+            },
+            Data = data,
+            Android = new AndroidConfig
+            {
+                Priority = Priority.High,
+                TimeToLive = remaining <= TimeSpan.Zero ? TimeSpan.Zero
+                    : remaining > TimeSpan.FromMinutes(5) ? TimeSpan.FromMinutes(5) : remaining,
+                Notification = locallyRendered ? null : new AndroidNotification
+                {
+                    ChannelId = "yemendrive_alerts", Icon = "ic_stat_yemendrive", Color = "#174C43", Sound = "default"
+                }
+            }
+        };
+    }
+
     public static Message CreateMessage(DevicePushInstallation installation,
         YemenDrive.Database.Entities.Notification notification)
     {
         var isRideRequest = RideRequestNotificationPolicy.RequestRideId(notification) is not null;
+        var locallyRendered = installation.Platform == AndroidNotificationRendering.LocalPlatform;
         var data = NotificationClientPayload.CreateFirebaseData(notification);
-        if (isRideRequest)
+        if (isRideRequest || locallyRendered)
         {
-            // The driver app verifies availability before displaying data messages.
-            // Android must not display an obsolete request directly from its tray.
+            // The app renders branded data notifications. For ride requests,
+            // the driver also verifies availability before displaying the alert.
             data["title"] = Truncate(notification.Title, 100);
             data["body"] = Truncate(notification.Body, 700);
             var createdAtUtc = notification.CreatedAtUtc.Kind == DateTimeKind.Unspecified
@@ -34,10 +78,11 @@ public sealed class FirebaseAdminPushSender(IConfiguration configuration)
                 : notification.CreatedAtUtc.ToUniversalTime();
             data["createdAtUtc"] = createdAtUtc.ToString("O");
         }
+        if (locallyRendered) data["notificationRenderer"] = AndroidNotificationRendering.AppRenderer;
         return new Message
         {
             Token = installation.FcmToken,
-            Notification = isRideRequest ? null : new FirebaseAdmin.Messaging.Notification
+            Notification = isRideRequest || locallyRendered ? null : new FirebaseAdmin.Messaging.Notification
             {
                 Title = Truncate(notification.Title, 100),
                 Body = Truncate(notification.Body, 700)
@@ -47,11 +92,11 @@ public sealed class FirebaseAdminPushSender(IConfiguration configuration)
             {
                 Priority = Priority.High,
                 TimeToLive = isRideRequest ? TimeSpan.Zero : null,
-                Notification = isRideRequest ? null : new AndroidNotification
+                Notification = isRideRequest || locallyRendered ? null : new AndroidNotification
                 {
                     ChannelId = "yemendrive_alerts",
-                    Icon = "ic_launcher",
-                    Color = "#0F6B78",
+                    Icon = "ic_stat_yemendrive",
+                    Color = "#174C43",
                     Sound = "default"
                 }
             }

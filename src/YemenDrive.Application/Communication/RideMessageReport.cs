@@ -32,6 +32,9 @@ public sealed class RideMessageReport(
         if (model.BeforeId is int beforeId &&
             model.BeforeCreatedAtUtc is DateTime beforeCreatedAtUtc)
         {
+            beforeCreatedAtUtc = beforeCreatedAtUtc.Kind == DateTimeKind.Local
+                ? beforeCreatedAtUtc.ToUniversalTime()
+                : DateTime.SpecifyKind(beforeCreatedAtUtc, DateTimeKind.Utc);
             query = query.Where(x =>
                 x.CreatedAtUtc < beforeCreatedAtUtc ||
                 (x.CreatedAtUtc == beforeCreatedAtUtc && x.Id < beforeId));
@@ -42,9 +45,32 @@ public sealed class RideMessageReport(
             .ThenByDescending(x => x.Id)
             .Take(pageSize)
             .Select(x => new { x.Id, x.RideId, x.SenderId, x.RecipientId,
-                x.MessageType, x.Content, x.ReadAtUtc, x.CreatedAtUtc })
+                x.MessageType, x.Content, x.DeliveredAtUtc, x.ReadAtUtc, x.CreatedAtUtc })
             .ToListAsync(token);
         messages.Reverse();
         return messages;
+    }
+
+    protected override async Task<object?> ReportAsync(RideMessageModel model, CancellationToken token)
+    {
+        var userId = currentUser.RequireUserId();
+        var rides = db.Rides.AsNoTracking().Where(x => x.CustomerId == userId || x.DriverId == userId);
+        if (model.RideId is int rideId)
+        {
+            if (!await rides.AnyAsync(x => x.Id == rideId, token))
+                throw new ServiceException("ride_access_denied", "لا تملك صلاحية الوصول إلى محادثة هذه الرحلة.");
+            return new
+            {
+                rideId,
+                unreadCount = await db.CommunicationMessages.CountAsync(x => x.RideId == rideId && x.RecipientId == userId && x.ReadAtUtc == null, token),
+                lastMessageId = await db.CommunicationMessages.Where(x => x.RideId == rideId).MaxAsync(x => (int?)x.Id, token)
+            };
+        }
+        var summaries = await db.CommunicationMessages.AsNoTracking()
+            .Where(x => x.RecipientId == userId && x.ReadAtUtc == null && rides.Any(ride => ride.Id == x.RideId))
+            .GroupBy(x => x.RideId)
+            .Select(group => new { rideId = group.Key, unreadCount = group.Count(), lastMessageId = group.Max(x => x.Id) })
+            .OrderBy(x => x.rideId).ToListAsync(token);
+        return new { rides = summaries, unreadCount = summaries.Sum(x => x.unreadCount) };
     }
 }

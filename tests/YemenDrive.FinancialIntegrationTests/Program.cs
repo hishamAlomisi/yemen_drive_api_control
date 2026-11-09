@@ -1,4 +1,5 @@
 using System.Net;
+using System.Data.Common;
 using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
@@ -9,6 +10,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using YemenDrive.Application.DriverPayments;
@@ -32,6 +34,8 @@ using CashPaymentRequestService = YemenDrive.Application.DriverPayments.CashPaym
 using UserService = YemenDrive.Application.Users.User;
 using ServiceKindService = YemenDrive.Application.Catalog.ServiceKind;
 
+RealtimeScenarioMode.Enabled = args.Contains("--journal");
+Console.WriteLine($"MODE: durable journal = {RealtimeScenarioMode.Enabled}");
 var databaseName = $"YemenDrive_FinancialTests_{Guid.NewGuid():N}";
 var options = new DbContextOptionsBuilder<YemenDriveDbContext>()
     .UseSqlServer($"Server=(localdb)\\MSSQLLocalDB;Database={databaseName};Integrated Security=True;TrustServerCertificate=True")
@@ -46,10 +50,39 @@ await configuration.SaveAsync(new DatabaseSettings
 
 try
 {
-    await using var db = new YemenDriveDbContext(options);
+    await using var db = new YemenDriveDbContext(options, RealtimeScenarioMode.Settings);
     await db.Database.MigrateAsync();
     var fixture = await SeedAsync(db);
     db.AdministratorPermissions.Add(new() { UserId = fixture.AdminId, Permission = "*" }); await db.SaveChangesAsync();
+    if (args.Contains("--offer-acceptance-race"))
+    {
+        await OfferAcceptanceConcurrencyScenarios.RunAsync(db, configuration, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+        return;
+    }
+    if (args.Contains("--repeat-offer-acceptance"))
+    {
+        await RepeatOfferAcceptanceScenarios.RunAsync(db, configuration, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+        return;
+    }
+    if (args.Contains("--prestart"))
+    {
+        await new FinancialAccountProvisioningService(db).ProvisionExistingAsync(CancellationToken.None);
+        await PrestartPaymentScenarios.RunAsync(db, configuration, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId,
+            forceDebitWinner: args.Contains("--prestart-debit-winner"));
+        return;
+    }
+    if (args.Contains("--search-cancellation"))
+    {
+        await SearchRestartAndDirectCancellationRemainConsistentAsync(db, configuration, fixture);
+        await CancellationSnapshotIsOptionalAndPrivateAsync(db, configuration, fixture);
+        return;
+    }
+    if (args.Contains("--waiting-control"))
+    {
+        await WaitingControlScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId,
+            fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+        return;
+    }
 
     await TrackingHubMembershipIsRestrictedToActiveRideParticipantsAsync(db, fixture);
     await TrackingHubRequiresAuthenticatedRideMembershipAsync(db, configuration, fixture, databaseName);
@@ -77,10 +110,13 @@ try
         AssertSuccess(await ExecuteAsync(new DriverCashPayment(db, configuration, new TestCurrentUser(fixture.DriverId), RideAccounting(db)), "add", new DriverCashPaymentModel(debt.RideId, debt.Amount, "YER", IdempotencyKey: $"fixture-receivable-{debt.Id}")), "clear verified fixture receivable");
     await RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(db, configuration, fixture);
     await PricingWaitingScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+    await WaitingControlScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
     await WaitingReportScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
     await RouteChangeScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
 
     await WorkflowAcceptanceScenarios.RunAsync(db, configuration, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+    await RepeatOfferAcceptanceScenarios.RunAsync(db, configuration, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
+    await OfferAcceptanceConcurrencyScenarios.RunAsync(db, configuration, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
 
     await WalletRideGuardScenarios.RunAsync(db, configuration, fixture.CustomerId, fixture.DriverId, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
     await ExternalWalletPaymentPostsOnceAndLocksOtherTendersAsync(db, configuration, fixture);
@@ -89,6 +125,8 @@ try
     await CancellationRefundScenarios.RunAsync(db, configuration, fixture.AdminId, fixture.ServiceKindId, fixture.ServiceCatalogItemId);
 
     await ExpandedCancellationAndAccountingAsync(db, configuration, fixture);
+    await SearchRestartAndDirectCancellationRemainConsistentAsync(db, configuration, fixture);
+    await CancellationSnapshotIsOptionalAndPrivateAsync(db, configuration, fixture);
     Console.WriteLine("PASS: financial integration scenarios completed on an isolated temporary database.");
 }
 finally
@@ -96,6 +134,190 @@ finally
     await using var cleanup = new YemenDriveDbContext(options);
     await cleanup.Database.EnsureDeletedAsync();
     if (File.Exists(settingsPath)) File.Delete(settingsPath);
+}
+
+static async Task CancellationSnapshotIsOptionalAndPrivateAsync(
+    YemenDriveDbContext db, DatabaseConfigurationStore config, Fixture fixture)
+{
+    var customer = new User { PhoneNumber = "+967700126802", DisplayName = "Optional snapshot rider", Role = UserRole.Customer };
+    var driver = new User { PhoneNumber = "+967700126803", DisplayName = "Optional snapshot driver", Role = UserRole.Driver };
+    var ride = new YemenDrive.Database.Entities.Ride { Customer = customer, Driver = driver,
+        ServiceKindId = fixture.ServiceKindId, ServiceCatalogItemId = fixture.ServiceCatalogItemId,
+        Status = RideStatus.DriverAssigned };
+    db.Rides.Add(ride);
+    await db.SaveChangesAsync();
+    foreach (var userId in new[] { customer.Id, driver.Id, fixture.AdminId })
+    {
+        var result = await ExecuteAsync(new RideCancellationRequestService(db, config,
+            new TestCurrentUser(userId), RideAccounting(db)), "get", new RideCancellationRequestModel(RideId: ride.Id));
+        Assert(result.Success && result.Data is null, "participant reads a normal ride without a cancellation snapshot");
+    }
+    var outsider = new RideCancellationRequestService(db, config, new TestCurrentUser(fixture.CustomerId), RideAccounting(db));
+    var denied = await ExecuteAsync(outsider, "get", new RideCancellationRequestModel(RideId: ride.Id));
+    Assert(!denied.Success && denied.Code == "ride_access_denied", "empty cancellation snapshot still enforces ride ownership");
+    var missing = await ExecuteAsync(outsider, "get", new RideCancellationRequestModel(Id: int.MaxValue));
+    Assert(!missing.Success && missing.Code == "cancellation_request_not_found", "explicit missing cancellation id remains an error");
+    var missingRide = await ExecuteAsync(outsider, "get", new RideCancellationRequestModel(RideId: int.MaxValue));
+    Assert(!missingRide.Success && missingRide.Code == "ride_not_found", "missing ride is not an empty cancellation snapshot");
+    ride.Status = RideStatus.InProgress;
+    ride.StartedAtUtc = DateTime.UtcNow.AddHours(-2);
+    ride.ServiceEndedAtUtc = ride.StartedAtUtc.Value.AddSeconds(3600);
+    for (var index = 0; index <= 3600; index++)
+        db.LocationUpdates.Add(new LocationUpdate { RideId = ride.Id, ActorId = driver.Id,
+            Latitude = 15.3 + index * .00001, Longitude = 44.2, Accuracy = 5,
+            ObservedAtUtc = ride.StartedAtUtc.Value.AddSeconds(index) });
+    db.LocationUpdates.AddRange(
+        new LocationUpdate { RideId = ride.Id, ActorId = customer.Id, Latitude = 14, Longitude = 44, ObservedAtUtc = ride.StartedAtUtc.Value },
+        new LocationUpdate { RideId = ride.Id, ActorId = driver.Id, Latitude = 14, Longitude = 44, ObservedAtUtc = ride.StartedAtUtc.Value.AddSeconds(-1) },
+        new LocationUpdate { RideId = ride.Id, ActorId = driver.Id, Latitude = 14, Longitude = 44, ObservedAtUtc = ride.ServiceEndedAtUtc.Value.AddSeconds(1) });
+    await db.SaveChangesAsync();
+    var detailResult = await ExecuteAsync(new RideService(db, config, new TestCurrentUser(customer.Id), RideAccounting(db)), "get", new RideModel(Id: ride.Id));
+    AssertSuccess(detailResult, "ride detail includes persisted travelled path");
+    var detail = JsonSerializer.SerializeToElement(detailResult.Data, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    var samples = detail.GetProperty("driverRouteSamples").EnumerateArray().ToArray();
+    Assert(samples.Length is > 1 and <= 602, "history snapshot is bounded without losing its beginning");
+    Assert(samples[0].GetProperty("latitude").GetDouble() == 15.3 && samples[^1].GetProperty("latitude").GetDouble() == 15.336,
+        "history retains first and last actual driver samples and excludes passenger/outside-trip observations");
+    var times = samples.Select(x => x.GetProperty("observedAtUtc").GetDateTime()).ToArray();
+    Assert(times.SequenceEqual(times.Order()) && times.All(x => x.Kind == DateTimeKind.Utc), "route samples stay ordered and UTC after SQL roundtrip");
+    var otherDetail = await ExecuteAsync(new RideService(db, config, new TestCurrentUser(fixture.CustomerId), RideAccounting(db)), "get", new RideModel(Id: ride.Id));
+    Assert(!otherDetail.Success && otherDetail.Code == "ride_access_denied", "route history remains private to the ride participants");
+    var fault = new RouteHistoryReadFailure();
+    var recoveryOptions = new DbContextOptionsBuilder<YemenDriveDbContext>()
+        .UseSqlServer(db.Database.GetConnectionString()).AddInterceptors(fault).Options;
+    await using (var recoveryDb = new YemenDriveDbContext(recoveryOptions))
+    {
+        var service = new RideService(recoveryDb, config, new TestCurrentUser(customer.Id), RideAccounting(recoveryDb));
+        var lightweight = await ExecuteAsync(service, "get", new RideModel(Id: ride.Id, IncludeRouteHistory: false));
+        AssertSuccess(lightweight, "lightweight ride snapshot omits optional route history");
+        var lightweightJson = JsonSerializer.SerializeToElement(lightweight.Data, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert(!lightweightJson.GetProperty("driverRouteHistoryRequested").GetBoolean() &&
+            !lightweightJson.GetProperty("driverRouteHistoryAvailable").GetBoolean() &&
+            lightweightJson.GetProperty("driverRouteSamples").GetArrayLength() == 0 && fault.ReadAttempts == 0,
+            "explicitly omitted archive executes no display-history query and advertises the omission");
+        var degraded = await ExecuteAsync(service, "get", new RideModel(Id: ride.Id));
+        AssertSuccess(degraded, "display archive timeout does not block the canonical ride snapshot");
+        var degradedJson = JsonSerializer.SerializeToElement(degraded.Data, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert(degradedJson.GetProperty("driverRouteHistoryRequested").GetBoolean() && !degradedJson.GetProperty("driverRouteHistoryAvailable").GetBoolean() &&
+            degradedJson.GetProperty("ride").GetProperty("id").GetInt32() == ride.Id,
+            "archive failure is explicit while the current ride remains usable");
+        var recovered = await ExecuteAsync(service, "get", new RideModel(Id: ride.Id, IncludeRouteHistory: true));
+        AssertSuccess(recovered, "next refresh recovers the archived route automatically");
+        var recoveredJson = JsonSerializer.SerializeToElement(recovered.Data, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert(recoveredJson.GetProperty("driverRouteHistoryAvailable").GetBoolean() &&
+            recoveredJson.GetProperty("driverRouteSamples").GetArrayLength() > 1,
+            "route history returns after a transient archive read failure");
+    }
+    Console.WriteLine("PASS: optional cancellation snapshots retain participant authorization and explicit-id errors.");
+    Console.WriteLine("PASS: persisted route display history is bounded, ordered, private and spans destination changes.");
+}
+
+static async Task SearchRestartAndDirectCancellationRemainConsistentAsync(
+    YemenDriveDbContext db, DatabaseConfigurationStore config, Fixture fixture)
+{
+    var customer = new User { PhoneNumber = "+967700126800", DisplayName = "Search cancellation rider", Role = UserRole.Customer };
+    var driver = new User { PhoneNumber = "+967700126801", DisplayName = "Search cancellation driver", Role = UserRole.Driver };
+    db.AddRange(customer, driver); await db.SaveChangesAsync();
+    db.DriverProfiles.Add(new DriverProfile { UserId = driver.Id, ServiceKindId = fixture.ServiceKindId,
+        ServiceCatalogItemId = fixture.ServiceCatalogItemId, IsAvailable = true, IsApproved = true,
+        AcceptsNewRequests = true, ApprovedPassengerSeats = 4, VehicleModel = "Test", PlateNumber = "SEARCH" });
+    db.DriverLiveLocations.Add(new DriverLiveLocation { DriverId = driver.Id, Latitude = 15.3694,
+        Longitude = 44.1910, IsOnline = true, ObservedAtUtc = DateTime.UtcNow });
+    await db.SaveChangesAsync();
+    var publisher = new RecordingRideRealtimePublisher();
+    var search = new RideSearchAction(db, config, new TestCurrentUser(customer.Id), publisher);
+    var offers = new RideOfferService(db, config, new TestCurrentUser(driver.Id), publisher);
+    var cancellation = new RideCancellationRequestService(db, config, new TestCurrentUser(customer.Id), RideAccounting(db), publisher);
+    async Task<YemenDrive.Database.Entities.Ride> Trip(RideStatus status = RideStatus.Searching)
+    {
+        var trip = new YemenDrive.Database.Entities.Ride { CustomerId = customer.Id, ServiceKindId = fixture.ServiceKindId,
+            ServiceCatalogItemId = fixture.ServiceCatalogItemId, Status = status, PickupLatitude = 15.3694,
+            PickupLongitude = 44.1910, CustomerPrice = 1000, TotalAmount = 1100, ServiceFee = 100,
+            PickupAddress = "Search pickup", DestinationAddress = "Search destination", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-3) };
+        db.Rides.Add(trip); await db.SaveChangesAsync(); return trip;
+    }
+    async Task<YemenDrive.Database.Entities.RideOffer> Offer(YemenDrive.Database.Entities.Ride trip)
+    {
+        AssertSuccess(await ExecuteAsync(offers, "add", new RideOfferModel(RideId: trip.Id, Amount: 1000)), "new search offer");
+        return await db.RideOffers.SingleAsync(x => x.RideId == trip.Id && x.Status == OfferStatus.Pending);
+    }
+
+    var open = await Trip();
+    var originalCreatedAt = open.CreatedAtUtc;
+    AssertSuccess(await ExecuteAsync(search, "update", new RideSearchActionModel(open.Id)), "no-offer retry sends fresh invitations while search remains open");
+    var first = await Offer(open);
+    AssertSuccess(await ExecuteAsync(new YemenDrive.Application.Rides.RideSearchView(db, config, new TestCurrentUser(driver.Id)),
+        "update", new RideSearchViewModel(open.Id, 1000)), "record viewer before next round");
+    AssertSuccess(await ExecuteAsync(search, "update", new RideSearchActionModel(open.Id)), "explicit retry works while API search is still negotiating");
+    Assert(first.Status == OfferStatus.Expired && open.Status == RideStatus.Searching, "new round expires previous offer and stays on same ride");
+    AssertEqual(originalCreatedAt, open.CreatedAtUtc, "retry preserves request age and search-radius policy");
+    AssertEqual(0, await db.RideSearchViews.CountAsync(x => x.RideId == open.Id), "new round clears old viewers");
+    var snapshot = publisher.AvailableRecipients.Last(x => x.UserId == driver.Id).Ride;
+    AssertEqual((int)OfferStatus.Expired, Convert.ToInt32(snapshot["driverOfferStatus"]), "new invitation snapshot never advertises an expired offer as pending");
+    Assert(publisher.UpdatedOffers.Any(x => x.Id == first.Id && x.Status == OfferStatus.Expired), "old offer expiration is broadcast");
+    var repeated = await Offer(open);
+    var notificationCount = await db.Notifications.CountAsync();
+    AssertSuccess(await ExecuteAsync(search, "update", new RideSearchActionModel(open.Id, CustomerPrice: 1000)), "lost same-price response can be retried after a new offer");
+    Assert(repeated.Status == OfferStatus.Pending && open.Status == RideStatus.Negotiating, "same-price retry preserves newly arrived offer");
+    AssertEqual(notificationCount, await db.Notifications.CountAsync(), "same-price retry sends no duplicate invitations");
+    AssertSuccess(await ExecuteAsync(search, "update", new RideSearchActionModel(open.Id)), "another explicit retry begins another round");
+    Assert(repeated.Status == OfferStatus.Expired && await db.Notifications.CountAsync() > notificationCount, "explicit retry expires and rebroadcasts");
+    AssertSuccess(await ExecuteAsync(search, "cancel", new RideSearchActionModel(open.Id, Exhausted: true)), "legacy no-offer timeout closes search");
+    Assert(open.ServiceEndedAtUtc is null, "timeout does not become a formal cancellation");
+    AssertSuccess(await ExecuteAsync(search, "update", new RideSearchActionModel(open.Id)), "legacy timeout can reopen");
+    AssertSuccess(await ExecuteAsync(search, "cancel", new RideSearchActionModel(open.Id, Reason: "لم أعد بحاجة إلى الرحلة")), "explicit cancellation is final");
+    Assert(open.ServiceEndedAtUtc is not null && open.FinancialAmountDue == 0, "formal unpaid search cancellation ends service with zero due");
+    Assert(!(await ExecuteAsync(search, "update", new RideSearchActionModel(open.Id))).Success, "formal cancellation cannot reopen");
+    AssertSuccess(await ExecuteAsync(search, "cancel", new RideSearchActionModel(open.Id, Reason: "لم أعد بحاجة إلى الرحلة")), "formal cancellation replay remains idempotent");
+    AssertEqual(1, await db.RideCancellationRequests.CountAsync(x => x.RideId == open.Id), "formal cancellation replay creates no second case");
+
+    foreach (var status in new[] { RideStatus.Searching, RideStatus.Negotiating })
+    {
+        var trip = await Trip(status);
+        YemenDrive.Database.Entities.RideOffer? previous = status == RideStatus.Negotiating ? await Offer(trip) : null;
+        var result = await ExecuteAsync(cancellation, "add", new RideCancellationRequestModel(RideId: trip.Id, Reason: "تغير موعد الرحلة"));
+        AssertSuccess(result, "generic endpoint directly cancels unpaid unassigned search");
+        var json = JsonSerializer.SerializeToElement(result.Data, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var request = await db.RideCancellationRequests.SingleAsync(x => x.RideId == trip.Id);
+        Assert(request.Status == RideCancellationStatus.AdminApproved && request.AssignedAdminId is null && request.ReviewDueAtUtc is null,
+            "safe unassigned cancellation does not create an approval task");
+        Assert(trip.Status == RideStatus.Cancelled && trip.ServiceEndedAtUtc is not null && trip.FinancialAmountDue == 0,
+            "unassigned transport is finally cancelled without a debt");
+        Assert(json.GetProperty("status").GetInt32() == 3 && json.GetProperty("rideStatus").GetInt32() == 7 && !json.GetProperty("canDecide").GetBoolean(),
+            "direct cancellation response has existing numeric status and no decision gate");
+        Assert(!await db.PaymentTransactions.AnyAsync(x => x.RideId == trip.Id) && !await db.JournalLines.AnyAsync(x => x.RideId == trip.Id),
+            "unpaid cancellation makes no financial movement");
+        Assert(previous is null || previous.Status == OfferStatus.Expired, "generic cancellation expires pending offers");
+        AssertEqual(trip.Id, publisher.RideUnavailableRideId!.Value, "generic cancellation broadcasts unavailable ride");
+        Assert(!(await ExecuteAsync(search, "update", new RideSearchActionModel(trip.Id))).Success, "generic final cancellation cannot reopen");
+    }
+
+    var paid = await Trip();
+    db.PaymentTransactions.Add(new PaymentTransaction { RideId = paid.Id, UserId = customer.Id, Amount = 100,
+        Provider = "IsolatedGuardFixture", Status = PaymentStatus.Paid });
+    await db.SaveChangesAsync();
+    Assert(!(await ExecuteAsync(search, "cancel", new RideSearchActionModel(paid.Id, Reason: "إلغاء مدفوع"))).Success,
+        "simple search cancellation cannot bypass paid refund handling");
+    Assert(!(await ExecuteAsync(search, "update", new RideSearchActionModel(paid.Id))).Success,
+        "search restart cannot repurpose a paid ride");
+    AssertSuccess(await ExecuteAsync(cancellation, "add", new RideCancellationRequestModel(RideId: paid.Id, Reason: "إلغاء مدفوع")),
+        "paid unassigned ride uses review workflow");
+    Assert((await db.RideCancellationRequests.SingleAsync(x => x.RideId == paid.Id)).Status == RideCancellationStatus.AdminReviewPending,
+        "unassigned paid cancellation retains administrator financial review");
+    var paymentMethod = new YemenDrive.Database.Entities.PaymentMethod { Code = "search-guard-wallet", NameAr = "اختبار",
+        ProviderCode = "Floosak", Kind = PaymentMethodKind.ExternalWallet };
+    db.PaymentMethods.Add(paymentMethod); await db.SaveChangesAsync();
+    var pending = await Trip();
+    var operation = new PaymentWalletOperation { RideId = pending.Id, CustomerId = customer.Id, PaymentMethodId = paymentMethod.Id,
+        RequestId = Guid.NewGuid().ToString("N"), ProviderCode = "Floosak", Status = "Processing", Stage = "Complete", Amount = 100, IsOpen = true };
+    db.PaymentWalletOperations.Add(operation); await db.SaveChangesAsync();
+    Assert(!(await ExecuteAsync(search, "cancel", new RideSearchActionModel(pending.Id, Exhausted: true))).Success,
+        "search timeout cannot bypass uncertain payment handling");
+    AssertSuccess(await ExecuteAsync(cancellation, "add", new RideCancellationRequestModel(RideId: pending.Id, Reason: "إلغاء أثناء تحقق الدفع")),
+        "uncertain payment uses formal cancellation");
+    Assert(operation.IsOpen && (await db.RideCancellationRequests.SingleAsync(x => x.RideId == pending.Id)).Status == RideCancellationStatus.AdminReviewPending,
+        "in-flight debit remains linked to the financial review");
+    Console.WriteLine("PASS: explicit search retry, stale-offer snapshots, final cancellation guards, direct unpaid cancellation and paid/uncertain review.");
 }
 
 static async Task ExpandedCancellationAndAccountingAsync(YemenDriveDbContext db, DatabaseConfigurationStore config, Fixture fixture)
@@ -288,8 +510,10 @@ static async Task RideSearchAndOfferEventsArePublishedAfterPersistenceAsync(
     var available = publisher.AvailableRecipients.Single();
     AssertEqual(candidateDriver.Id, available.UserId, "rideAvailable recipient is the eligible driver");
     AssertEqual(rideId, Convert.ToInt32(available.Ride["id"]), "rideAvailable contains the saved ride id");
-    Assert(Equals(false, available.Ride["destinationAvailable"]), "rideAvailable hides the exact destination from an unassigned driver");
-    Assert(available.Ride["destinationLatitude"] is null, "rideAvailable omits destination coordinates");
+    Assert(Equals(true, available.Ride["destinationAvailable"]), "rideAvailable provides destination preview to its eligible driver before an offer");
+    Assert(Equals(latitude + 0.02, available.Ride["destinationLatitude"]), "rideAvailable includes the requested destination coordinates");
+    Assert(available.Ride["customerName"] is null && available.Ride["customerPhone"] is null,
+        "preoffer route preview does not reveal customer identity or phone");
     Assert(Equals(true, available.Ride["moreThanFourPassengers"]), "riding options reach eligible drivers before offers");
     Assert(Equals("ملاحظة اختبار للركوب", available.Ride["passengerNotes"]), "passenger notes reach drivers");
     var savedOptions = await db.Rides.AsNoTracking().SingleAsync(x => x.Id == rideId);
@@ -441,6 +665,7 @@ static async Task TrackingHubRequiresAuthenticatedRideMembershipAsync(
     builder.Logging.ClearProviders();
     builder.WebHost.UseUrls("http://127.0.0.1:0");
     builder.Services.AddSingleton(configuration);
+    builder.Services.AddSingleton(RealtimeScenarioMode.Settings ?? new YemenDrive.Database.Realtime.RealtimeJournalSettings());
     builder.Services.AddDbContext<YemenDriveDbContext>(options => options.UseSqlServer(connectionString));
     builder.Services.AddScoped<AuthSessionService>();
     builder.Services.AddScoped<TrackingHubAccessPolicy>();
@@ -555,7 +780,7 @@ static async Task TrackingHubRequiresAuthenticatedRideMembershipAsync(
             .UseSqlServer(connectionString)
             .AddInterceptors(notificationCapture)
             .Options;
-        await using var notificationDb = new YemenDriveDbContext(notificationOptions);
+        await using var notificationDb = new YemenDriveDbContext(notificationOptions, RealtimeScenarioMode.Settings);
         notificationDb.Notifications.Add(new Notification
         {
             UserId = fixture.CustomerId,
@@ -1338,7 +1563,7 @@ static async Task CustomerPaymentAccessChangesArePublishedAsync(YemenDriveDbCont
         {
             // A separate connection must already observe the change when a rider is notified.
             // Publishing while the transaction still owns its write lock would time out here.
-            await using var observer = new YemenDriveDbContext(observerOptions);
+            await using var observer = new YemenDriveDbContext(observerOptions, RealtimeScenarioMode.Settings);
             observer.Database.SetCommandTimeout(5);
             var saved = await observer.Rides.AsNoTracking().SingleAsync(x => x.Id == change.RideId, token);
             AssertEqual(saved.CustomerPaymentEnabled, change.CustomerPaymentEnabled, "realtime payment access matches committed data");
@@ -1396,6 +1621,27 @@ static void AssertEqual<T>(T expected, T actual, string name) where T : notnull 
 static void Assert(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);
+}
+
+file sealed class RouteHistoryReadFailure : DbCommandInterceptor
+{
+    private bool _failed;
+    public int ReadAttempts { get; private set; }
+    public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        if (command.CommandText.Contains("DATEDIFF(second", StringComparison.OrdinalIgnoreCase))
+        {
+            ReadAttempts++;
+            if (!_failed)
+            {
+                _failed = true;
+                throw new TimeoutException("Isolated optional display archive timeout.");
+            }
+        }
+        return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+    }
 }
 
 file sealed record Fixture(int CustomerId, int DriverId, int AdminId, int ServiceKindId, int ServiceCatalogItemId, int CustomerWalletId, int DriverWalletId);

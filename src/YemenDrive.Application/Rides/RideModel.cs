@@ -27,4 +27,12 @@ public sealed record RideModel(
     Guid? PricingQuoteToken = null,
     string? PaymentMethodCode = null,
     int? PassengerCount = null,
-    bool ConfirmPassengerBoarding = false);
+    bool ConfirmPassengerBoarding = false,
+    double? PassengerLatitude = null,
+    double? PassengerLongitude = null,
+    double? PassengerAccuracy = null,
+    DateTimeOffset? PassengerObservedAtUtc = null,
+    bool IncludePaging = false,
+    int PageNumber = 1,
+    int PageSize = 100,
+    bool IncludeRouteHistory = true);

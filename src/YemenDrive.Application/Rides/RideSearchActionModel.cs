@@ -5,6 +5,7 @@ using YemenDrive.Database.Configuration;
 using YemenDrive.Database.Entities;
 using YemenDrive.Services.Operations;
 using YemenDrive.Application.Pricing;
+using YemenDrive.Application.Payments;
 using YemenDrive.Shared.Api;
 using YemenDrive.Shared.Security;
 
@@ -29,11 +30,14 @@ public sealed class RideSearchAction(
         var ride = await FindRideAsync(model.RideId, token);
         await EnsureCustomerOrAdminAsync(ride.CustomerId, token);
         await PendingRideRating.EnsureCompletedAsync(db, ride.CustomerId, token);
-        if (ride.DriverId is not null || ride.Status is not (
+        if (ride.DriverId is not null || ride.ServiceEndedAtUtc is not null || ride.StartedAtUtc is not null || ride.Status is not (
                 RideStatus.Cancelled or RideStatus.Searching or RideStatus.Negotiating))
             throw new ServiceException(
                 "ride_search_not_restartable",
                 "لا يمكن إعادة البحث لأن الرحلة أُسندت إلى سائق أو أُغلقت نهائياً.");
+        if (await db.RideCancellationRequests.AnyAsync(x => x.RideId == ride.Id, token) ||
+            await HasFinancialActivityAsync(ride.Id, token))
+            throw new ServiceException("ride_search_not_restartable", "أُغلقت الرحلة أو لديها حقوق مالية تحتاج مراجعة؛ لا يمكن إعادة فتح البحث.");
 
         var now = DateTime.UtcNow;
         if (model.CustomerPrice is not null)
@@ -41,11 +45,13 @@ public sealed class RideSearchAction(
             RidePricingPolicy.ValidateCustomerPrice(ride, model.CustomerPrice);
             if (model.CustomerPrice <= 0 || model.CustomerPrice != decimal.Truncate(model.CustomerPrice.Value))
                 throw new ServiceException("invalid_customer_price", "أدخل أجرة صحيحة أكبر من صفر.");
-            // Retrying a response lost in transit must not resend or expire offers twice.
-            if (model.CustomerPrice == ride.CustomerPrice && ride.Status == RideStatus.Searching)
-                return new { rideId = ride.Id, ride.Status, ride.CustomerPrice, notifiedDriverCount = 0 };
-            ride.CustomerPrice = model.CustomerPrice;
         }
+        // A lost price response may be retried after a new offer has arrived.
+        // An explicit restart without a price always starts a fresh round.
+        if (model.CustomerPrice is not null && model.CustomerPrice == ride.CustomerPrice &&
+            ride.Status is RideStatus.Searching or RideStatus.Negotiating)
+            return new { rideId = ride.Id, ride.Status, ride.CustomerPrice, notifiedDriverCount = 0 };
+        if (model.CustomerPrice is not null) ride.CustomerPrice = model.CustomerPrice;
         var pendingOffers = await db.RideOffers
             .Where(x => x.RideId == ride.Id && x.Status == OfferStatus.Pending)
             .ToListAsync(token);
@@ -60,6 +66,9 @@ public sealed class RideSearchAction(
         ride.Status = RideStatus.Searching;
         ride.UpdatedAtUtc = now;
         await db.RideSearchViews.Where(x => x.RideId == ride.Id).ExecuteDeleteAsync(token);
+        // Invitation snapshots read offers without tracking. Persist expiration
+        // inside this transaction before constructing the new round's snapshot.
+        await db.SaveChangesAsync(token);
         var recipients = await RideSearchNotificationDispatcher
             .NotifyAvailableDriversAsync(db, ride, token, priceChanged: model.CustomerPrice is not null);
         await db.SaveChangesAsync(token);
@@ -89,6 +98,9 @@ public sealed class RideSearchAction(
             throw new ServiceException(
                 "assigned_ride_cancellation_required",
                 "الرحلة مرتبطة بسائق؛ استخدم طلب الإلغاء الرسمي.");
+        await WalletPaymentCancellationPolicy.CancelUnsubmittedAsync(db, ride.Id, token);
+        if (await HasFinancialActivityAsync(ride.Id, token))
+            throw new ServiceException("ride_financial_cancellation_required", "توجد دفعة أو عملية دفع معلقة؛ استخدم طلب الإلغاء الرسمي لحفظ الحقوق المالية.");
         if (!string.IsNullOrWhiteSpace(model.Reason))
         {
             var reason = model.Reason.Trim();
@@ -101,6 +113,8 @@ public sealed class RideSearchAction(
                     RideStatusAtRequest = ride.Status, Reason = reason,
                     Status = RideCancellationStatus.AdminApproved
                 });
+            await RideFinancialState.CloseServiceAsync(db, ride, reason, token);
+            ride.FinancialAmountDue = 0m;
         }
         if (ride.Status == RideStatus.Cancelled)
         {
@@ -172,9 +186,14 @@ public sealed class RideSearchAction(
     {
         if (rideId is null)
             throw new ServiceException("ride_id_required", "رقم الرحلة مطلوب.");
+        await RidePaymentGuard.LockAsync(db, rideId.Value, token);
         return await db.Rides.SingleOrDefaultAsync(x => x.Id == rideId, token)
             ?? throw new ServiceException("ride_not_found", "الرحلة غير موجودة.");
     }
+
+    private async Task<bool> HasFinancialActivityAsync(int rideId, CancellationToken token) =>
+        await db.PaymentTransactions.AnyAsync(x => x.RideId == rideId && x.Status == PaymentStatus.Paid, token) ||
+        await db.PaymentWalletOperations.AnyAsync(x => x.RideId == rideId && x.IsOpen && x.Status != "Succeeded", token);
 
     private async Task EnsureCustomerOrAdminAsync(int customerId, CancellationToken token)
     {

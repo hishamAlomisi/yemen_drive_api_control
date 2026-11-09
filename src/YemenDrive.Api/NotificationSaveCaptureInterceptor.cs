@@ -88,5 +88,7 @@ public sealed class NotificationSaveCaptureInterceptor : SaveChangesInterceptor
                 });
             }
         }
+        if (context is YemenDriveDbContext db && context.ChangeTracker.Entries<NotificationPushOutbox>()
+            .Any(entry => entry.State == EntityState.Added)) db.MarkNotificationPushPending();
     }
 }

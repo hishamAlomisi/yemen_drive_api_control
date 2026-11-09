@@ -10,4 +10,6 @@ public sealed record RideMessageModel(
     bool? MarkRead = null,
     int? PageSize = null,
     int? BeforeId = null,
-    DateTime? BeforeCreatedAtUtc = null);
+    DateTime? BeforeCreatedAtUtc = null,
+    bool? MarkDelivered = null,
+    int[]? MessageIds = null);
